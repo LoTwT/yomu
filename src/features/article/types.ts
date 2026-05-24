@@ -12,9 +12,11 @@ export interface ArticleRights {
 }
 
 export interface ArticleToken {
+  id: string
   text: string
   ipa?: string
   kind?: 'word' | 'punctuation'
+  meaning?: string
 }
 
 export interface ArticleSentence {

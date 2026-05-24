@@ -11,6 +11,7 @@ describe('article schema fixture', () => {
       expect(sentence.original).not.toContain('<')
       expect(sentence.translation).toBeTruthy()
       expect(sentence.audioRef.durationMs).toBeGreaterThan(0)
+      expect(sentence.tokens.every(token => token.id)).toBe(true)
       expect(sentence.tokens.some(token => token.ipa)).toBe(true)
     }
   })

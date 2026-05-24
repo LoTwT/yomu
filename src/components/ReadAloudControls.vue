@@ -21,8 +21,11 @@ const rates = [0.85, 1, 1.15]
 <template>
   <section class="read-aloud-controls" aria-label="Read aloud controls" role="region">
     <p class="read-aloud-controls__status" aria-live="polite">
-      <span v-if="isPlaying">Reading sentence {{ activeIndex + 1 }} of {{ total }}</span>
+      <span v-if="isPlaying">Lead voice playing</span>
       <span v-else>Lead voice paused</span>
+    </p>
+    <p class="read-aloud-controls__progress" aria-hidden="true">
+      Sentence {{ activeIndex + 1 }} of {{ total }}
     </p>
     <div class="read-aloud-controls__row">
       <button type="button" @click="emit('previous')">
@@ -72,10 +75,15 @@ const rates = [0.85, 1, 1.15]
   backdrop-filter: blur(14px);
 }
 
-.read-aloud-controls__status {
+.read-aloud-controls__status,
+.read-aloud-controls__progress {
   margin: 0 0 0.6rem;
   color: var(--yomu-muted);
   font-size: 0.88rem;
+}
+
+.read-aloud-controls__progress {
+  margin-block-start: -0.3rem;
 }
 
 .read-aloud-controls__row,
@@ -99,7 +107,7 @@ const rates = [0.85, 1, 1.15]
 }
 
 .read-aloud-controls button {
-  min-block-size: 2.5rem;
+  min-block-size: 2.75rem;
   border: 1px solid var(--yomu-rule);
   border-radius: 999px;
   padding-inline: 0.8rem;
