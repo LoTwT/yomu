@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, useTemplateRef } from 'vue'
 
 import type { DailyArticle } from '@/features/article/types'
 import type { PracticeSessionRecord } from '@/features/storage/practiceStorage'
@@ -11,6 +11,24 @@ const props = defineProps<{
 
 const vocabulary = computed(() => props.article.sentences.flatMap(sentence => sentence.vocab ?? []))
 const factSources = computed(() => props.article.factSources)
+const completionTitle = useTemplateRef<HTMLHeadingElement>('completionTitle')
+
+function focusPanel() {
+  const title = completionTitle.value
+  if (!title) {
+    return
+  }
+
+  title.scrollIntoView({
+    block: 'start',
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  })
+  window.requestAnimationFrame(() => {
+    title.focus({ preventScroll: true })
+  })
+}
+
+defineExpose({ focusPanel })
 </script>
 
 <template>
@@ -18,8 +36,13 @@ const factSources = computed(() => props.article.factSources)
     <p class="completion-panel__eyebrow">
       Completed
     </p>
-    <h2 id="completion-title" class="completion-panel__title">
-      Today's page is done.
+    <h2
+      id="completion-title"
+      ref="completionTitle"
+      class="completion-panel__title"
+      tabindex="-1"
+    >
+      You've finished today's reading ✓
     </h2>
     <p class="completion-panel__copy">
       You finished {{ article.title }} in this local practice record.

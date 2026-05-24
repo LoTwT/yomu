@@ -31,7 +31,7 @@ const emit = defineEmits<{
       {{ completed ? 'Read it again' : 'Start reading' }}
     </button>
     <p v-if="completed" class="today-card__complete" role="status">
-      You've finished today's reading.
+      You've finished today's reading ✓
     </p>
   </section>
 </template>
