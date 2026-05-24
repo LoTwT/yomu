@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, readonly, shallowRef, watch } from 'vue'
 
 import type { DailyArticle } from '@/features/article/types'
 
+export type AudioStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'failed'
+
 export interface SentencePlaybackHandle {
   stop: () => void
 }
@@ -31,14 +33,15 @@ export function createTimedSentencePlayer(): SentencePlayer {
 }
 
 export function useReadAloudSession(
-  article: Ref<DailyArticle>,
+  article: Ref<DailyArticle | null>,
   player: SentencePlayer = createTimedSentencePlayer(),
 ) {
   const activeSentenceId = shallowRef<string | null>(null)
   const isPlaying = shallowRef(false)
+  const audioStatus = shallowRef<AudioStatus>('idle')
   const playbackRate = shallowRef(1)
   const currentIndex = computed(() => {
-    if (!activeSentenceId.value) {
+    if (!article.value || !activeSentenceId.value) {
       return -1
     }
 
@@ -53,7 +56,7 @@ export function useReadAloudSession(
   }
 
   function playSentenceByIndex(index: number) {
-    const sentence = article.value.sentences[index]
+    const sentence = article.value?.sentences[index]
     if (!sentence) {
       stop()
       return
@@ -61,6 +64,14 @@ export function useReadAloudSession(
 
     stopCurrentPlayback()
     activeSentenceId.value = sentence.id
+
+    if (!isPlayableAudioRef(sentence.audioRef.url, sentence.audioRef.durationMs)) {
+      isPlaying.value = false
+      audioStatus.value = 'failed'
+      return
+    }
+
+    audioStatus.value = 'loading'
     isPlaying.value = true
     currentPlayback = player.playSentence({
       sentenceId: sentence.id,
@@ -71,26 +82,30 @@ export function useReadAloudSession(
         playSentenceByIndex(index + 1)
       },
     })
+    audioStatus.value = 'playing'
   }
 
-  function play(sentenceId = activeSentenceId.value ?? article.value.sentences[0]?.id) {
-    const index = article.value.sentences.findIndex(sentence => sentence.id === sentenceId)
+  function play(sentenceId = activeSentenceId.value ?? article.value?.sentences[0]?.id) {
+    const index = article.value?.sentences.findIndex(sentence => sentence.id === sentenceId) ?? -1
     playSentenceByIndex(index >= 0 ? index : 0)
   }
 
   function pause() {
     stopCurrentPlayback()
     isPlaying.value = false
+    audioStatus.value = activeSentenceId.value ? 'paused' : 'idle'
   }
 
   function stop() {
     stopCurrentPlayback()
     activeSentenceId.value = null
     isPlaying.value = false
+    audioStatus.value = 'idle'
   }
 
   function next() {
-    playSentenceByIndex(Math.min(currentIndex.value + 1, article.value.sentences.length - 1))
+    const lastIndex = (article.value?.sentences.length ?? 1) - 1
+    playSentenceByIndex(Math.min(currentIndex.value + 1, lastIndex))
   }
 
   function previous() {
@@ -98,7 +113,7 @@ export function useReadAloudSession(
   }
 
   function repeat() {
-    play(activeSentenceId.value ?? article.value.sentences[0]?.id)
+    play(activeSentenceId.value ?? article.value?.sentences[0]?.id)
   }
 
   function setPlaybackRate(nextRate: number) {
@@ -119,6 +134,7 @@ export function useReadAloudSession(
   return {
     activeSentenceId: readonly(activeSentenceId),
     isPlaying: readonly(isPlaying),
+    audioStatus: readonly(audioStatus),
     playbackRate: readonly(playbackRate),
     currentIndex,
     play,
@@ -129,4 +145,8 @@ export function useReadAloudSession(
     stop,
     setPlaybackRate,
   }
+}
+
+function isPlayableAudioRef(url: string, durationMs: number): boolean {
+  return Boolean(url) && durationMs > 0 && !url.startsWith('missing://')
 }
