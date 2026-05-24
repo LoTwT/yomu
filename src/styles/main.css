@@ -1,0 +1,83 @@
+:root {
+  color-scheme: light;
+  --yomu-paper: #fbf8f1;
+  --yomu-paper-soft: #f5ead8;
+  --yomu-ink: #24211d;
+  --yomu-ink-soft: #443d31;
+  --yomu-muted: #776b57;
+  --yomu-rule: #dfcfb5;
+  --yomu-accent: #9d5f34;
+  --yomu-focus: #66569d;
+  --yomu-active: #f0dec2;
+  --yomu-translation-rule: #6b8d7b;
+  --yomu-serif: "Newsreader", Georgia, "Times New Roman", serif;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  background: var(--yomu-paper);
+  color: var(--yomu-ink);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-inline-size: 320px;
+  min-block-size: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 0 0, rgb(157 95 52 / 10%), transparent 24rem),
+    var(--yomu-paper);
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app-shell {
+  min-block-size: 100vh;
+}
+
+.app-shell__toolbar {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 12;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem;
+  max-inline-size: min(100%, 44rem);
+  margin-inline: auto;
+  padding: 0.85rem 1.25rem;
+  background: color-mix(in srgb, var(--yomu-paper) 88%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.app-shell__back {
+  min-block-size: 2.4rem;
+  border: 1px solid var(--yomu-rule);
+  border-radius: 999px;
+  padding-inline: 0.8rem;
+  background: var(--yomu-paper);
+  color: var(--yomu-ink-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.app-shell__back:focus-visible {
+  outline: 3px solid var(--yomu-focus);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
