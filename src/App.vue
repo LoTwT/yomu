@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, shallowRef, watch } from 'vue'
+import { computed, nextTick, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 
 import ArticleStatusCard from './components/ArticleStatusCard.vue'
 import ArticleReader from './components/ArticleReader.vue'
@@ -31,9 +31,11 @@ const view = shallowRef<'today' | 'reader'>('today')
 const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreferences })
 const completedSession = shallowRef<PracticeSessionRecord | null>(null)
 const startedAt = shallowRef<number | null>(null)
+const hasJustCompleted = shallowRef(false)
 const revealedTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
+const completionPanel = useTemplateRef<InstanceType<typeof CompletionPanel>>('completionPanel')
 const article = computed<DailyArticle | null>(() =>
   articleLoadResult.value.status === 'ready' ? articleLoadResult.value.article : null,
 )
@@ -57,6 +59,7 @@ watch(article, (nextArticle) => {
   revealedTranslationIds.value = []
   selectedToken.value = null
   startedAt.value = null
+  hasJustCompleted.value = false
   completedSession.value = nextArticle
     ? loadPracticeSession(window.localStorage, nextArticle.id)
     : null
@@ -100,6 +103,8 @@ function startReading() {
   }
 
   view.value = 'reader'
+  hasJustCompleted.value = false
+  player.stop()
   startedAt.value = Date.now()
 }
 
@@ -157,6 +162,17 @@ function completeReading() {
   }
   savePracticeSession(window.localStorage, session)
   completedSession.value = session
+  hasJustCompleted.value = true
+  selectedToken.value = null
+  player.stop()
+  void focusCompletionPanel()
+}
+
+async function focusCompletionPanel(): Promise<void> {
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    completionPanel.value?.focusPanel()
+  })
 }
 
 async function refreshTodayArticle() {
@@ -267,6 +283,7 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
       />
 
       <ReadAloudControls
+        v-if="!hasJustCompleted"
         :active-index="activeIndex"
         :total="article.sentences.length"
         :is-playing="player.isPlaying.value"
@@ -282,7 +299,11 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         @set-rate="player.setPlaybackRate($event)"
       />
 
-      <CompletionPanel :article="article" :session="completedSession" />
+      <CompletionPanel
+        ref="completionPanel"
+        :article="article"
+        :session="hasJustCompleted ? completedSession : null"
+      />
     </template>
   </main>
 </template>

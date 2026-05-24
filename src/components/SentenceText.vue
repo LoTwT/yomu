@@ -28,7 +28,7 @@ const emit = defineEmits<{
           class="sentence-text__ruby"
           data-testid="ipa-token"
         >
-          {{ token.text }}<rp>(</rp><rt aria-hidden="true">{{ token.ipa }}</rt><rp>)</rp>
+          {{ token.text }}<rp>(</rp><rt aria-hidden="true">/{{ token.ipa }}/</rt><rp>)</rp>
         </ruby>
         <span v-else>
           {{ token.text }}

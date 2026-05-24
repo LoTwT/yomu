@@ -7,7 +7,45 @@ async function openFreshApp(page: Page) {
   await page.reload()
 }
 
+async function installSpeechSynthesisProbe(page: Page) {
+  await page.addInitScript(() => {
+    const spokenTexts: string[] = []
+
+    class TestSpeechSynthesisUtterance extends EventTarget {
+      lang = ''
+      rate = 1
+      text: string
+      onend: (() => void) | null = null
+      onerror: (() => void) | null = null
+
+      constructor(text = '') {
+        super()
+        this.text = text
+      }
+    }
+
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: TestSpeechSynthesisUtterance,
+    })
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: {
+        cancel() {},
+        speak(utterance: TestSpeechSynthesisUtterance) {
+          spokenTexts.push(`${utterance.lang}|${utterance.rate}|${utterance.text}`)
+        },
+      },
+    })
+    Object.defineProperty(window, '__spokenTexts', {
+      configurable: true,
+      value: spokenTexts,
+    })
+  })
+}
+
 test('renders today card and starts the in-page read aloud experience', async ({ page }) => {
+  await installSpeechSynthesisProbe(page)
   await openFreshApp(page)
 
   await expect(page.getByRole('heading', { name: 'The Quiet Power of a Short Walk' })).toBeVisible()
@@ -19,6 +57,10 @@ test('renders today card and starts the in-page read aloud experience', async ({
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
   await expect(page.getByText('Lead voice playing')).toBeVisible()
   await expect(page.getByText('Sentence 1 of 3')).toBeVisible()
+  const spokenTexts = await page.evaluate(() => (window as unknown as { __spokenTexts: string[] }).__spokenTexts)
+  expect(spokenTexts).toEqual([
+    'en-US|1|A short walk can change the shape of a difficult afternoon.',
+  ])
 })
 
 test('toggles IPA and translation as display scaffolds and keeps them off by default', async ({ page }) => {
@@ -32,6 +74,7 @@ test('toggles IPA and translation as display scaffolds and keeps them off by def
   await page.getByLabel('Translation').check()
 
   await expect(page.getByTestId('ipa-token').first()).toBeVisible()
+  await expect(page.getByTestId('ipa-token').first()).toContainText('/ə/')
   await expect(page.getByTestId('sentence-translation')).toHaveCount(0)
 
   await page.getByRole('button', { name: /Toggle translation for: A short walk/ }).click()
@@ -44,7 +87,10 @@ test('stores completion records locally after an explicit finish action', async 
   await page.getByRole('button', { name: 'Start reading' }).click()
   await page.getByRole('button', { name: "I finished today's reading" }).click()
 
-  await expect(page.getByRole('heading', { name: "Today's page is done." })).toBeVisible()
+  const completionHeading = page.getByRole('heading', { name: "You've finished today's reading ✓" })
+  await expect(completionHeading).toBeVisible()
+  await expect(completionHeading).toBeFocused()
+  await expect(page.getByRole('region', { name: 'Read aloud controls' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Background / source' })).toBeVisible()
   const sourceLink = page.getByRole('link', { name: 'WHO physical activity fact sheet' })
   await expect(sourceLink).toBeVisible()
