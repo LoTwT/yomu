@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   loadDisplayPreferences,
   loadPracticeSession,
+  loadSavedVocabularyIds,
   saveDisplayPreferences,
   savePracticeSession,
+  saveSavedVocabularyIds,
 } from '@/features/storage/practiceStorage'
 
 describe('practice storage', () => {
@@ -49,5 +51,18 @@ describe('practice storage', () => {
       completedAt: '2026-05-24T04:00:00.000Z',
       durationSec: 300,
     })
+  })
+
+  it('persists saved vocabulary ids defensively', () => {
+    const storage = window.localStorage
+    storage.clear()
+
+    expect(loadSavedVocabularyIds(storage)).toEqual([])
+
+    saveSavedVocabularyIds(storage, ['s1-t3', 's1-t3', 's2-t9'])
+    expect(loadSavedVocabularyIds(storage)).toEqual(['s1-t3', 's2-t9'])
+
+    storage.setItem('yomu:saved-vocabulary', '{"bad":true}')
+    expect(loadSavedVocabularyIds(storage)).toEqual([])
   })
 })

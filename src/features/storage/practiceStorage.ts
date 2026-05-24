@@ -9,6 +9,7 @@ export interface PracticeSessionRecord {
 
 const preferencesKey = 'yomu:display-preferences'
 const sessionKeyPrefix = 'yomu:practice-session:'
+const savedVocabularyKey = 'yomu:saved-vocabulary'
 
 export function loadDisplayPreferences(storage: Storage): DisplayPreferences {
   const raw = storage.getItem(preferencesKey)
@@ -56,4 +57,27 @@ export function loadPracticeSession(
   catch {
     return null
   }
+}
+
+export function loadSavedVocabularyIds(storage: Storage): string[] {
+  const raw = storage.getItem(savedVocabularyKey)
+  if (!raw) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.filter((item): item is string => typeof item === 'string')
+  }
+  catch {
+    return []
+  }
+}
+
+export function saveSavedVocabularyIds(storage: Storage, tokenIds: string[]): void {
+  storage.setItem(savedVocabularyKey, JSON.stringify([...new Set(tokenIds)]))
 }

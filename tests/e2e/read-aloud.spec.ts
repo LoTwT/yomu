@@ -14,7 +14,8 @@ test('renders today card and starts the in-page read aloud experience', async ({
   await page.getByRole('button', { name: 'Play' }).click()
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-  await expect(page.getByText('Reading sentence 1 of 3')).toBeVisible()
+  await expect(page.getByText('Lead voice playing')).toBeVisible()
+  await expect(page.getByText('Sentence 1 of 3')).toBeVisible()
 })
 
 test('toggles IPA and translation as display scaffolds and keeps them off by default', async ({ page }) => {
@@ -42,4 +43,16 @@ test('stores completion records locally after an explicit finish action', async 
 
   const storageKeys = await page.evaluate(() => Object.keys(localStorage))
   expect(storageKeys).toContain('yomu:practice-session:daily-en-2026-05-24-breathing-room')
+})
+
+test('opens word meaning popover and saves vocabulary locally', async ({ page }) => {
+  await page.getByRole('button', { name: 'Start reading' }).click()
+  await page.getByRole('button', { name: 'walk: 散步' }).click()
+
+  await expect(page.getByTestId('word-popover')).toContainText('walk')
+  await expect(page.getByTestId('word-popover')).toContainText('/wɔːk/')
+  await page.getByRole('button', { name: 'Save word' }).click()
+
+  const savedVocabulary = await page.evaluate(() => localStorage.getItem('yomu:saved-vocabulary'))
+  expect(savedVocabulary).toContain('s1-t3')
 })

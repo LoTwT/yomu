@@ -57,7 +57,7 @@ function updatePreference(key: keyof DisplayPreferences, value: boolean) {
 .assistive-display__option {
   display: inline-flex;
   align-items: center;
-  min-block-size: 2rem;
+  min-block-size: 2.75rem;
   gap: 0.35rem;
   color: var(--yomu-ink-soft);
   font-size: 0.9rem;

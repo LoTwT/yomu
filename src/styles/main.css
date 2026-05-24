@@ -57,7 +57,7 @@ button {
 }
 
 .app-shell__back {
-  min-block-size: 2.4rem;
+  min-block-size: 2.75rem;
   border: 1px solid var(--yomu-rule);
   border-radius: 999px;
   padding-inline: 0.8rem;

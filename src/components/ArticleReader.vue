@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { DailyArticle } from '@/features/article/types'
+import type { ArticleToken, DailyArticle } from '@/features/article/types'
 import type { DisplayPreferences } from '@/features/preferences/types'
 
 import SentenceText from './SentenceText.vue'
@@ -9,10 +9,12 @@ defineProps<{
   activeSentenceId: string | null
   preferences: DisplayPreferences
   revealedTranslationIds: string[]
+  selectedTokenId: string | null
 }>()
 
 const emit = defineEmits<{
   pressSentence: [sentenceId: string]
+  selectToken: [token: ArticleToken]
   togglePlayback: []
   complete: []
 }>()
@@ -41,22 +43,32 @@ const emit = defineEmits<{
         :class="{ 'article-reader__sentence--active': sentence.id === activeSentenceId }"
         :aria-current="sentence.id === activeSentenceId ? 'true' : undefined"
       >
-        <button
-          class="article-reader__sentence-button"
-          :class="{ 'article-reader__sentence-button--translation-mode': preferences.showTranslation }"
-          type="button"
-          :aria-label="preferences.showTranslation
-            ? `Toggle translation for: ${sentence.original}`
-            : `Sentence: ${sentence.original}`"
+        <div
+          class="article-reader__sentence-surface"
+          :class="{ 'article-reader__sentence-surface--translation-mode': preferences.showTranslation }"
           @click="emit('pressSentence', sentence.id)"
         >
           <SentenceText
             :tokens="sentence.tokens"
             :show-pronunciation="preferences.showPronunciation"
+            :selected-token-id="selectedTokenId"
+            @select-token="emit('selectToken', $event)"
           />
-        </button>
+          <button
+            v-if="preferences.showTranslation"
+            class="article-reader__translation-toggle"
+            type="button"
+            :aria-expanded="revealedTranslationIds.includes(sentence.id)"
+            :aria-controls="`${sentence.id}-translation`"
+            :aria-label="`Toggle translation for: ${sentence.original}`"
+            @click.stop="emit('pressSentence', sentence.id)"
+          >
+            译
+          </button>
+        </div>
         <p
           v-if="preferences.showTranslation && revealedTranslationIds.includes(sentence.id)"
+          :id="`${sentence.id}-translation`"
           class="article-reader__translation"
           data-testid="sentence-translation"
         >
@@ -121,8 +133,11 @@ const emit = defineEmits<{
   background: var(--yomu-active);
 }
 
-.article-reader__sentence-button {
-  display: block;
+.article-reader__sentence-surface {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
   inline-size: 100%;
   border: 0;
   padding: 0;
@@ -133,20 +148,34 @@ const emit = defineEmits<{
   font-size: clamp(1.35rem, 3.5vw, 1.85rem);
   line-height: 1.75;
   text-align: start;
-  cursor: pointer;
 }
 
-.article-reader__sentence-button:focus-visible,
+.article-reader__translation-toggle:focus-visible,
 .article-reader__complete:focus-visible {
   outline: 3px solid var(--yomu-focus);
   outline-offset: 3px;
 }
 
-.article-reader__sentence-button--translation-mode {
+.article-reader__sentence-surface--translation-mode {
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--yomu-translation-rule) 55%, transparent);
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.28em;
+}
+
+.article-reader__translation-toggle {
+  flex: 0 0 auto;
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+  border: 1px solid var(--yomu-rule);
+  border-radius: 999px;
+  background: var(--yomu-paper);
+  color: var(--yomu-accent);
+  font: inherit;
+  font-family: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .article-reader__translation {

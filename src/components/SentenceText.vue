@@ -4,20 +4,37 @@ import type { ArticleToken } from '@/features/article/types'
 defineProps<{
   tokens: ArticleToken[]
   showPronunciation: boolean
+  selectedTokenId: string | null
+}>()
+
+const emit = defineEmits<{
+  selectToken: [token: ArticleToken]
 }>()
 </script>
 
 <template>
   <span class="sentence-text">
-    <template v-for="(token, index) in tokens" :key="`${token.text}-${index}`">
-      <ruby
-        v-if="showPronunciation && token.ipa"
-        class="sentence-text__ruby"
-        data-testid="ipa-token"
+    <template v-for="token in tokens" :key="token.id">
+      <button
+        v-if="token.kind !== 'punctuation'"
+        class="sentence-text__token"
+        :class="{ 'sentence-text__token--selected': token.id === selectedTokenId }"
+        type="button"
+        :aria-label="token.meaning ? `${token.text}: ${token.meaning}` : `Word: ${token.text}`"
+        @click.stop="emit('selectToken', token)"
       >
-        {{ token.text }}<rp>(</rp><rt aria-hidden="true">{{ token.ipa }}</rt><rp>)</rp>
-      </ruby>
-      <span v-else :class="{ 'sentence-text__punctuation': token.kind === 'punctuation' }">
+        <ruby
+          v-if="showPronunciation && token.ipa"
+          class="sentence-text__ruby"
+          data-testid="ipa-token"
+        >
+          {{ token.text }}<rp>(</rp><rt aria-hidden="true">{{ token.ipa }}</rt><rp>)</rp>
+        </ruby>
+        <span v-else>
+          {{ token.text }}
+        </span>
+      </button>
+      <span v-else class="sentence-text__punctuation">
         {{ token.text }}
       </span>
       <span v-if="token.kind !== 'punctuation'" aria-hidden="true"> </span>
@@ -39,5 +56,25 @@ defineProps<{
 
 .sentence-text__punctuation {
   margin-inline-start: -0.18em;
+}
+
+.sentence-text__token {
+  border: 0;
+  border-radius: 0.35rem;
+  padding: 0.02em 0.08em;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sentence-text__token:hover,
+.sentence-text__token--selected {
+  background: color-mix(in srgb, var(--yomu-active) 60%, transparent);
+}
+
+.sentence-text__token:focus-visible {
+  outline: 3px solid var(--yomu-focus);
+  outline-offset: 2px;
 }
 </style>
