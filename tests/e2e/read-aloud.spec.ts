@@ -56,3 +56,58 @@ test('opens word meaning popover and saves vocabulary locally', async ({ page })
   const savedVocabulary = await page.evaluate(() => localStorage.getItem('yomu:saved-vocabulary'))
   expect(savedVocabulary).toContain('s1-t3')
 })
+
+test.describe('mobile word popover layout', () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+
+  test('keeps the selected word, meaning popover, and controls physically separate', async ({ page }) => {
+    await page.getByRole('button', { name: 'Start reading' }).click()
+    await page.getByLabel('IPA').check()
+    await page.getByLabel('Translation').check()
+    await page.getByRole('button', { name: 'Play' }).click()
+
+    await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
+    await page.getByRole('button', { name: 'walk: 散步' }).click()
+    await page.getByRole('button', { name: 'Pause' }).click()
+    await page.getByRole('button', { name: 'Save word' }).click()
+    await page.waitForTimeout(100)
+
+    const metrics = await page.evaluate(() => {
+      const selectedToken = document.querySelector('.sentence-text__token--selected')
+      const selectedSentence = selectedToken?.closest('.article-reader__sentence')
+      const selectedSurface = selectedSentence?.querySelector('.article-reader__sentence-surface')
+      const popover = document.querySelector('[data-testid="word-popover"]')
+      const controls = document.querySelector('.read-aloud-controls')
+      const toolbar = document.querySelector('.app-shell__toolbar')
+      const rect = (element: Element | null | undefined) => {
+        if (!element) {
+          return null
+        }
+
+        const { top, right, bottom, left, width, height } = element.getBoundingClientRect()
+        return { top, right, bottom, left, width, height }
+      }
+
+      return {
+        selectedToken: rect(selectedToken),
+        selectedSurface: rect(selectedSurface),
+        popover: rect(popover),
+        controls: rect(controls),
+        toolbar: rect(toolbar),
+        overflowX: document.documentElement.scrollWidth - window.innerWidth,
+        savedVocabulary: localStorage.getItem('yomu:saved-vocabulary'),
+      }
+    })
+
+    expect(metrics.selectedToken).not.toBeNull()
+    expect(metrics.selectedSurface).not.toBeNull()
+    expect(metrics.popover).not.toBeNull()
+    expect(metrics.controls).not.toBeNull()
+    expect(metrics.toolbar).not.toBeNull()
+    expect(metrics.selectedToken!.top).toBeGreaterThanOrEqual(metrics.toolbar!.bottom + 8)
+    expect(metrics.popover!.top).toBeGreaterThanOrEqual(metrics.selectedSurface!.bottom - 1)
+    expect(metrics.popover!.bottom).toBeLessThanOrEqual(metrics.controls!.top - 12)
+    expect(metrics.overflowX).toBeLessThanOrEqual(0)
+    expect(metrics.savedVocabulary).toContain('s1-t3')
+  })
+})

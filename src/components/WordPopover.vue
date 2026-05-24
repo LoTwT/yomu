@@ -45,16 +45,12 @@ const emit = defineEmits<{
 
 <style scoped>
 .word-popover {
-  position: sticky;
-  inset-block-end: 16rem;
-  z-index: 11;
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  max-inline-size: min(100% - 2rem, 42rem);
   border: 1px solid var(--yomu-rule);
   border-radius: 0.9rem;
-  margin: 0 auto 0.75rem;
+  margin-block-start: 0.85rem;
   padding: 0.85rem;
   background: color-mix(in srgb, var(--yomu-paper) 94%, white);
   box-shadow: 0 14px 32px rgb(47 39 27 / 12%);

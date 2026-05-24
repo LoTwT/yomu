@@ -1,23 +1,40 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import type { ArticleToken, DailyArticle } from '@/features/article/types'
 import type { DisplayPreferences } from '@/features/preferences/types'
 
 import SentenceText from './SentenceText.vue'
+import WordPopover from './WordPopover.vue'
 
-defineProps<{
+const props = defineProps<{
   article: DailyArticle
   activeSentenceId: string | null
   preferences: DisplayPreferences
   revealedTranslationIds: string[]
   selectedTokenId: string | null
+  selectedToken: ArticleToken | null
+  isSelectedTokenSaved: boolean
 }>()
 
 const emit = defineEmits<{
   pressSentence: [sentenceId: string]
   selectToken: [token: ArticleToken]
+  saveToken: [token: ArticleToken]
+  closeTokenPopover: []
   togglePlayback: []
   complete: []
 }>()
+
+const selectedTokenSentenceId = computed(() => {
+  if (!props.selectedToken) {
+    return null
+  }
+
+  return props.article.sentences.find(sentence =>
+    sentence.tokens.some(token => token.id === props.selectedToken?.id),
+  )?.id ?? null
+})
 </script>
 
 <template>
@@ -35,46 +52,59 @@ const emit = defineEmits<{
     </header>
 
     <ol class="article-reader__sentences" aria-label="Article sentences">
-      <li
-        v-for="sentence in article.sentences"
-        :id="sentence.id"
-        :key="sentence.id"
-        class="article-reader__sentence"
-        :class="{ 'article-reader__sentence--active': sentence.id === activeSentenceId }"
-        :aria-current="sentence.id === activeSentenceId ? 'true' : undefined"
-      >
-        <div
-          class="article-reader__sentence-surface"
-          :class="{ 'article-reader__sentence-surface--translation-mode': preferences.showTranslation }"
-          @click="emit('pressSentence', sentence.id)"
+      <template v-for="sentence in article.sentences" :key="sentence.id">
+        <li
+          :id="sentence.id"
+          class="article-reader__sentence"
+          :class="{ 'article-reader__sentence--active': sentence.id === activeSentenceId }"
+          :aria-current="sentence.id === activeSentenceId ? 'true' : undefined"
         >
-          <SentenceText
-            :tokens="sentence.tokens"
-            :show-pronunciation="preferences.showPronunciation"
-            :selected-token-id="selectedTokenId"
-            @select-token="emit('selectToken', $event)"
-          />
-          <button
-            v-if="preferences.showTranslation"
-            class="article-reader__translation-toggle"
-            type="button"
-            :aria-expanded="revealedTranslationIds.includes(sentence.id)"
-            :aria-controls="`${sentence.id}-translation`"
-            :aria-label="`Toggle translation for: ${sentence.original}`"
-            @click.stop="emit('pressSentence', sentence.id)"
+          <div
+            class="article-reader__sentence-surface"
+            :class="{ 'article-reader__sentence-surface--translation-mode': preferences.showTranslation }"
+            @click="emit('pressSentence', sentence.id)"
           >
-            译
-          </button>
-        </div>
-        <p
-          v-if="preferences.showTranslation && revealedTranslationIds.includes(sentence.id)"
-          :id="`${sentence.id}-translation`"
-          class="article-reader__translation"
-          data-testid="sentence-translation"
+            <SentenceText
+              :tokens="sentence.tokens"
+              :show-pronunciation="preferences.showPronunciation"
+              :selected-token-id="selectedTokenId"
+              @select-token="emit('selectToken', $event)"
+            />
+            <button
+              v-if="preferences.showTranslation"
+              class="article-reader__translation-toggle"
+              type="button"
+              :aria-expanded="revealedTranslationIds.includes(sentence.id)"
+              :aria-controls="`${sentence.id}-translation`"
+              :aria-label="`Toggle translation for: ${sentence.original}`"
+              @click.stop="emit('pressSentence', sentence.id)"
+            >
+              译
+            </button>
+          </div>
+          <p
+            v-if="preferences.showTranslation && revealedTranslationIds.includes(sentence.id)"
+            :id="`${sentence.id}-translation`"
+            class="article-reader__translation"
+            data-testid="sentence-translation"
+          >
+            {{ sentence.translation }}
+          </p>
+        </li>
+        <li
+          v-if="selectedToken && selectedTokenSentenceId === sentence.id"
+          class="article-reader__popover-slot"
+          role="presentation"
         >
-          {{ sentence.translation }}
-        </p>
-      </li>
+          <WordPopover
+            class="article-reader__word-popover"
+            :token="selectedToken"
+            :saved="isSelectedTokenSaved"
+            @save="emit('saveToken', $event)"
+            @close="emit('closeTokenPopover')"
+          />
+        </li>
+      </template>
     </ol>
 
     <button class="article-reader__complete" type="button" @click="emit('complete')">
@@ -131,6 +161,10 @@ const emit = defineEmits<{
 
 .article-reader__sentence--active {
   background: var(--yomu-active);
+}
+
+.article-reader__popover-slot {
+  padding: 0;
 }
 
 .article-reader__sentence-surface {

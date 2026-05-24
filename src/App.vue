@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, shallowRef, watch } from 'vue'
+import { computed, nextTick, onMounted, shallowRef, watch } from 'vue'
 
 import ArticleReader from './components/ArticleReader.vue'
 import AssistiveDisplayControls from './components/AssistiveDisplayControls.vue'
 import CompletionPanel from './components/CompletionPanel.vue'
 import ReadAloudControls from './components/ReadAloudControls.vue'
 import TodayCard from './components/TodayCard.vue'
-import WordPopover from './components/WordPopover.vue'
 import { sampleArticle } from './features/article/sampleArticle'
 import type { ArticleToken } from './features/article/types'
 import type { DisplayPreferences } from './features/preferences/types'
@@ -69,6 +68,10 @@ watch(player.activeSentenceId, (sentenceId) => {
   })
 })
 
+watch(selectedToken, () => {
+  void keepSelectedTokenClearOfStickyControls()
+})
+
 function startReading() {
   view.value = 'reader'
   startedAt.value = Date.now()
@@ -86,6 +89,11 @@ function pressSentence(sentenceId: string) {
 }
 
 function selectToken(token: ArticleToken) {
+  if (selectedToken.value?.id === token.id) {
+    closeTokenPopover()
+    return
+  }
+
   selectedToken.value = token
 }
 
@@ -120,6 +128,55 @@ function completeReading() {
   savePracticeSession(window.localStorage, session)
   completedSession.value = session
 }
+
+async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
+  if (!selectedToken.value) {
+    return
+  }
+
+  await nextTick()
+
+  window.requestAnimationFrame(() => {
+    const popover = document.querySelector<HTMLElement>('[data-testid="word-popover"]')
+    const selectedWord = document.querySelector<HTMLElement>('.sentence-text__token--selected')
+    const controls = document.querySelector<HTMLElement>('.read-aloud-controls')
+    const toolbar = document.querySelector<HTMLElement>('.app-shell__toolbar')
+
+    if (!popover || !selectedWord || !controls) {
+      return
+    }
+
+    const gap = 16
+    const popoverRect = popover.getBoundingClientRect()
+    const controlsRect = controls.getBoundingClientRect()
+    const selectedWordRect = selectedWord.getBoundingClientRect()
+    const safeTop = (toolbar?.getBoundingClientRect().bottom ?? 0) + gap
+    const safeBottom = controlsRect.top - gap
+
+    const minScrollDelta = popoverRect.bottom - safeBottom
+    const maxScrollDelta = selectedWordRect.top - safeTop
+    let scrollDelta = 0
+
+    if (minScrollDelta <= maxScrollDelta) {
+      if (minScrollDelta > 0) {
+        scrollDelta = minScrollDelta
+      }
+      else if (maxScrollDelta < 0) {
+        scrollDelta = maxScrollDelta
+      }
+    }
+    else {
+      scrollDelta = minScrollDelta > 0 ? minScrollDelta : maxScrollDelta
+    }
+
+    if (Math.abs(scrollDelta) > 1) {
+      window.scrollBy({
+        top: scrollDelta,
+        behavior: 'auto',
+      })
+    }
+  })
+}
 </script>
 
 <template>
@@ -145,17 +202,14 @@ function completeReading() {
         :preferences="preferences"
         :revealed-translation-ids="revealedTranslationIds"
         :selected-token-id="selectedToken?.id ?? null"
+        :selected-token="selectedToken"
+        :is-selected-token-saved="selectedToken ? savedVocabularyIds.includes(selectedToken.id) : false"
         @press-sentence="pressSentence"
         @select-token="selectToken"
+        @save-token="saveToken"
+        @close-token-popover="closeTokenPopover"
         @toggle-playback="togglePlayback"
         @complete="completeReading"
-      />
-
-      <WordPopover
-        :token="selectedToken"
-        :saved="selectedToken ? savedVocabularyIds.includes(selectedToken.id) : false"
-        @save="saveToken"
-        @close="closeTokenPopover"
       />
 
       <ReadAloudControls
