@@ -51,12 +51,18 @@ test('renders today card and starts the in-page read aloud experience', async ({
   await expect(page.getByRole('heading', { name: 'The Quiet Power of a Short Walk' })).toBeVisible()
   await page.getByRole('button', { name: 'Start reading' }).click()
 
-  await expect(page.getByRole('region', { name: 'Read aloud controls' })).toBeVisible()
-  await page.getByRole('button', { name: 'Play' }).click()
+  const controls = page.getByRole('region', { name: 'Read aloud controls' })
+  await expect(controls).toBeVisible()
+  await expect.poll(() => controls.evaluate(element => element.getBoundingClientRect().height)).toBeLessThan(82)
+  await controls.getByRole('button', { name: 'More read-aloud options' }).click()
+  await expect(controls.getByRole('button', { name: 'Repeat sentence' })).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  await page.getByRole('button', { name: 'Play lead voice' }).click()
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-  await expect(page.getByText('Lead voice playing')).toBeVisible()
-  await expect(page.getByText('Sentence 1 of 3')).toBeVisible()
+  await expect(page.locator('.read-aloud-controls__status')).toContainText('Lead voice playing')
+  await expect(page.getByText('1/3')).toBeVisible()
   const spokenTexts = await page.evaluate(() => (window as unknown as { __spokenTexts: string[] }).__spokenTexts)
   expect(spokenTexts).toEqual([
     'en-US|1|A short walk can change the shape of a difficult afternoon.',
@@ -73,13 +79,24 @@ test('toggles IPA and translation as display scaffolds and keeps them off by def
   await page.getByLabel('IPA').check()
   await page.getByLabel('Translation').check()
 
+  const visibleTranslations = page.locator('[data-testid="sentence-translation"]:visible')
   await expect(page.getByTestId('ipa-token').first()).toBeVisible()
   await expect(page.getByTestId('ipa-token').first()).toContainText('/ə/')
-  await expect(page.getByTestId('sentence-translation')).toHaveCount(0)
+  await expect(visibleTranslations).toHaveCount(3)
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1' })).toHaveCount(0)
 
-  await page.getByRole('button', { name: /Toggle translation for: A short walk/ }).click()
-  await expect(page.getByTestId('sentence-translation').first()).toContainText('一次短短的散步')
-  await expect(page.getByTestId('sentence-translation')).toHaveCount(1)
+  expect(await page.locator('[role="button"] .sentence-text__token').count()).toBe(0)
+
+  await page.getByRole('button', { name: 'Hide translation for sentence 1' }).focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1' })).toHaveAttribute('aria-expanded', 'false')
+  await expect(visibleTranslations).toHaveCount(2)
+
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(visibleTranslations.first()).toContainText('一次短短的散步')
+  await expect(visibleTranslations).toHaveCount(3)
 })
 
 test('stores completion records locally after an explicit finish action', async ({ page }) => {
@@ -144,10 +161,11 @@ test('keeps visual reading available when a sentence audio ref fails', async ({ 
   await openFreshApp(page)
 
   await page.getByRole('button', { name: 'Start reading' }).click()
-  await page.getByRole('button', { name: 'Play' }).click()
+  await page.getByRole('button', { name: 'Play lead voice' }).click()
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-  await expect(page.getByText("This line's read-aloud didn't load.")).toHaveCount(1)
+  await expect(page.locator('[aria-live="polite"]').filter({ hasText: "This line's read-aloud didn't load." })).toHaveCount(1)
+  await expect(page.locator('.read-aloud-controls__fallback')).toContainText("This line's read-aloud didn't load.")
   await expect(page.getByRole('button', { name: 'Skip' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
   await expect(page.locator('#s1')).toContainText('Ashortwalkcanchange')
@@ -161,11 +179,11 @@ test.describe('mobile word popover layout', () => {
     await page.getByRole('button', { name: 'Start reading' }).click()
     await page.getByLabel('IPA').check()
     await page.getByLabel('Translation').check()
-    await page.getByRole('button', { name: 'Play' }).click()
+    await page.getByRole('button', { name: 'Play lead voice' }).click()
 
     await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-    await page.getByRole('button', { name: 'walk: 散步' }).click()
-    await page.getByRole('button', { name: 'Pause' }).click()
+    await page.getByRole('button', { name: 'walk: 散步', exact: true }).click()
+    await page.getByRole('button', { name: 'Pause lead voice' }).click()
     await page.getByRole('button', { name: 'Save word' }).click()
     await page.waitForTimeout(100)
 

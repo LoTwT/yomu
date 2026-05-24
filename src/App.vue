@@ -32,7 +32,7 @@ const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreference
 const completedSession = shallowRef<PracticeSessionRecord | null>(null)
 const startedAt = shallowRef<number | null>(null)
 const hasJustCompleted = shallowRef(false)
-const revealedTranslationIds = shallowRef<string[]>([])
+const hiddenTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
 const completionPanel = useTemplateRef<InstanceType<typeof CompletionPanel>>('completionPanel')
@@ -56,7 +56,7 @@ onMounted(() => {
 watch(article, (nextArticle) => {
   player.stop()
   view.value = 'today'
-  revealedTranslationIds.value = []
+  hiddenTranslationIds.value = []
   selectedToken.value = null
   startedAt.value = null
   hasJustCompleted.value = false
@@ -68,7 +68,7 @@ watch(article, (nextArticle) => {
 watch(preferences, () => {
   saveDisplayPreferences(window.localStorage, preferences.value)
   if (!preferences.value.showTranslation) {
-    revealedTranslationIds.value = []
+    hiddenTranslationIds.value = []
   }
 })
 
@@ -113,8 +113,8 @@ function pressSentence(sentenceId: string) {
     return
   }
 
-  const currentIds = revealedTranslationIds.value
-  revealedTranslationIds.value = currentIds.includes(sentenceId)
+  const currentIds = hiddenTranslationIds.value
+  hiddenTranslationIds.value = currentIds.includes(sentenceId)
     ? currentIds.filter(id => id !== sentenceId)
     : [...currentIds, sentenceId]
 }
@@ -270,7 +270,7 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :article="article"
         :active-sentence-id="player.activeSentenceId.value"
         :preferences="preferences"
-        :revealed-translation-ids="revealedTranslationIds"
+        :hidden-translation-ids="hiddenTranslationIds"
         :selected-token-id="selectedToken?.id ?? null"
         :selected-token="selectedToken"
         :is-selected-token-saved="selectedToken ? savedVocabularyIds.includes(selectedToken.id) : false"

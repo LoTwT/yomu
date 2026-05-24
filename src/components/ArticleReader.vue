@@ -11,7 +11,7 @@ const props = defineProps<{
   article: DailyArticle
   activeSentenceId: string | null
   preferences: DisplayPreferences
-  revealedTranslationIds: string[]
+  hiddenTranslationIds: string[]
   selectedTokenId: string | null
   selectedToken: ArticleToken | null
   isSelectedTokenSaved: boolean
@@ -35,6 +35,15 @@ const selectedTokenSentenceId = computed(() => {
     sentence.tokens.some(token => token.id === props.selectedToken?.id),
   )?.id ?? null
 })
+
+function isTranslationVisible(sentenceId: string): boolean {
+  return props.preferences.showTranslation && !props.hiddenTranslationIds.includes(sentenceId)
+}
+
+function translationToggleLabel(sentenceIndex: number, sentenceId: string): string {
+  const action = isTranslationVisible(sentenceId) ? 'Hide' : 'Show'
+  return `${action} translation for sentence ${sentenceIndex + 1}`
+}
 </script>
 
 <template>
@@ -52,7 +61,7 @@ const selectedTokenSentenceId = computed(() => {
     </header>
 
     <ol class="article-reader__sentences" aria-label="Article sentences">
-      <template v-for="sentence in article.sentences" :key="sentence.id">
+      <template v-for="(sentence, sentenceIndex) in article.sentences" :key="sentence.id">
         <li
           :id="sentence.id"
           class="article-reader__sentence"
@@ -70,26 +79,27 @@ const selectedTokenSentenceId = computed(() => {
               :selected-token-id="selectedTokenId"
               @select-token="emit('selectToken', $event)"
             />
+          </div>
+          <div v-if="preferences.showTranslation" class="article-reader__translation-wrap">
+            <p
+              :id="`${sentence.id}-translation`"
+              class="article-reader__translation"
+              :hidden="!isTranslationVisible(sentence.id)"
+              data-testid="sentence-translation"
+            >
+              {{ sentence.translation }}
+            </p>
             <button
-              v-if="preferences.showTranslation"
               class="article-reader__translation-toggle"
               type="button"
-              :aria-expanded="revealedTranslationIds.includes(sentence.id)"
+              :aria-expanded="isTranslationVisible(sentence.id)"
               :aria-controls="`${sentence.id}-translation`"
-              :aria-label="`Toggle translation for: ${sentence.original}`"
-              @click.stop="emit('pressSentence', sentence.id)"
+              :aria-label="translationToggleLabel(sentenceIndex, sentence.id)"
+              @click="emit('pressSentence', sentence.id)"
             >
-              译
+              {{ isTranslationVisible(sentence.id) ? 'Hide translation' : 'Show translation' }}
             </button>
           </div>
-          <p
-            v-if="preferences.showTranslation && revealedTranslationIds.includes(sentence.id)"
-            :id="`${sentence.id}-translation`"
-            class="article-reader__translation"
-            data-testid="sentence-translation"
-          >
-            {{ sentence.translation }}
-          </p>
         </li>
         <li
           v-if="selectedToken && selectedTokenSentenceId === sentence.id"
@@ -195,30 +205,45 @@ const selectedTokenSentenceId = computed(() => {
   text-decoration-color: color-mix(in srgb, var(--yomu-translation-rule) 55%, transparent);
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.28em;
+  cursor: pointer;
 }
 
-.article-reader__translation-toggle {
-  flex: 0 0 auto;
-  min-inline-size: 2.75rem;
-  min-block-size: 2.75rem;
-  border: 1px solid var(--yomu-rule);
-  border-radius: 999px;
-  background: var(--yomu-paper);
-  color: var(--yomu-accent);
-  font: inherit;
-  font-family: inherit;
-  font-size: 0.86rem;
-  font-weight: 700;
-  cursor: pointer;
+.article-reader__translation-wrap {
+  display: grid;
+  justify-items: start;
+  gap: 0.35rem;
+  margin-block-start: 0.6rem;
 }
 
 .article-reader__translation {
   border-inline-start: 2px solid var(--yomu-translation-rule);
-  margin: 0.6rem 0 0;
+  margin: 0;
   padding-inline-start: 0.8rem;
   color: var(--yomu-muted);
   font-size: 0.95rem;
   line-height: 1.7;
+}
+
+.article-reader__translation[hidden] {
+  display: none;
+}
+
+.article-reader__translation-toggle {
+  min-block-size: 2.75rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--yomu-muted);
+  font: inherit;
+  font-size: 0.86rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--yomu-muted) 36%, transparent);
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.article-reader__translation-toggle:hover {
+  color: var(--yomu-ink-soft);
 }
 
 .article-reader__complete {
