@@ -4,6 +4,7 @@ import type { DailyArticle } from '@/features/article/types'
 defineProps<{
   article: DailyArticle
   completed: boolean
+  source: 'network' | 'cache'
 }>()
 
 const emit = defineEmits<{
@@ -24,12 +25,13 @@ const emit = defineEmits<{
       <span>{{ article.topic === 'knowledge' ? 'Knowledge' : 'Story' }}</span>
       <span>{{ article.language.toUpperCase() }}</span>
       <span>{{ article.sentences.length }} sentences</span>
+      <span v-if="source === 'cache'">Offline · saved for you</span>
     </div>
     <button class="today-card__button" type="button" @click="emit('start')">
-      {{ completed ? 'Read again' : 'Start reading' }}
+      {{ completed ? 'Read it again' : 'Start reading' }}
     </button>
     <p v-if="completed" class="today-card__complete" role="status">
-      Today is complete. You can reread quietly.
+      You've finished today's reading.
     </p>
   </section>
 </template>

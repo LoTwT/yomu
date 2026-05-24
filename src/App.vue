@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, shallowRef, watch } from 'vue'
 
+import ArticleStatusCard from './components/ArticleStatusCard.vue'
 import ArticleReader from './components/ArticleReader.vue'
 import AssistiveDisplayControls from './components/AssistiveDisplayControls.vue'
 import CompletionPanel from './components/CompletionPanel.vue'
 import ReadAloudControls from './components/ReadAloudControls.vue'
 import TodayCard from './components/TodayCard.vue'
-import { sampleArticle } from './features/article/sampleArticle'
-import type { ArticleToken } from './features/article/types'
+import {
+  loadCachedArticlePackage,
+  loadTodayArticlePackage,
+  type ArticlePackageLoadResult,
+} from './features/article/articlePackageLoader'
+import type { ArticleToken, DailyArticle } from './features/article/types'
 import type { DisplayPreferences } from './features/preferences/types'
 import { defaultDisplayPreferences } from './features/preferences/types'
 import { useReadAloudSession } from './features/player/useReadAloudSession'
@@ -21,7 +26,7 @@ import {
   type PracticeSessionRecord,
 } from './features/storage/practiceStorage'
 
-const article = shallowRef(sampleArticle)
+const articleLoadResult = shallowRef<ArticlePackageLoadResult>({ status: 'loading' })
 const view = shallowRef<'today' | 'reader'>('today')
 const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreferences })
 const completedSession = shallowRef<PracticeSessionRecord | null>(null)
@@ -29,6 +34,12 @@ const startedAt = shallowRef<number | null>(null)
 const revealedTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
+const article = computed<DailyArticle | null>(() =>
+  articleLoadResult.value.status === 'ready' ? articleLoadResult.value.article : null,
+)
+const articleStatus = computed(() =>
+  articleLoadResult.value.status === 'ready' ? null : articleLoadResult.value,
+)
 const player = useReadAloudSession(article)
 
 const activeIndex = computed(() => Math.max(player.currentIndex.value, 0))
@@ -36,8 +47,19 @@ const activeIndex = computed(() => Math.max(player.currentIndex.value, 0))
 onMounted(() => {
   const storedPreferences = loadDisplayPreferences(window.localStorage)
   preferences.value = storedPreferences
-  completedSession.value = loadPracticeSession(window.localStorage, article.value.id)
   savedVocabularyIds.value = loadSavedVocabularyIds(window.localStorage)
+  void refreshTodayArticle()
+})
+
+watch(article, (nextArticle) => {
+  player.stop()
+  view.value = 'today'
+  revealedTranslationIds.value = []
+  selectedToken.value = null
+  startedAt.value = null
+  completedSession.value = nextArticle
+    ? loadPracticeSession(window.localStorage, nextArticle.id)
+    : null
 })
 
 watch(preferences, () => {
@@ -73,6 +95,10 @@ watch(selectedToken, () => {
 })
 
 function startReading() {
+  if (!article.value) {
+    return
+  }
+
   view.value = 'reader'
   startedAt.value = Date.now()
 }
@@ -117,6 +143,10 @@ function togglePlayback() {
 }
 
 function completeReading() {
+  if (!article.value) {
+    return
+  }
+
   const durationSec = startedAt.value
     ? Math.max(1, Math.round((Date.now() - startedAt.value) / 1000))
     : 1
@@ -127,6 +157,23 @@ function completeReading() {
   }
   savePracticeSession(window.localStorage, session)
   completedSession.value = session
+}
+
+async function refreshTodayArticle() {
+  articleLoadResult.value = { status: 'loading' }
+  articleLoadResult.value = await loadTodayArticlePackage()
+}
+
+function openCachedArticle() {
+  const cachedArticle = articleLoadResult.value.status !== 'ready' && 'cachedArticle' in articleLoadResult.value
+    ? articleLoadResult.value.cachedArticle
+    : loadCachedArticlePackage(window.localStorage)
+
+  if (!cachedArticle) {
+    return
+  }
+
+  articleLoadResult.value = { status: 'ready', article: cachedArticle, source: 'cache' }
 }
 
 async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
@@ -182,13 +229,20 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
 <template>
   <main class="app-shell">
     <TodayCard
-      v-if="view === 'today'"
-      :article="article"
+      v-if="view === 'today' && articleLoadResult.status === 'ready'"
+      :article="articleLoadResult.article"
       :completed="Boolean(completedSession)"
+      :source="articleLoadResult.source"
       @start="startReading"
     />
+    <ArticleStatusCard
+      v-else-if="view === 'today' && articleStatus"
+      :state="articleStatus"
+      @retry="refreshTodayArticle"
+      @open-cached="openCachedArticle"
+    />
 
-    <template v-else>
+    <template v-else-if="article">
       <div class="app-shell__toolbar" aria-label="Reading settings">
         <button class="app-shell__back" type="button" @click="view = 'today'">
           Today
@@ -216,12 +270,15 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :active-index="activeIndex"
         :total="article.sentences.length"
         :is-playing="player.isPlaying.value"
+        :audio-status="player.audioStatus.value"
         :playback-rate="player.playbackRate.value"
         @play="player.play()"
         @pause="player.pause()"
         @previous="player.previous()"
         @next="player.next()"
         @repeat="player.repeat()"
+        @skip-audio="player.next()"
+        @retry-audio="player.repeat()"
         @set-rate="player.setPlaybackRate($event)"
       />
 

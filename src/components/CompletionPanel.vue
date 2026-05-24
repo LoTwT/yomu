@@ -10,6 +10,7 @@ const props = defineProps<{
 }>()
 
 const vocabulary = computed(() => props.article.sentences.flatMap(sentence => sentence.vocab ?? []))
+const factSources = computed(() => props.article.factSources)
 </script>
 
 <template>
@@ -23,11 +24,28 @@ const vocabulary = computed(() => props.article.sentences.flatMap(sentence => se
     <p class="completion-panel__copy">
       You finished {{ article.title }} in this local practice record.
     </p>
-    <ul class="completion-panel__list">
-      <li v-for="item in vocabulary" :key="item.term">
-        <strong>{{ item.term }}</strong> — {{ item.meaning }}
-      </li>
-    </ul>
+    <section v-if="vocabulary.length" class="completion-panel__section" aria-labelledby="vocab-title">
+      <h3 id="vocab-title" class="completion-panel__section-title">
+        Words to keep
+      </h3>
+      <ul class="completion-panel__list">
+        <li v-for="item in vocabulary" :key="item.term">
+          <strong>{{ item.term }}</strong> — {{ item.meaning }}
+        </li>
+      </ul>
+    </section>
+    <section v-if="factSources.length" class="completion-panel__section" aria-labelledby="source-title">
+      <h3 id="source-title" class="completion-panel__section-title">
+        Background / source
+      </h3>
+      <ul class="completion-panel__list">
+        <li v-for="source in factSources" :key="source.url">
+          <a :href="source.url" target="_blank" rel="noopener noreferrer">
+            {{ source.title }}
+          </a>
+        </li>
+      </ul>
+    </section>
   </section>
 </template>
 
@@ -61,10 +79,30 @@ const vocabulary = computed(() => props.article.sentences.flatMap(sentence => se
   line-height: 1.7;
 }
 
+.completion-panel__section {
+  margin-block-start: 1.15rem;
+}
+
+.completion-panel__section-title {
+  margin: 0 0 0.5rem;
+  color: var(--yomu-ink);
+  font-size: 1rem;
+}
+
 .completion-panel__list {
   margin: 0;
   padding-inline-start: 1.15rem;
   color: var(--yomu-ink-soft);
   line-height: 1.7;
+}
+
+.completion-panel__list a {
+  color: var(--yomu-accent);
+  text-underline-offset: 0.18em;
+}
+
+.completion-panel__list a:focus-visible {
+  outline: 3px solid var(--yomu-focus);
+  outline-offset: 3px;
 }
 </style>

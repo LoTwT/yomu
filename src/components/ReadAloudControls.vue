@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import type { AudioStatus } from '@/features/player/useReadAloudSession'
+
 defineProps<{
   activeIndex: number
   total: number
   isPlaying: boolean
+  audioStatus: AudioStatus
   playbackRate: number
 }>()
 
@@ -12,6 +15,8 @@ const emit = defineEmits<{
   previous: []
   next: []
   repeat: []
+  retryAudio: []
+  skipAudio: []
   setRate: [rate: number]
 }>()
 
@@ -21,7 +26,9 @@ const rates = [0.85, 1, 1.15]
 <template>
   <section class="read-aloud-controls" aria-label="Read aloud controls" role="region">
     <p class="read-aloud-controls__status" aria-live="polite">
-      <span v-if="isPlaying">Lead voice playing</span>
+      <span v-if="audioStatus === 'loading'">Loading audio...</span>
+      <span v-else-if="audioStatus === 'failed'">This line's read-aloud didn't load.</span>
+      <span v-else-if="isPlaying">Lead voice playing</span>
       <span v-else>Lead voice paused</span>
     </p>
     <p class="read-aloud-controls__progress" aria-hidden="true">
@@ -43,6 +50,14 @@ const rates = [0.85, 1, 1.15]
       </button>
       <button type="button" @click="emit('repeat')">
         Repeat sentence
+      </button>
+    </div>
+    <div v-if="audioStatus === 'failed'" class="read-aloud-controls__fallback">
+      <button type="button" @click="emit('skipAudio')">
+        Skip
+      </button>
+      <button type="button" @click="emit('retryAudio')">
+        Try again
       </button>
     </div>
     <fieldset class="read-aloud-controls__rates" aria-label="Playback speed">
@@ -87,6 +102,7 @@ const rates = [0.85, 1, 1.15]
 }
 
 .read-aloud-controls__row,
+.read-aloud-controls__fallback,
 .read-aloud-controls__rates {
   display: flex;
   flex-wrap: wrap;
@@ -98,6 +114,14 @@ const rates = [0.85, 1, 1.15]
   border: 0;
   margin: 0.65rem 0 0;
   padding: 0;
+}
+
+.read-aloud-controls__fallback {
+  border-block-start: 1px solid var(--yomu-rule);
+  margin-block-start: 0.75rem;
+  padding-block-start: 0.75rem;
+  color: var(--yomu-muted);
+  font-size: 0.9rem;
 }
 
 .read-aloud-controls__rates legend {
