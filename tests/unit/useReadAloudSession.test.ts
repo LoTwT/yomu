@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { shallowRef } from 'vue'
 
 import { sampleArticle } from '@/features/article/sampleArticle'
@@ -7,7 +7,12 @@ import type { SentencePlayer } from '@/features/player/useReadAloudSession'
 import { useReadAloudSession } from '@/features/player/useReadAloudSession'
 
 describe('useReadAloudSession', () => {
-  it('sets active sentence and advances when the current sentence ends', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('sets active sentence and advances after a calm inter-sentence pause', () => {
+    vi.useFakeTimers()
     const callbacks: Array<() => void> = []
     const playedSentences: Array<{ text: string, language: string }> = []
     const player: SentencePlayer = {
@@ -29,11 +34,96 @@ describe('useReadAloudSession', () => {
     })
 
     callbacks[0]?.()
+    expect(session.activeSentenceId.value).toBe('s1')
+    expect(playedSentences).toHaveLength(1)
+
+    vi.advanceTimersByTime(599)
+    expect(session.activeSentenceId.value).toBe('s1')
+    expect(playedSentences).toHaveLength(1)
+
+    vi.advanceTimersByTime(1)
     expect(session.activeSentenceId.value).toBe('s2')
     expect(playedSentences[1]).toEqual({
       text: 'Your eyes leave the screen, and your breathing becomes easier.',
       language: 'en',
     })
+    vi.useRealTimers()
+  })
+
+  it('uses a longer pause across paragraph-style sentence ids', () => {
+    vi.useFakeTimers()
+    const callbacks: Array<() => void> = []
+    const player: SentencePlayer = {
+      playSentence: vi.fn(({ onEnded }) => {
+        callbacks.push(onEnded)
+        return { stop: vi.fn() }
+      }),
+    }
+    const article: DailyArticle = {
+      ...sampleArticle,
+      sentences: [
+        { ...sampleArticle.sentences[0]!, id: 'p1-s1' },
+        { ...sampleArticle.sentences[1]!, id: 'p2-s1' },
+      ],
+    }
+    const session = useReadAloudSession(shallowRef<DailyArticle | null>(article), player)
+
+    session.play('p1-s1')
+    callbacks[0]?.()
+
+    vi.advanceTimersByTime(1099)
+    expect(session.activeSentenceId.value).toBe('p1-s1')
+
+    vi.advanceTimersByTime(1)
+    expect(session.activeSentenceId.value).toBe('p2-s1')
+    vi.useRealTimers()
+  })
+
+  it('scales the automatic pause by playback speed', () => {
+    vi.useFakeTimers()
+    const callbacks: Array<() => void> = []
+    const player: SentencePlayer = {
+      playSentence: vi.fn(({ onEnded }) => {
+        callbacks.push(onEnded)
+        return { stop: vi.fn() }
+      }),
+    }
+    const session = useReadAloudSession(shallowRef<DailyArticle | null>(sampleArticle), player)
+
+    session.setPlaybackRate(1.5)
+    session.play('s1')
+    callbacks[0]?.()
+
+    vi.advanceTimersByTime(399)
+    expect(session.activeSentenceId.value).toBe('s1')
+
+    vi.advanceTimersByTime(1)
+    expect(session.activeSentenceId.value).toBe('s2')
+    vi.useRealTimers()
+  })
+
+  it('keeps manual next immediate during an automatic pause', () => {
+    vi.useFakeTimers()
+    const callbacks: Array<() => void> = []
+    const player: SentencePlayer = {
+      playSentence: vi.fn(({ onEnded }) => {
+        callbacks.push(onEnded)
+        return { stop: vi.fn() }
+      }),
+    }
+    const session = useReadAloudSession(shallowRef<DailyArticle | null>(sampleArticle), player)
+
+    session.play('s1')
+    callbacks[0]?.()
+    session.next()
+
+    expect(session.activeSentenceId.value).toBe('s2')
+    expect(player.playSentence).toHaveBeenCalledTimes(2)
+
+    vi.advanceTimersByTime(600)
+    expect(session.activeSentenceId.value).toBe('s2')
+    expect(player.playSentence).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
   })
 
   it('pauses without changing the active sentence and can repeat it', () => {
