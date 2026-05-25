@@ -1,94 +1,1345 @@
 {
-  "id": "daily-en-2026-05-24-breathing-room",
-  "contentVersion": "2026-05-24.0",
+  "id": "daily-en-2026-05-25-why-the-brain-loves-sleep",
+  "contentVersion": "2026-05-25.1",
   "language": "en",
   "level": "B1",
   "topic": "knowledge",
-  "title": "The Quiet Power of a Short Walk",
-  "deck": "A five-minute English practice article about attention, movement, and recovery.",
+  "title": "Why the Brain Loves Sleep",
+  "deck": "A short daily piece — about five minutes of guided listening and reading practice on what your mind does while you sleep.",
   "estimatedReadTimeMinutes": 5,
   "factSources": [
     {
-      "title": "WHO physical activity fact sheet",
-      "url": "https://www.who.int/news-room/fact-sheets/detail/physical-activity"
+      "title": "CDC — About Sleep (how much sleep you need)",
+      "url": "https://www.cdc.gov/sleep/about/index.html"
+    },
+    {
+      "title": "NINDS — Brain Basics: Understanding Sleep (memory and learning)",
+      "url": "https://www.ninds.nih.gov/health-information/public-education/brain-basics/brain-basics-understanding-sleep"
     }
   ],
   "rights": {
     "sourceType": "ai-generated",
     "rightsStatus": "owned",
-    "licenseNote": "Generated for Yomu V0 spike; no third-party article text.",
+    "licenseNote": "Authored for Yomu content-pipeline first real article; no third-party article text.",
     "ttsAllowed": true,
     "translationAllowed": true,
     "cacheAllowed": true
   },
   "model": {
-    "provider": "fixture",
-    "name": "human-authored-fixture",
-    "version": "v0",
-    "promptHash": "fixture-only"
+    "provider": "anthropic",
+    "name": "claude-opus-4-7 (PM-Rin authored)",
+    "version": "content-pipeline-v0-article-1",
+    "promptHash": "hand-authored-first-article-rev1"
   },
   "qaStatus": "approved",
   "sentences": [
     {
       "id": "s1",
-      "original": "A short walk can change the shape of a difficult afternoon.",
-      "translation": "一次短短的散步,可以改变一个艰难下午的状态。",
+      "original": "Every night, your brain does quiet but important work while you sleep.",
+      "translation": "每天夜里,你睡觉时大脑都在做安静却重要的工作。",
       "tokens": [
-        { "id": "s1-t1", "text": "A", "ipa": "ə", "kind": "word" },
-        { "id": "s1-t2", "text": "short", "ipa": "ʃɔːrt", "kind": "word", "meaning": "短的" },
-        { "id": "s1-t3", "text": "walk", "ipa": "wɔːk", "kind": "word", "meaning": "散步" },
-        { "id": "s1-t4", "text": "can", "ipa": "kæn", "kind": "word" },
-        { "id": "s1-t5", "text": "change", "ipa": "tʃeɪndʒ", "kind": "word", "meaning": "改变" },
-        { "id": "s1-t6", "text": "the", "ipa": "ðə", "kind": "word" },
-        { "id": "s1-t7", "text": "shape", "ipa": "ʃeɪp", "kind": "word", "meaning": "状态、形态" },
-        { "id": "s1-t8", "text": "of", "ipa": "əv", "kind": "word" },
-        { "id": "s1-t9", "text": "a", "ipa": "ə", "kind": "word" },
-        { "id": "s1-t10", "text": "difficult", "ipa": "ˈdɪfɪkəlt", "kind": "word", "meaning": "困难的" },
-        { "id": "s1-t11", "text": "afternoon", "ipa": "ˌæftərˈnuːn", "kind": "word", "meaning": "下午" },
-        { "id": "s1-t12", "text": ".", "kind": "punctuation" }
+        {
+          "id": "s1-t1",
+          "text": "Every",
+          "ipa": "ˈɛvri",
+          "kind": "word"
+        },
+        {
+          "id": "s1-t2",
+          "text": "night",
+          "ipa": "naɪt",
+          "kind": "word",
+          "meaning": "夜晚"
+        },
+        {
+          "id": "s1-t3",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s1-t4",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s1-t5",
+          "text": "brain",
+          "ipa": "breɪn",
+          "kind": "word",
+          "meaning": "大脑"
+        },
+        {
+          "id": "s1-t6",
+          "text": "does",
+          "ipa": "dʌz",
+          "kind": "word"
+        },
+        {
+          "id": "s1-t7",
+          "text": "quiet",
+          "ipa": "ˈkwaɪət",
+          "kind": "word",
+          "meaning": "安静的"
+        },
+        {
+          "id": "s1-t8",
+          "text": "but",
+          "ipa": "bʌt",
+          "kind": "word"
+        },
+        {
+          "id": "s1-t9",
+          "text": "important",
+          "ipa": "ɪmˈpɔːrtənt",
+          "kind": "word",
+          "meaning": "重要的"
+        },
+        {
+          "id": "s1-t10",
+          "text": "work",
+          "ipa": "wɜːrk",
+          "kind": "word",
+          "meaning": "工作"
+        },
+        {
+          "id": "s1-t11",
+          "text": "while",
+          "ipa": "waɪl",
+          "kind": "word",
+          "meaning": "当…的时候"
+        },
+        {
+          "id": "s1-t12",
+          "text": "you",
+          "ipa": "juː",
+          "kind": "word"
+        },
+        {
+          "id": "s1-t13",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word",
+          "meaning": "睡觉"
+        },
+        {
+          "id": "s1-t14",
+          "text": ".",
+          "kind": "punctuation"
+        }
       ],
-      "audioRef": { "id": "audio-s1", "url": "fixture://audio/s1", "durationMs": 1200 },
-      "vocab": [{ "term": "shape", "meaning": "状态、形态;这里指体验的整体感觉" }]
+      "audioRef": {
+        "id": "audio-s1",
+        "url": "fixture://audio/s1",
+        "durationMs": 3200
+      }
     },
     {
       "id": "s2",
-      "original": "Your eyes leave the screen, and your breathing becomes easier.",
-      "translation": "你的眼睛离开屏幕,呼吸也会变得更轻松。",
+      "original": "Sleep is not only rest; it is also when the mind organizes and keeps what you learned during the day.",
+      "translation": "睡眠不只是休息;它也是大脑整理并留存你白天所学内容的时候。",
       "tokens": [
-        { "id": "s2-t1", "text": "Your", "ipa": "jʊr", "kind": "word" },
-        { "id": "s2-t2", "text": "eyes", "ipa": "aɪz", "kind": "word", "meaning": "眼睛" },
-        { "id": "s2-t3", "text": "leave", "ipa": "liːv", "kind": "word", "meaning": "离开" },
-        { "id": "s2-t4", "text": "the", "ipa": "ðə", "kind": "word" },
-        { "id": "s2-t5", "text": "screen", "ipa": "skriːn", "kind": "word", "meaning": "屏幕" },
-        { "id": "s2-t6", "text": ",", "kind": "punctuation" },
-        { "id": "s2-t7", "text": "and", "ipa": "ænd", "kind": "word" },
-        { "id": "s2-t8", "text": "your", "ipa": "jʊr", "kind": "word" },
-        { "id": "s2-t9", "text": "breathing", "ipa": "ˈbriːðɪŋ", "kind": "word", "meaning": "呼吸" },
-        { "id": "s2-t10", "text": "becomes", "ipa": "bɪˈkʌmz", "kind": "word", "meaning": "变得" },
-        { "id": "s2-t11", "text": "easier", "ipa": "ˈiːziər", "kind": "word", "meaning": "更轻松" },
-        { "id": "s2-t12", "text": ".", "kind": "punctuation" }
+        {
+          "id": "s2-t1",
+          "text": "Sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t2",
+          "text": "is",
+          "ipa": "ɪz",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t3",
+          "text": "not",
+          "ipa": "nɑːt",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t4",
+          "text": "only",
+          "ipa": "ˈoʊnli",
+          "kind": "word",
+          "meaning": "只"
+        },
+        {
+          "id": "s2-t5",
+          "text": "rest",
+          "ipa": "rɛst",
+          "kind": "word",
+          "meaning": "休息"
+        },
+        {
+          "id": "s2-t6",
+          "text": ";",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s2-t7",
+          "text": "it",
+          "ipa": "ɪt",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t8",
+          "text": "is",
+          "ipa": "ɪz",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t9",
+          "text": "also",
+          "ipa": "ˈɔːlsoʊ",
+          "kind": "word",
+          "meaning": "也"
+        },
+        {
+          "id": "s2-t10",
+          "text": "when",
+          "ipa": "wɛn",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t11",
+          "text": "the",
+          "ipa": "ðə",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t12",
+          "text": "mind",
+          "ipa": "maɪnd",
+          "kind": "word",
+          "meaning": "大脑、心智"
+        },
+        {
+          "id": "s2-t13",
+          "text": "organizes",
+          "ipa": "ˈɔːrɡənaɪzɪz",
+          "kind": "word",
+          "meaning": "整理、组织"
+        },
+        {
+          "id": "s2-t14",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t15",
+          "text": "keeps",
+          "ipa": "kiːps",
+          "kind": "word",
+          "meaning": "保留"
+        },
+        {
+          "id": "s2-t16",
+          "text": "what",
+          "ipa": "wʌt",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t17",
+          "text": "you",
+          "ipa": "juː",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t18",
+          "text": "learned",
+          "ipa": "lɜːrnd",
+          "kind": "word",
+          "meaning": "学到的"
+        },
+        {
+          "id": "s2-t19",
+          "text": "during",
+          "ipa": "ˈdʊrɪŋ",
+          "kind": "word",
+          "meaning": "在…期间"
+        },
+        {
+          "id": "s2-t20",
+          "text": "the",
+          "ipa": "ðə",
+          "kind": "word"
+        },
+        {
+          "id": "s2-t21",
+          "text": "day",
+          "ipa": "deɪ",
+          "kind": "word",
+          "meaning": "白天"
+        },
+        {
+          "id": "s2-t22",
+          "text": ".",
+          "kind": "punctuation"
+        }
       ],
-      "audioRef": { "id": "audio-s2", "url": "fixture://audio/s2", "durationMs": 1200 }
+      "audioRef": {
+        "id": "audio-s2",
+        "url": "fixture://audio/s2",
+        "durationMs": 5000
+      }
     },
     {
       "id": "s3",
-      "original": "The goal is not exercise; it is a small reset.",
-      "translation": "目标不一定是锻炼,而是一次小小的重置。",
+      "original": "While you sleep, the brain also helps strengthen your most recent memories.",
+      "translation": "在你睡觉时,大脑还会帮助巩固你最近的记忆。",
       "tokens": [
-        { "id": "s3-t1", "text": "The", "ipa": "ðə", "kind": "word" },
-        { "id": "s3-t2", "text": "goal", "ipa": "ɡoʊl", "kind": "word", "meaning": "目标" },
-        { "id": "s3-t3", "text": "is", "ipa": "ɪz", "kind": "word" },
-        { "id": "s3-t4", "text": "not", "ipa": "nɑːt", "kind": "word" },
-        { "id": "s3-t5", "text": "exercise", "ipa": "ˈeksərsaɪz", "kind": "word", "meaning": "锻炼" },
-        { "id": "s3-t6", "text": ";", "kind": "punctuation" },
-        { "id": "s3-t7", "text": "it", "ipa": "ɪt", "kind": "word" },
-        { "id": "s3-t8", "text": "is", "ipa": "ɪz", "kind": "word" },
-        { "id": "s3-t9", "text": "a", "ipa": "ə", "kind": "word" },
-        { "id": "s3-t10", "text": "small", "ipa": "smɔːl", "kind": "word", "meaning": "小的" },
-        { "id": "s3-t11", "text": "reset", "ipa": "ˌriːˈset", "kind": "word", "meaning": "重置" },
-        { "id": "s3-t12", "text": ".", "kind": "punctuation" }
+        {
+          "id": "s3-t1",
+          "text": "While",
+          "ipa": "waɪl",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t2",
+          "text": "you",
+          "ipa": "juː",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t3",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t4",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s3-t5",
+          "text": "the",
+          "ipa": "ðə",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t6",
+          "text": "brain",
+          "ipa": "breɪn",
+          "kind": "word",
+          "meaning": "大脑"
+        },
+        {
+          "id": "s3-t7",
+          "text": "also",
+          "ipa": "ˈɔːlsoʊ",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t8",
+          "text": "helps",
+          "ipa": "hɛlps",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t9",
+          "text": "strengthen",
+          "ipa": "ˈstrɛŋθən",
+          "kind": "word",
+          "meaning": "巩固、加强"
+        },
+        {
+          "id": "s3-t10",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s3-t11",
+          "text": "most",
+          "ipa": "moʊst",
+          "kind": "word",
+          "meaning": "最"
+        },
+        {
+          "id": "s3-t12",
+          "text": "recent",
+          "ipa": "ˈriːsnt",
+          "kind": "word",
+          "meaning": "近期的"
+        },
+        {
+          "id": "s3-t13",
+          "text": "memories",
+          "ipa": "ˈmɛməriz",
+          "kind": "word",
+          "meaning": "记忆"
+        },
+        {
+          "id": "s3-t14",
+          "text": ".",
+          "kind": "punctuation"
+        }
       ],
-      "audioRef": { "id": "audio-s3", "url": "fixture://audio/s3", "durationMs": 1200 }
+      "audioRef": {
+        "id": "audio-s3",
+        "url": "fixture://audio/s3",
+        "durationMs": 3800
+      },
+      "vocab": [
+        {
+          "term": "strengthen",
+          "meaning": "巩固、加强"
+        },
+        {
+          "term": "memory",
+          "meaning": "记忆"
+        }
+      ]
+    },
+    {
+      "id": "s4",
+      "original": "Good sleep also helps you stay calm and focused the next morning.",
+      "translation": "良好的睡眠还能帮你在第二天早上保持平静和专注。",
+      "tokens": [
+        {
+          "id": "s4-t1",
+          "text": "Good",
+          "ipa": "ɡʊd",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t2",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t3",
+          "text": "also",
+          "ipa": "ˈɔːlsoʊ",
+          "kind": "word",
+          "meaning": "也"
+        },
+        {
+          "id": "s4-t4",
+          "text": "helps",
+          "ipa": "hɛlps",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t5",
+          "text": "you",
+          "ipa": "juː",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t6",
+          "text": "stay",
+          "ipa": "steɪ",
+          "kind": "word",
+          "meaning": "保持"
+        },
+        {
+          "id": "s4-t7",
+          "text": "calm",
+          "ipa": "kɑːm",
+          "kind": "word",
+          "meaning": "平静的"
+        },
+        {
+          "id": "s4-t8",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t9",
+          "text": "focused",
+          "ipa": "ˈfoʊkəst",
+          "kind": "word",
+          "meaning": "专注的"
+        },
+        {
+          "id": "s4-t10",
+          "text": "the",
+          "ipa": "ðə",
+          "kind": "word"
+        },
+        {
+          "id": "s4-t11",
+          "text": "next",
+          "ipa": "nɛkst",
+          "kind": "word",
+          "meaning": "下一个"
+        },
+        {
+          "id": "s4-t12",
+          "text": "morning",
+          "ipa": "ˈmɔːrnɪŋ",
+          "kind": "word",
+          "meaning": "早晨"
+        },
+        {
+          "id": "s4-t13",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s4",
+        "url": "fixture://audio/s4",
+        "durationMs": 3400
+      }
+    },
+    {
+      "id": "s5",
+      "original": "When you sleep too little, small problems can feel much larger.",
+      "translation": "当你睡得太少,小问题会让人觉得严重得多。",
+      "tokens": [
+        {
+          "id": "s5-t1",
+          "text": "When",
+          "ipa": "wɛn",
+          "kind": "word"
+        },
+        {
+          "id": "s5-t2",
+          "text": "you",
+          "ipa": "juː",
+          "kind": "word"
+        },
+        {
+          "id": "s5-t3",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s5-t4",
+          "text": "too",
+          "ipa": "tuː",
+          "kind": "word",
+          "meaning": "太"
+        },
+        {
+          "id": "s5-t5",
+          "text": "little",
+          "ipa": "ˈlɪtl",
+          "kind": "word",
+          "meaning": "少"
+        },
+        {
+          "id": "s5-t6",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s5-t7",
+          "text": "small",
+          "ipa": "smɔːl",
+          "kind": "word",
+          "meaning": "小的"
+        },
+        {
+          "id": "s5-t8",
+          "text": "problems",
+          "ipa": "ˈprɑːbləmz",
+          "kind": "word",
+          "meaning": "问题"
+        },
+        {
+          "id": "s5-t9",
+          "text": "can",
+          "ipa": "kæn",
+          "kind": "word"
+        },
+        {
+          "id": "s5-t10",
+          "text": "feel",
+          "ipa": "fiːl",
+          "kind": "word",
+          "meaning": "感觉"
+        },
+        {
+          "id": "s5-t11",
+          "text": "much",
+          "ipa": "mʌtʃ",
+          "kind": "word"
+        },
+        {
+          "id": "s5-t12",
+          "text": "larger",
+          "ipa": "ˈlɑːrdʒər",
+          "kind": "word",
+          "meaning": "更大的"
+        },
+        {
+          "id": "s5-t13",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s5",
+        "url": "fixture://audio/s5",
+        "durationMs": 3200
+      }
+    },
+    {
+      "id": "s6",
+      "original": "Your mood, your attention, and even your patience all depend on rest.",
+      "translation": "你的情绪、注意力,甚至耐心,都依赖于休息。",
+      "tokens": [
+        {
+          "id": "s6-t1",
+          "text": "Your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t2",
+          "text": "mood",
+          "ipa": "muːd",
+          "kind": "word",
+          "meaning": "情绪"
+        },
+        {
+          "id": "s6-t3",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s6-t4",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t5",
+          "text": "attention",
+          "ipa": "əˈtɛnʃən",
+          "kind": "word",
+          "meaning": "注意力"
+        },
+        {
+          "id": "s6-t6",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s6-t7",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t8",
+          "text": "even",
+          "ipa": "ˈiːvən",
+          "kind": "word",
+          "meaning": "甚至"
+        },
+        {
+          "id": "s6-t9",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t10",
+          "text": "patience",
+          "ipa": "ˈpeɪʃəns",
+          "kind": "word",
+          "meaning": "耐心"
+        },
+        {
+          "id": "s6-t11",
+          "text": "all",
+          "ipa": "ɔːl",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t12",
+          "text": "depend",
+          "ipa": "dɪˈpɛnd",
+          "kind": "word",
+          "meaning": "依赖"
+        },
+        {
+          "id": "s6-t13",
+          "text": "on",
+          "ipa": "ɑːn",
+          "kind": "word"
+        },
+        {
+          "id": "s6-t14",
+          "text": "rest",
+          "ipa": "rɛst",
+          "kind": "word",
+          "meaning": "休息"
+        },
+        {
+          "id": "s6-t15",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s6",
+        "url": "fixture://audio/s6",
+        "durationMs": 3800
+      },
+      "vocab": [
+        {
+          "term": "attention",
+          "meaning": "注意力"
+        },
+        {
+          "term": "patience",
+          "meaning": "耐心"
+        }
+      ]
+    },
+    {
+      "id": "s7",
+      "original": "Most adults need at least seven hours of sleep each night.",
+      "translation": "大多数成年人每晚至少需要七小时的睡眠。",
+      "tokens": [
+        {
+          "id": "s7-t1",
+          "text": "Most",
+          "ipa": "moʊst",
+          "kind": "word",
+          "meaning": "大多数"
+        },
+        {
+          "id": "s7-t2",
+          "text": "adults",
+          "ipa": "əˈdʌlts",
+          "kind": "word",
+          "meaning": "成年人"
+        },
+        {
+          "id": "s7-t3",
+          "text": "need",
+          "ipa": "niːd",
+          "kind": "word",
+          "meaning": "需要"
+        },
+        {
+          "id": "s7-t4",
+          "text": "at",
+          "ipa": "æt",
+          "kind": "word"
+        },
+        {
+          "id": "s7-t5",
+          "text": "least",
+          "ipa": "liːst",
+          "kind": "word",
+          "meaning": "至少"
+        },
+        {
+          "id": "s7-t6",
+          "text": "seven",
+          "ipa": "ˈsɛvən",
+          "kind": "word"
+        },
+        {
+          "id": "s7-t7",
+          "text": "hours",
+          "ipa": "ˈaʊərz",
+          "kind": "word",
+          "meaning": "小时"
+        },
+        {
+          "id": "s7-t8",
+          "text": "of",
+          "ipa": "əv",
+          "kind": "word"
+        },
+        {
+          "id": "s7-t9",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s7-t10",
+          "text": "each",
+          "ipa": "iːtʃ",
+          "kind": "word",
+          "meaning": "每"
+        },
+        {
+          "id": "s7-t11",
+          "text": "night",
+          "ipa": "naɪt",
+          "kind": "word"
+        },
+        {
+          "id": "s7-t12",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s7",
+        "url": "fixture://audio/s7",
+        "durationMs": 3400
+      }
+    },
+    {
+      "id": "s8",
+      "original": "Children and teenagers usually need even more than adults.",
+      "translation": "儿童和青少年通常比成年人需要更多睡眠。",
+      "tokens": [
+        {
+          "id": "s8-t1",
+          "text": "Children",
+          "ipa": "ˈtʃɪldrən",
+          "kind": "word",
+          "meaning": "儿童"
+        },
+        {
+          "id": "s8-t2",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s8-t3",
+          "text": "teenagers",
+          "ipa": "ˈtiːneɪdʒərz",
+          "kind": "word",
+          "meaning": "青少年"
+        },
+        {
+          "id": "s8-t4",
+          "text": "usually",
+          "ipa": "ˈjuːʒuəli",
+          "kind": "word",
+          "meaning": "通常"
+        },
+        {
+          "id": "s8-t5",
+          "text": "need",
+          "ipa": "niːd",
+          "kind": "word"
+        },
+        {
+          "id": "s8-t6",
+          "text": "even",
+          "ipa": "ˈiːvən",
+          "kind": "word"
+        },
+        {
+          "id": "s8-t7",
+          "text": "more",
+          "ipa": "mɔːr",
+          "kind": "word",
+          "meaning": "更多"
+        },
+        {
+          "id": "s8-t8",
+          "text": "than",
+          "ipa": "ðæn",
+          "kind": "word"
+        },
+        {
+          "id": "s8-t9",
+          "text": "adults",
+          "ipa": "əˈdʌlts",
+          "kind": "word"
+        },
+        {
+          "id": "s8-t10",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s8",
+        "url": "fixture://audio/s8",
+        "durationMs": 3000
+      }
+    },
+    {
+      "id": "s9",
+      "original": "A regular bedtime, a dark room, and less screen light can all help.",
+      "translation": "规律的就寝时间、黑暗的房间,以及更少的屏幕光,都会有帮助。",
+      "tokens": [
+        {
+          "id": "s9-t1",
+          "text": "A",
+          "ipa": "ə",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t2",
+          "text": "regular",
+          "ipa": "ˈrɛɡjələr",
+          "kind": "word",
+          "meaning": "规律的"
+        },
+        {
+          "id": "s9-t3",
+          "text": "bedtime",
+          "ipa": "ˈbɛdtaɪm",
+          "kind": "word",
+          "meaning": "就寝时间"
+        },
+        {
+          "id": "s9-t4",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s9-t5",
+          "text": "a",
+          "ipa": "ə",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t6",
+          "text": "dark",
+          "ipa": "dɑːrk",
+          "kind": "word",
+          "meaning": "黑暗的"
+        },
+        {
+          "id": "s9-t7",
+          "text": "room",
+          "ipa": "ruːm",
+          "kind": "word",
+          "meaning": "房间"
+        },
+        {
+          "id": "s9-t8",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s9-t9",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t10",
+          "text": "less",
+          "ipa": "lɛs",
+          "kind": "word",
+          "meaning": "更少的"
+        },
+        {
+          "id": "s9-t11",
+          "text": "screen",
+          "ipa": "skriːn",
+          "kind": "word",
+          "meaning": "屏幕"
+        },
+        {
+          "id": "s9-t12",
+          "text": "light",
+          "ipa": "laɪt",
+          "kind": "word",
+          "meaning": "光"
+        },
+        {
+          "id": "s9-t13",
+          "text": "can",
+          "ipa": "kæn",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t14",
+          "text": "all",
+          "ipa": "ɔːl",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t15",
+          "text": "help",
+          "ipa": "hɛlp",
+          "kind": "word"
+        },
+        {
+          "id": "s9-t16",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s9",
+        "url": "fixture://audio/s9",
+        "durationMs": 3800
+      },
+      "vocab": [
+        {
+          "term": "regular",
+          "meaning": "规律的、定期的"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "original": "Going to bed and waking up at similar times trains your body's clock.",
+      "translation": "在相近的时间上床和起床,会训练你身体的生物钟。",
+      "tokens": [
+        {
+          "id": "s10-t1",
+          "text": "Going",
+          "ipa": "ˈɡoʊɪŋ",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t2",
+          "text": "to",
+          "ipa": "tə",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t3",
+          "text": "bed",
+          "ipa": "bɛd",
+          "kind": "word",
+          "meaning": "床"
+        },
+        {
+          "id": "s10-t4",
+          "text": "and",
+          "ipa": "ænd",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t5",
+          "text": "waking",
+          "ipa": "ˈweɪkɪŋ",
+          "kind": "word",
+          "meaning": "醒来"
+        },
+        {
+          "id": "s10-t6",
+          "text": "up",
+          "ipa": "ʌp",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t7",
+          "text": "at",
+          "ipa": "æt",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t8",
+          "text": "similar",
+          "ipa": "ˈsɪmələr",
+          "kind": "word",
+          "meaning": "相似的"
+        },
+        {
+          "id": "s10-t9",
+          "text": "times",
+          "ipa": "taɪmz",
+          "kind": "word",
+          "meaning": "时间"
+        },
+        {
+          "id": "s10-t10",
+          "text": "trains",
+          "ipa": "treɪnz",
+          "kind": "word",
+          "meaning": "训练"
+        },
+        {
+          "id": "s10-t11",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s10-t12",
+          "text": "body's",
+          "ipa": "ˈbɑːdiz",
+          "kind": "word",
+          "meaning": "身体的"
+        },
+        {
+          "id": "s10-t13",
+          "text": "clock",
+          "ipa": "klɑːk",
+          "kind": "word",
+          "meaning": "时钟"
+        },
+        {
+          "id": "s10-t14",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s10",
+        "url": "fixture://audio/s10",
+        "durationMs": 4000
+      }
+    },
+    {
+      "id": "s11",
+      "original": "If your mind feels busy at night, a few slow breaths can make it easier to rest.",
+      "translation": "如果你夜里思绪很乱,几次缓慢的呼吸能让你更容易入睡。",
+      "tokens": [
+        {
+          "id": "s11-t1",
+          "text": "If",
+          "ipa": "ɪf",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t2",
+          "text": "your",
+          "ipa": "jʊr",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t3",
+          "text": "mind",
+          "ipa": "maɪnd",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t4",
+          "text": "feels",
+          "ipa": "fiːlz",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t5",
+          "text": "busy",
+          "ipa": "ˈbɪzi",
+          "kind": "word",
+          "meaning": "繁忙的"
+        },
+        {
+          "id": "s11-t6",
+          "text": "at",
+          "ipa": "æt",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t7",
+          "text": "night",
+          "ipa": "naɪt",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t8",
+          "text": ",",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s11-t9",
+          "text": "a",
+          "ipa": "ə",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t10",
+          "text": "few",
+          "ipa": "fjuː",
+          "kind": "word",
+          "meaning": "几个"
+        },
+        {
+          "id": "s11-t11",
+          "text": "slow",
+          "ipa": "sloʊ",
+          "kind": "word",
+          "meaning": "缓慢的"
+        },
+        {
+          "id": "s11-t12",
+          "text": "breaths",
+          "ipa": "brɛθs",
+          "kind": "word",
+          "meaning": "呼吸"
+        },
+        {
+          "id": "s11-t13",
+          "text": "can",
+          "ipa": "kæn",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t14",
+          "text": "make",
+          "ipa": "meɪk",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t15",
+          "text": "it",
+          "ipa": "ɪt",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t16",
+          "text": "easier",
+          "ipa": "ˈiːziər",
+          "kind": "word",
+          "meaning": "更容易"
+        },
+        {
+          "id": "s11-t17",
+          "text": "to",
+          "ipa": "tə",
+          "kind": "word"
+        },
+        {
+          "id": "s11-t18",
+          "text": "rest",
+          "ipa": "rɛst",
+          "kind": "word",
+          "meaning": "休息"
+        },
+        {
+          "id": "s11-t19",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s11",
+        "url": "fixture://audio/s11",
+        "durationMs": 4600
+      }
+    },
+    {
+      "id": "s12",
+      "original": "So sleep is not lost time; it is how the brain prepares for a better day.",
+      "translation": "所以睡眠不是浪费掉的时间;它是大脑为更好的一天做准备的方式。",
+      "tokens": [
+        {
+          "id": "s12-t1",
+          "text": "So",
+          "ipa": "soʊ",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t2",
+          "text": "sleep",
+          "ipa": "sliːp",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t3",
+          "text": "is",
+          "ipa": "ɪz",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t4",
+          "text": "not",
+          "ipa": "nɑːt",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t5",
+          "text": "lost",
+          "ipa": "lɔːst",
+          "kind": "word",
+          "meaning": "失去的、浪费的"
+        },
+        {
+          "id": "s12-t6",
+          "text": "time",
+          "ipa": "taɪm",
+          "kind": "word",
+          "meaning": "时间"
+        },
+        {
+          "id": "s12-t7",
+          "text": ";",
+          "kind": "punctuation"
+        },
+        {
+          "id": "s12-t8",
+          "text": "it",
+          "ipa": "ɪt",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t9",
+          "text": "is",
+          "ipa": "ɪz",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t10",
+          "text": "how",
+          "ipa": "haʊ",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t11",
+          "text": "the",
+          "ipa": "ðə",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t12",
+          "text": "brain",
+          "ipa": "breɪn",
+          "kind": "word",
+          "meaning": "大脑"
+        },
+        {
+          "id": "s12-t13",
+          "text": "prepares",
+          "ipa": "prɪˈpɛrz",
+          "kind": "word",
+          "meaning": "准备"
+        },
+        {
+          "id": "s12-t14",
+          "text": "for",
+          "ipa": "fɔːr",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t15",
+          "text": "a",
+          "ipa": "ə",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t16",
+          "text": "better",
+          "ipa": "ˈbɛtər",
+          "kind": "word",
+          "meaning": "更好的"
+        },
+        {
+          "id": "s12-t17",
+          "text": "day",
+          "ipa": "deɪ",
+          "kind": "word"
+        },
+        {
+          "id": "s12-t18",
+          "text": ".",
+          "kind": "punctuation"
+        }
+      ],
+      "audioRef": {
+        "id": "audio-s12",
+        "url": "fixture://audio/s12",
+        "durationMs": 4400
+      },
+      "vocab": [
+        {
+          "term": "prepare",
+          "meaning": "准备"
+        }
+      ]
     }
   ]
 }
