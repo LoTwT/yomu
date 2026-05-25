@@ -1,6 +1,19 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from '@playwright/test'
 
+const articleId = 'daily-en-2026-05-25-why-the-brain-loves-sleep'
+const articleTitle = 'Why the Brain Loves Sleep'
+const firstSentence = 'Every night, your brain does quiet but important work while you sleep.'
+const firstTranslationSnippet = '每天夜里'
+const firstMeaningToken = {
+  accessibleName: 'brain: 大脑',
+  text: 'brain',
+  ipa: '/breɪn/',
+  storageId: 's1-t5',
+}
+const primarySourceTitle = 'CDC — About Sleep (how much sleep you need)'
+const sentenceCount = 12
+
 async function openFreshApp(page: Page) {
   await page.goto('/')
   await page.evaluate(() => localStorage.clear())
@@ -48,7 +61,7 @@ test('renders today card and starts the in-page read aloud experience', async ({
   await installSpeechSynthesisProbe(page)
   await openFreshApp(page)
 
-  await expect(page.getByRole('heading', { name: 'The Quiet Power of a Short Walk' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: articleTitle })).toBeVisible()
   await page.getByRole('button', { name: 'Start reading' }).click()
 
   const controls = page.getByRole('region', { name: 'Read aloud controls' })
@@ -62,10 +75,10 @@ test('renders today card and starts the in-page read aloud experience', async ({
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
   await expect(page.locator('.read-aloud-controls__status')).toContainText('Lead voice playing')
-  await expect(page.getByText('1/3')).toBeVisible()
+  await expect(page.getByText(`1/${sentenceCount}`)).toBeVisible()
   const spokenTexts = await page.evaluate(() => (window as unknown as { __spokenTexts: string[] }).__spokenTexts)
   expect(spokenTexts).toEqual([
-    'en-US|1|A short walk can change the shape of a difficult afternoon.',
+    `en-US|1|${firstSentence}`,
   ])
 })
 
@@ -81,22 +94,22 @@ test('toggles IPA and translation as display scaffolds and keeps them off by def
 
   const visibleTranslations = page.locator('[data-testid="sentence-translation"]:visible')
   await expect(page.getByTestId('ipa-token').first()).toBeVisible()
-  await expect(page.getByTestId('ipa-token').first()).toContainText('/ə/')
-  await expect(visibleTranslations).toHaveCount(3)
-  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Show translation for sentence 1' })).toHaveCount(0)
+  await expect(page.getByTestId('ipa-token').first()).toContainText('/ˈɛvri/')
+  await expect(visibleTranslations).toHaveCount(sentenceCount)
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toHaveCount(0)
 
   expect(await page.locator('[role="button"] .sentence-text__token').count()).toBe(0)
 
-  await page.getByRole('button', { name: 'Hide translation for sentence 1' }).focus()
+  await page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true }).focus()
   await page.keyboard.press('Enter')
-  await expect(page.getByRole('button', { name: 'Show translation for sentence 1' })).toHaveAttribute('aria-expanded', 'false')
-  await expect(visibleTranslations).toHaveCount(2)
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect(visibleTranslations).toHaveCount(sentenceCount - 1)
 
   await page.keyboard.press('Enter')
-  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1' })).toHaveAttribute('aria-expanded', 'true')
-  await expect(visibleTranslations.first()).toContainText('一次短短的散步')
-  await expect(visibleTranslations).toHaveCount(3)
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await expect(visibleTranslations.first()).toContainText(firstTranslationSnippet)
+  await expect(visibleTranslations).toHaveCount(sentenceCount)
 })
 
 test('stores completion records locally after an explicit finish action', async ({ page }) => {
@@ -109,26 +122,26 @@ test('stores completion records locally after an explicit finish action', async 
   await expect(completionHeading).toBeFocused()
   await expect(page.getByRole('region', { name: 'Read aloud controls' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Background / source' })).toBeVisible()
-  const sourceLink = page.getByRole('link', { name: 'WHO physical activity fact sheet' })
+  const sourceLink = page.getByRole('link', { name: primarySourceTitle })
   await expect(sourceLink).toBeVisible()
   await expect(sourceLink).toHaveAttribute('target', '_blank')
   await expect(sourceLink).toHaveAttribute('rel', 'noopener noreferrer')
 
   const storageKeys = await page.evaluate(() => Object.keys(localStorage))
-  expect(storageKeys).toContain('yomu:practice-session:daily-en-2026-05-24-breathing-room')
+  expect(storageKeys).toContain(`yomu:practice-session:${articleId}`)
 })
 
 test('opens word meaning popover and saves vocabulary locally', async ({ page }) => {
   await openFreshApp(page)
   await page.getByRole('button', { name: 'Start reading' }).click()
-  await page.getByRole('button', { name: 'walk: 散步' }).click()
+  await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
 
-  await expect(page.getByTestId('word-popover')).toContainText('walk')
-  await expect(page.getByTestId('word-popover')).toContainText('/wɔːk/')
+  await expect(page.getByTestId('word-popover')).toContainText(firstMeaningToken.text)
+  await expect(page.getByTestId('word-popover')).toContainText(firstMeaningToken.ipa)
   await page.getByRole('button', { name: 'Save word' }).click()
 
   const savedVocabulary = await page.evaluate(() => localStorage.getItem('yomu:saved-vocabulary'))
-  expect(savedVocabulary).toContain('s1-t3')
+  expect(savedVocabulary).toContain(firstMeaningToken.storageId)
 })
 
 test('shows article-not-ready fallback when the daily package is not available yet', async ({ page }) => {
@@ -168,7 +181,7 @@ test('keeps visual reading available when a sentence audio ref fails', async ({ 
   await expect(page.locator('.read-aloud-controls__fallback')).toContainText("This line's read-aloud didn't load.")
   await expect(page.getByRole('button', { name: 'Skip' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
-  await expect(page.locator('#s1')).toContainText('Ashortwalkcanchange')
+  await expect(page.locator('#s1')).toContainText('Everynight')
 })
 
 test.describe('mobile word popover layout', () => {
@@ -182,7 +195,7 @@ test.describe('mobile word popover layout', () => {
     await page.getByRole('button', { name: 'Play lead voice' }).click()
 
     await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-    await page.getByRole('button', { name: 'walk: 散步', exact: true }).click()
+    await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
     await page.getByRole('button', { name: 'Pause lead voice' }).click()
     await page.getByRole('button', { name: 'Save word' }).click()
     await page.waitForTimeout(100)
@@ -223,6 +236,6 @@ test.describe('mobile word popover layout', () => {
     expect(metrics.popover!.top).toBeGreaterThanOrEqual(metrics.selectedSurface!.bottom - 1)
     expect(metrics.popover!.bottom).toBeLessThanOrEqual(metrics.controls!.top - 12)
     expect(metrics.overflowX).toBeLessThanOrEqual(0)
-    expect(metrics.savedVocabulary).toContain('s1-t3')
+    expect(metrics.savedVocabulary).toContain(firstMeaningToken.storageId)
   })
 })
