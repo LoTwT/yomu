@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Yomu">
+  <rect width="512" height="512" rx="96" fill="#fbf8f1"/>
+  <path d="M130 154c0-18 14-32 32-32h200c18 0 32 14 32 32v220c0 18-14 32-32 32H162c-18 0-32-14-32-32V154Z" fill="#f5ead8" stroke="#dfcfb5" stroke-width="18"/>
+  <path d="M178 185h168M178 234h138M178 283h168" stroke="#776b57" stroke-width="18" stroke-linecap="round"/>
+  <path d="M182 360c47-41 97-41 146 0" fill="none" stroke="#9d5f34" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="342" cy="361" r="17" fill="#9d5f34"/>
+</svg>
