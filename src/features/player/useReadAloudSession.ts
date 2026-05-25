@@ -21,6 +21,9 @@ export interface SentencePlayer {
   }) => SentencePlaybackHandle
 }
 
+const sentencePauseMs = 600
+const paragraphPauseMs = 1100
+
 export function createBrowserSentencePlayer(): SentencePlayer {
   return {
     playSentence(options) {
@@ -58,8 +61,19 @@ export function useReadAloudSession(
   })
 
   let currentPlayback: SentencePlaybackHandle | null = null
+  let advanceTimer: ReturnType<typeof setTimeout> | null = null
+
+  function clearAdvanceTimer() {
+    if (!advanceTimer) {
+      return
+    }
+
+    globalThis.clearTimeout(advanceTimer)
+    advanceTimer = null
+  }
 
   function stopCurrentPlayback() {
+    clearAdvanceTimer()
     currentPlayback?.stop()
     currentPlayback = null
   }
@@ -91,10 +105,25 @@ export function useReadAloudSession(
       durationMs: sentence.audioRef.durationMs,
       playbackRate: playbackRate.value,
       onEnded: () => {
-        playSentenceByIndex(index + 1)
+        scheduleNextSentence(index)
       },
     })
     audioStatus.value = 'playing'
+  }
+
+  function scheduleNextSentence(index: number) {
+    const pauseMs = getNextSentencePauseMs(index)
+    if (pauseMs <= 0) {
+      playSentenceByIndex(index + 1)
+      return
+    }
+
+    isPlaying.value = true
+    audioStatus.value = 'playing'
+    advanceTimer = globalThis.setTimeout(() => {
+      advanceTimer = null
+      playSentenceByIndex(index + 1)
+    }, pauseMs)
   }
 
   function play(sentenceId = activeSentenceId.value ?? article.value?.sentences[0]?.id) {
@@ -135,6 +164,28 @@ export function useReadAloudSession(
     }
   }
 
+  function getNextSentencePauseMs(index: number): number {
+    const currentArticle = article.value
+    if (!currentArticle || index >= currentArticle.sentences.length - 1) {
+      return 0
+    }
+
+    const basePause = isParagraphBoundary(index) ? paragraphPauseMs : sentencePauseMs
+    return Math.round(basePause / playbackRate.value)
+  }
+
+  function isParagraphBoundary(index: number): boolean {
+    const currentArticle = article.value
+    const sentence = currentArticle?.sentences[index]
+    const nextSentence = currentArticle?.sentences[index + 1]
+
+    if (!sentence || !nextSentence) {
+      return false
+    }
+
+    return getSentenceGroup(sentence.id) !== getSentenceGroup(nextSentence.id)
+  }
+
   watch(article, () => {
     stop()
   })
@@ -161,6 +212,11 @@ export function useReadAloudSession(
 
 function isPlayableAudioRef(url: string, durationMs: number): boolean {
   return Boolean(url) && durationMs > 0 && !url.startsWith('missing://')
+}
+
+function getSentenceGroup(sentenceId: string): string {
+  const paragraphMatch = /^(.+)-s\d+$/i.exec(sentenceId)
+  return paragraphMatch?.[1] ?? 'default'
 }
 
 function playWithAudioElement(options: Parameters<SentencePlayer['playSentence']>[0]): SentencePlaybackHandle {
