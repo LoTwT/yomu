@@ -24,3 +24,14 @@ pnpm test
 pnpm run build
 CI=1 pnpm test:e2e
 ```
+
+## Deploy
+
+Yomu deploys as a Cloudflare Workers Static Assets app.
+
+```bash
+pnpm run build
+pnpm run deploy
+```
+
+Production route: `yomu.ayingott.me`.
