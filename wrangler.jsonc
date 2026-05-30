@@ -1,12 +1,14 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yomu",
+  "main": "./src/worker.ts",
   "compatibility_date": "2026-05-25",
   "build": {
     "command": "pnpm run build"
   },
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
   "routes": [

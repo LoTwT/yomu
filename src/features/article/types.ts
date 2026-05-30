@@ -3,12 +3,43 @@ export type LanguageCode = 'en'
 export type ArticleTopic = 'knowledge' | 'story'
 
 export interface ArticleRights {
-  sourceType: 'ai-generated' | 'public-domain'
+  sourceType: 'ai-generated' | 'public-domain' | 'user-import'
   rightsStatus: 'owned' | 'public-domain'
   licenseNote: string
   ttsAllowed: boolean
   translationAllowed: boolean
   cacheAllowed: boolean
+}
+
+export interface ImportedArticleMetadata {
+  articleId: string
+  textHash: string
+  importedAt: string
+  sourceType: 'paste' | 'file' | 'url'
+  sourceRef: {
+    kind: 'paste' | 'file' | 'url'
+    label: string
+    url?: string
+    fileName?: string
+  }
+  title: string
+}
+
+export interface PublicDomainArticleMetadata {
+  title: string
+  author: string
+  year: string
+  sourceUrl: string
+  sourceArchiveDate: string
+  publicDomainBasis: string
+  regionPosture: string
+  allowedUses: {
+    tts: boolean
+    cache: boolean
+    translation: boolean
+  }
+  excerptRange: string
+  providerCachePolicy: string
 }
 
 export interface ArticleToken {
@@ -21,7 +52,25 @@ export interface ArticleToken {
 
 export interface ArticleSentence {
   id: string
+  order?: number
   original: string
+  paragraphIndex?: number
+  textHash?: string
+  annotations?: {
+    ipa?: string
+    furigana?: Array<{
+      tokenId: string
+      text: string
+      reading: string
+    }>
+  }
+  bilingual?: {
+    zh?: string
+  }
+  audio?: {
+    cacheKey: string
+    status: 'idle' | 'loading' | 'ready' | 'failed'
+  }
   translation: string
   tokens: ArticleToken[]
   audioRef: {
@@ -56,5 +105,7 @@ export interface DailyArticle {
     promptHash: string
   }
   qaStatus: 'draft' | 'approved'
+  importMetadata?: ImportedArticleMetadata
+  publicDomainMetadata?: PublicDomainArticleMetadata
   sentences: ArticleSentence[]
 }

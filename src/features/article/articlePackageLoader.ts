@@ -52,7 +52,7 @@ export async function loadTodayArticlePackage(
     }
 
     const payload = await response.json()
-    if (!isDailyArticle(payload) || payload.qaStatus !== 'approved') {
+    if (!isArticlePackageReady(payload)) {
       return {
         status: 'error',
         message: 'The article package is not ready for practice yet.',
@@ -93,6 +93,10 @@ export function saveCachedArticlePackage(storage: Storage, article: DailyArticle
   storage.setItem(CACHED_ARTICLE_PACKAGE_KEY, JSON.stringify(article))
 }
 
+export function isArticlePackageReady(value: unknown): value is DailyArticle {
+  return isDailyArticle(value) && value.qaStatus === 'approved'
+}
+
 function isDailyArticle(value: unknown): value is DailyArticle {
   if (!isRecord(value)) {
     return false
@@ -114,6 +118,11 @@ function isDailyArticle(value: unknown): value is DailyArticle {
     && typeof value.model.version === 'string'
     && typeof value.model.promptHash === 'string'
     && (value.qaStatus === 'draft' || value.qaStatus === 'approved')
+    && (value.importMetadata === undefined || isImportMetadata(value.importMetadata))
+    && (value.publicDomainMetadata === undefined || isPublicDomainMetadata(value.publicDomainMetadata))
+    && isRecord(value.rights)
+    && (value.rights.sourceType !== 'public-domain' || isPublicDomainMetadata(value.publicDomainMetadata))
+    && (value.rights.sourceType !== 'user-import' || isImportMetadata(value.importMetadata))
     && Array.isArray(value.sentences)
     && value.sentences.length > 0
     && value.sentences.every(isArticleSentence)
@@ -121,7 +130,7 @@ function isDailyArticle(value: unknown): value is DailyArticle {
 
 function isRights(value: unknown): boolean {
   return isRecord(value)
-    && (value.sourceType === 'ai-generated' || value.sourceType === 'public-domain')
+    && (value.sourceType === 'ai-generated' || value.sourceType === 'public-domain' || value.sourceType === 'user-import')
     && (value.rightsStatus === 'owned' || value.rightsStatus === 'public-domain')
     && typeof value.licenseNote === 'string'
     && typeof value.ttsAllowed === 'boolean'
@@ -135,7 +144,13 @@ function isArticleSentence(value: unknown): boolean {
   }
 
   return typeof value.id === 'string'
+    && (value.order === undefined || typeof value.order === 'number')
     && typeof value.original === 'string'
+    && (value.paragraphIndex === undefined || typeof value.paragraphIndex === 'number')
+    && (value.textHash === undefined || typeof value.textHash === 'string')
+    && (value.annotations === undefined || isRecord(value.annotations))
+    && (value.bilingual === undefined || isRecord(value.bilingual))
+    && (value.audio === undefined || isSentenceAudioState(value.audio))
     && typeof value.translation === 'string'
     && Array.isArray(value.tokens)
     && value.tokens.length > 0
@@ -145,6 +160,12 @@ function isArticleSentence(value: unknown): boolean {
     && typeof value.audioRef.durationMs === 'number'
 }
 
+function isSentenceAudioState(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.cacheKey === 'string'
+    && (value.status === 'idle' || value.status === 'loading' || value.status === 'ready' || value.status === 'failed')
+}
+
 function isArticleToken(value: unknown): boolean {
   return isRecord(value)
     && typeof value.id === 'string'
@@ -152,6 +173,41 @@ function isArticleToken(value: unknown): boolean {
     && (value.ipa === undefined || typeof value.ipa === 'string')
     && (value.kind === undefined || value.kind === 'word' || value.kind === 'punctuation')
     && (value.meaning === undefined || typeof value.meaning === 'string')
+}
+
+function isImportMetadata(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.sourceRef)) {
+    return false
+  }
+
+  return typeof value.articleId === 'string'
+    && typeof value.textHash === 'string'
+    && typeof value.importedAt === 'string'
+    && (value.sourceType === 'paste' || value.sourceType === 'file' || value.sourceType === 'url')
+    && typeof value.title === 'string'
+    && (value.sourceRef.kind === 'paste' || value.sourceRef.kind === 'file' || value.sourceRef.kind === 'url')
+    && typeof value.sourceRef.label === 'string'
+    && (value.sourceRef.url === undefined || typeof value.sourceRef.url === 'string')
+    && (value.sourceRef.fileName === undefined || typeof value.sourceRef.fileName === 'string')
+}
+
+function isPublicDomainMetadata(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.allowedUses)) {
+    return false
+  }
+
+  return typeof value.title === 'string'
+    && typeof value.author === 'string'
+    && typeof value.year === 'string'
+    && typeof value.sourceUrl === 'string'
+    && typeof value.sourceArchiveDate === 'string'
+    && typeof value.publicDomainBasis === 'string'
+    && typeof value.regionPosture === 'string'
+    && typeof value.allowedUses.tts === 'boolean'
+    && typeof value.allowedUses.cache === 'boolean'
+    && typeof value.allowedUses.translation === 'boolean'
+    && typeof value.excerptRange === 'string'
+    && typeof value.providerCachePolicy === 'string'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

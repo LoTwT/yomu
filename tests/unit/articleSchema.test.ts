@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { isArticlePackageReady } from '@/features/article/articlePackageLoader'
+import { publicDomainSampleArticle } from '@/features/article/publicDomainSample'
 import { sampleArticle } from '@/features/article/sampleArticle'
 
 describe('article schema fixture', () => {
@@ -22,5 +24,25 @@ describe('article schema fixture', () => {
     expect(sampleArticle.rights.translationAllowed).toBe(true)
     expect(sampleArticle.factSources[0]?.url).toMatch(/^https:\/\//)
     expect(sampleArticle.qaStatus).toBe('approved')
+  })
+
+  it('bundles one public-domain example with complete rights metadata for the empty-state fallback', () => {
+    expect(isArticlePackageReady(publicDomainSampleArticle)).toBe(true)
+    expect(publicDomainSampleArticle.rights.sourceType).toBe('public-domain')
+    expect(publicDomainSampleArticle.publicDomainMetadata).toMatchObject({
+      title: 'Alice’s Adventures in Wonderland',
+      author: 'Lewis Carroll',
+      year: '1865',
+      sourceUrl: 'https://www.gutenberg.org/ebooks/11',
+      sourceArchiveDate: '2025-06-26',
+      allowedUses: {
+        tts: true,
+        cache: true,
+        translation: true,
+      },
+    })
+    expect(publicDomainSampleArticle.publicDomainMetadata?.publicDomainBasis).toContain('public domain in the USA')
+    expect(publicDomainSampleArticle.sentences.every(sentence => sentence.textHash && sentence.audio?.cacheKey)).toBe(true)
+    expect(publicDomainSampleArticle.sentences.every(sentence => sentence.audioRef.url.startsWith('missing://tts-consent-required/'))).toBe(true)
   })
 })
