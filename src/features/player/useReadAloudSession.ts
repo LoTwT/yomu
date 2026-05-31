@@ -1,7 +1,7 @@
 import type { Ref } from 'vue'
 import { computed, onBeforeUnmount, readonly, shallowRef, watch } from 'vue'
 
-import type { DailyArticle } from '@/features/article/types'
+import type { ArticleSentence, DailyArticle } from '@/features/article/types'
 
 export type AudioStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'failed'
 
@@ -20,6 +20,10 @@ export interface SentencePlayer {
     playbackRate: number
     onEnded: () => void
   }) => SentencePlaybackHandle | Promise<SentencePlaybackHandle>
+  prefetchSentences?: (options: {
+    sentences: Array<Pick<ArticleSentence, 'id' | 'original' | 'textHash'>>
+    language: string
+  }) => void | Promise<void>
 }
 
 const sentencePauseMs = 600
@@ -113,6 +117,7 @@ export function useReadAloudSession(
         scheduleNextSentence(index)
       },
     })
+    prefetchUpcomingSentences(index)
 
     if (!isPromiseLike(playbackResult)) {
       currentPlayback = playbackResult
@@ -154,6 +159,33 @@ export function useReadAloudSession(
       advanceTimer = null
       playSentenceByIndex(index + 1)
     }, pauseMs)
+  }
+
+  function prefetchUpcomingSentences(index: number) {
+    const currentArticle = article.value
+    if (!currentArticle || !player.prefetchSentences) {
+      return
+    }
+
+    const sentences = currentArticle.sentences
+      .slice(index + 1, index + 3)
+      .filter(sentence => isPlayableAudioRef(sentence.audioRef.url, sentence.audioRef.durationMs))
+      .map(sentence => ({
+        id: sentence.id,
+        original: sentence.original,
+        textHash: sentence.textHash,
+      }))
+
+    if (sentences.length === 0) {
+      return
+    }
+
+    void Promise.resolve(player.prefetchSentences({
+      sentences,
+      language: currentArticle.language,
+    })).catch(() => {
+      // Prefetch is opportunistic; active sentence playback owns user-visible failure state.
+    })
   }
 
   function play(sentenceId = activeSentenceId.value ?? article.value?.sentences[0]?.id) {

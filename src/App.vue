@@ -51,6 +51,7 @@ const hiddenTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
 const completionPanel = useTemplateRef<InstanceType<typeof CompletionPanel>>('completionPanel')
+let pendingReadAloudAction: (() => void) | null = null
 const article = computed<DailyArticle | null>(() =>
   articleLoadResult.value.status === 'ready' ? articleLoadResult.value.article : null,
 )
@@ -109,6 +110,7 @@ watch(ttsSettings, () => {
   saveTtsSettings(window.localStorage, ttsSettings.value)
   cloudConsentAccepted.value = false
   showCloudConsent.value = false
+  pendingReadAloudAction = null
   player.stop()
 })
 
@@ -187,31 +189,52 @@ function togglePlayback() {
   handlePlay()
 }
 
-function handlePlay() {
+function runReadAloudAction(action: () => void) {
   if (!canPlayReadAloud.value) {
     showTtsSettings.value = true
     return
   }
 
   if (activeTtsProvider.value === 'mimo' && !cloudConsentAccepted.value) {
+    pendingReadAloudAction = action
     showCloudConsent.value = true
     return
   }
 
-  player.play()
+  action()
+}
+
+function handlePlay() {
+  runReadAloudAction(() => player.play())
+}
+
+function handlePrevious() {
+  runReadAloudAction(() => player.previous())
+}
+
+function handleNext() {
+  runReadAloudAction(() => player.next())
+}
+
+function handleRepeat() {
+  runReadAloudAction(() => player.repeat())
 }
 
 function acceptCloudReadAloud() {
+  const action = pendingReadAloudAction ?? (() => player.play())
+  pendingReadAloudAction = null
   cloudConsentAccepted.value = true
   showCloudConsent.value = false
-  player.play()
+  action()
 }
 
 function continueReadOnly() {
+  pendingReadAloudAction = null
   showCloudConsent.value = false
 }
 
 function useWebSpeechReadAloud() {
+  pendingReadAloudAction = null
   ttsSettings.value = {
     ...ttsSettings.value,
     provider: 'webspeech',
@@ -371,11 +394,11 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :show-cloud-consent="showCloudConsent"
         @play="handlePlay"
         @pause="player.pause()"
-        @previous="player.previous()"
-        @next="player.next()"
-        @repeat="player.repeat()"
-        @skip-audio="player.next()"
-        @retry-audio="player.repeat()"
+        @previous="handlePrevious"
+        @next="handleNext"
+        @repeat="handleRepeat"
+        @skip-audio="handleNext"
+        @retry-audio="handleRepeat"
         @open-settings="showTtsSettings = !showTtsSettings"
         @accept-cloud-read-aloud="acceptCloudReadAloud"
         @continue-read-only="continueReadOnly"

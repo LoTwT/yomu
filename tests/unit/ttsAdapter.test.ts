@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createTtsCacheKey } from '@/features/tts/cacheKey'
 import { maxUrlResponseBytes } from '@/features/import/sourceGuards'
+import { createConfiguredSentencePlayer } from '@/features/tts/configuredSentencePlayer'
 import { createMimoTtsProvider } from '@/features/tts/mimoAdapter'
 import { buildMimoTtsPayload } from '@/features/tts/mimoPayload'
 import { createMemorySentenceAudioCache } from '@/features/tts/sentenceAudioCache'
+import { defaultTtsSettings, type TtsSettings } from '@/features/tts/settings'
 import type { TtsSynthesisRequest } from '@/features/tts/types'
 import { handleMimoTtsRequest, handleUrlImportRequest } from '@/worker'
 
@@ -70,6 +72,89 @@ describe('MiMo TTS adapter', () => {
     expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).toContain('user-key')
     expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).not.toContain('MIMO_API_KEY')
     expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain('xiaomimimo.com')
+  })
+
+  it('dedupes in-flight MiMo synthesis requests for the same sentence cache key', async () => {
+    let resolveFetch!: (response: Response) => void
+    const fetchImpl = vi.fn(() =>
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve
+      }),
+    )
+    const provider = createMimoTtsProvider({
+      endpoint: '/api/tts/mimo',
+      fetchImpl,
+      cache: createMemorySentenceAudioCache(),
+      getCredentials: () => ({ apiKey: 'user-key', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' }),
+    })
+
+    const first = provider.synthesizeSentence(request)
+    const second = provider.synthesizeSentence(request)
+    await Promise.resolve()
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    resolveFetch(new Response(JSON.stringify({
+      audioBase64: btoa('mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1200,
+    }), {
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    const cached = await provider.synthesizeSentence(request)
+
+    expect(firstResult.source).toBe('network')
+    expect(secondResult.source).toBe('network')
+    expect(cached.source).toBe('cache')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('prefetches upcoming MiMo sentences but skips Web Speech', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({
+        audioBase64: btoa('mp3-bytes'),
+        mimeType: 'audio/mpeg',
+        durationMs: 1200,
+      }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+
+    let settings: TtsSettings = {
+      ...defaultTtsSettings,
+      provider: 'mimo',
+      mimo: {
+        ...defaultTtsSettings.mimo,
+        apiKey: 'user-key',
+      },
+    }
+    const player = createConfiguredSentencePlayer(() => settings)
+
+    await player.prefetchSentences?.({
+      language: 'en',
+      sentences: [
+        { id: 'p1-s2', original: 'The second sentence is ready soon.', textHash: 'hash-s2' },
+        { id: 'p1-s3', original: 'The third sentence follows without a long wait.', textHash: 'hash-s3' },
+      ],
+    })
+
+    settings = {
+      ...settings,
+      provider: 'webspeech',
+    }
+    await player.prefetchSentences?.({
+      language: 'en',
+      sentences: [
+        { id: 'p1-s4', original: 'The browser voice path should not prefetch.', textHash: 'hash-s4' },
+      ],
+    })
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.map(call => JSON.parse(String(call[1]?.body)).sentenceId)).toEqual(['p1-s2', 'p1-s3'])
+    expect(fetchImpl.mock.calls.every(call => String(call[0]) === '/api/tts/mimo')).toBe(true)
   })
 
   it('formats the MiMo chat-completions TTS payload with assistant text and optional style guidance', () => {

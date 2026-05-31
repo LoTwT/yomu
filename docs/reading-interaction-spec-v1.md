@@ -45,7 +45,7 @@ Tabs: **粘贴** / **URL** / **文件**. English first (Japanese later — do no
 - 粘贴: textarea → on submit, split into sentences (§6) and open reading surface.
 - URL: input → server-side fetch + readability extraction. Only `http(s)`; block `localhost`/private-IP/`file:`/`data:` (SSRF); enforce timeout + size limit + content-type allowlist.
 - 文件: accept `.txt` / `.md` only; size cap; UTF-8 decode.
-- Privacy line under the field: text is used only for this reading; on playback the current sentence is sent to cloud TTS — see §5.
+- Privacy line under the field: text is used only for this reading; with a cloud provider, playback sends the current sentence and a small prefetch window of upcoming sentences to cloud TTS — see §5 / §7.
 
 ### 3.2 Import failure variants — `<ImportError variant>` (enum = QA #25 taxonomy)
 The failure UI is **one reusable component** keyed by `variant`. The hi-fi shows 6 representative variants; the **complete branch set is canonical in QA #25**. Every failure: a clear human message + recovery action(s); **never persist a half-baked reading record**.
@@ -99,7 +99,7 @@ Buttons: **◁ prev · ▶/⏸ play-pause · ▷ next · 🔁 repeat** + speed +
 - Augment is a **slot** (§6) — IPA today, furigana reserved for Japanese; same structural slot, pluggable annotator.
 
 ### 4.5 Provider-aware audio cue
-- The control-bar audio cue reflects the **active provider** (§5.4): **Web Speech → 「浏览器朗读」** (no cloud claim); **MiMo BYOK → 「云朗读 · MiMo」** (current-sentence audio synthesized in the cloud). Non-intrusive; the full cloud disclosure is the first-play prompt (§5.1), which fires only for a cloud/neural provider. The label is meaningful (not decorative) → must be legible (a11y §8).
+- The control-bar audio cue reflects the **active provider** (§5.4): **Web Speech → 「浏览器朗读」** (no cloud claim); **MiMo BYOK → 「云朗读 · MiMo」** (current + upcoming sentence audio synthesized in the cloud after consent). Non-intrusive; the full cloud disclosure is the first-play prompt (§5.1), which fires only for a cloud/neural provider. The label is meaningful (not decorative) → must be legible (a11y §8).
 
 ---
 
@@ -107,9 +107,9 @@ Buttons: **◁ prev · ▶/⏸ play-pause · ▷ next · 🔁 repeat** + speed +
 
 ### 5.1 First-play privacy prompt (before the first 朗读 in a session/article) — REQUIRED
 Honest external-surface framing (yomu does NOT claim fully-local):
-- States: playback sends **the current sentence** to MiMo cloud (EU/SG) to synthesize voice.
+- States: playback sends **the current sentence and a small upcoming-sentence prefetch window** to MiMo cloud (EU/SG) to synthesize voice.
 - Reassurance (per official terms): text **not used for training**, retained only as needed + deletable, generated audio belongs to the user.
-- Sent **only when you press play**; "继续纯阅读(不朗读)" path always offered.
+- Sent **only when you press play / next / repeat after accepting cloud read-aloud**; "继续纯阅读(不朗读)" path always offered.
 - User is responsible for the rights to imported content.
 
 > **Terms-evidence rule (provider-agnostic; QA #24/#26 privacy gate).** The strong reassurance copy above is shown **only when the active provider's terms are cited + current in evidence**. For MiMo V1 the source is the official MiMo Privacy Policy (§3.1 "Xiaomi will not use the content you provide for model training") + retention §6 (bounded, deletable) + MiMo Service Agreement §4.1 (user is Data Controller; generated audio is the user's business data) — these must be linked in the PR/PRD evidence. If a provider's terms evidence is missing or stale (e.g. a future swapped provider), the user-facing copy **downgrades to the conservative form**: "按所选语音服务的条款处理 · 详见隐私说明" with a link to the terms — never assert "not trained / deletable / yours" without a cited source.
@@ -179,6 +179,7 @@ type SentenceNode = {
 ## 7. Prefetch state machine (BYO on-demand) — the responsiveness contract
 On-demand TTS is ~2–6s/sentence → naïve play would stall between sentences. **Prefetch ahead**:
 - When `cur` = sentence N (or N starts playing), background-synthesize **N+1 and N+2** (`audio.status: idle→loading→ready`).
+- Prefetch applies only after the user has accepted the cloud/neural provider prompt; Web Speech has no Worker prefetch path.
 - `play` on a node whose audio is `loading` shows "准备中…" until `ready`, then plays.
 - `next`/`prev` re-anchor the prefetch window to the new cur.
 - Daily/bundled-sample audio MAY be server pre-generated (latency hidden); BYO is the prefetch path.

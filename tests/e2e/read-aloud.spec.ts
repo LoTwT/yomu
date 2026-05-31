@@ -216,6 +216,60 @@ test('keeps visual reading available when cloud TTS fails', async ({ page }) => 
   await expect(page.locator('#s1')).toContainText('Everynight')
 })
 
+test('prefetches the next two MiMo sentences only after cloud consent', async ({ page }) => {
+  const ttsBodies: Array<{ sentenceId: string, apiKey?: string }> = []
+  let currentSentenceResponseReady!: () => void
+  const currentSentenceResponse = new Promise<void>((resolve) => {
+    currentSentenceResponseReady = resolve
+  })
+  await page.route('**/api/tts/mimo', async (route) => {
+    const body = route.request().postDataJSON() as { sentenceId: string, apiKey?: string }
+    ttsBodies.push(body)
+    if (body.sentenceId === 's1') {
+      await currentSentenceResponse
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: {
+        'cache-control': 'no-store',
+        pragma: 'no-cache',
+      },
+      body: JSON.stringify({
+        audioBase64: 'bXAzLWJ5dGVz',
+        mimeType: 'audio/mpeg',
+        durationMs: 900,
+      }),
+    })
+  })
+  await installSpeechSynthesisProbe(page)
+  await openFreshAppWithStorage(page, {
+    'yomu:tts-settings': JSON.stringify({
+      provider: 'mimo',
+      mimo: {
+        apiKey: 'user-key',
+        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+        model: 'mimo-v2.5-tts',
+        voice: 'Mia',
+        format: 'mp3',
+      },
+    }),
+  })
+
+  await page.getByRole('button', { name: 'Start reading' }).click()
+  await page.getByRole('button', { name: '播放朗读' }).click()
+
+  await expect(page.getByText('MiMo 云朗读会在你按下播放时发送当前句和接下来的少量句子')).toBeVisible()
+  expect(ttsBodies).toEqual([])
+
+  await page.getByRole('button', { name: '开始云朗读' }).click()
+  await expect.poll(() => ttsBodies.map(body => body.sentenceId), { timeout: 500 }).toEqual(['s1', 's2', 's3'])
+  expect(ttsBodies.every(body => body.apiKey === 'user-key')).toBe(true)
+
+  currentSentenceResponseReady()
+  await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
+})
+
 test.describe('mobile word popover layout', () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
 

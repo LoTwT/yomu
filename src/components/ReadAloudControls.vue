@@ -85,7 +85,7 @@ function repeatSentence() {
     </div>
     <div v-if="showCloudConsent" class="read-aloud-controls__cloud-consent">
       <p>
-        MiMo 云朗读只会在你按下播放时发送当前句子,并按所选语音服务条款处理。
+        MiMo 云朗读会在你按下播放时发送当前句和接下来的少量句子,并按所选语音服务条款处理。
       </p>
       <button type="button" @click="emit('acceptCloudReadAloud')">
         开始云朗读
