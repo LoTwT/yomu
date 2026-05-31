@@ -159,16 +159,104 @@ test('stores completion records locally after an explicit finish action', async 
 })
 
 test('opens word meaning popover and saves vocabulary locally', async ({ page }) => {
+  const extensionRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/extensions/ai')) {
+      extensionRequests.push(request.url())
+    }
+  })
   await openFreshApp(page)
   await page.getByRole('button', { name: 'Start reading' }).click()
   await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
 
   await expect(page.getByTestId('word-popover')).toContainText(firstMeaningToken.text)
   await expect(page.getByTestId('word-popover')).toContainText(firstMeaningToken.ipa)
+  await expect(page.getByTestId('word-popover')).toContainText('大脑')
+  await expect(page.getByTestId('word-popover')).toContainText('本地释义 · 零外发')
   await page.getByRole('button', { name: 'Save word' }).click()
 
   const savedVocabulary = await page.evaluate(() => localStorage.getItem('yomu:saved-vocabulary'))
   expect(savedVocabulary).toContain(firstMeaningToken.storageId)
+  expect(extensionRequests).toEqual([])
+})
+
+test('keeps read expansion local until AI enhancement is explicitly enabled with BYOK and consent', async ({ page }) => {
+  const extensionBodies: Array<{ term: string, apiKey?: string, context?: string }> = []
+  await page.route('**/api/extensions/ai', async (route) => {
+    const body = route.request().postDataJSON() as { term: string, apiKey?: string, context?: string }
+    extensionBodies.push(body)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: {
+        'cache-control': 'no-store',
+        pragma: 'no-cache',
+      },
+      body: JSON.stringify({
+        meaning: 'brain: 大脑,也可指思考能力。',
+        examples: ['The brain needs rest.'],
+        background: '常见于关于睡眠、学习和健康的文章。',
+        provider: 'OpenAI',
+        model: 'gpt-4.1-mini',
+      }),
+    })
+  })
+
+  await openFreshAppWithStorage(page, {
+    'yomu:read-expansion-settings': JSON.stringify({
+      ai: {
+        enabled: true,
+        consentAccepted: false,
+        provider: 'openai',
+        openai: {
+          apiKey: 'user-ai-key',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-4.1-mini',
+        },
+      },
+    }),
+  })
+  await page.getByRole('button', { name: 'Start reading' }).click()
+  await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
+
+  await expect(page.getByRole('button', { name: 'AI 增强' })).toBeVisible()
+  expect(extensionBodies).toEqual([])
+
+  await page.getByRole('button', { name: 'AI 增强' }).click()
+  await expect(page.getByRole('heading', { name: '开启 AI 增强?' })).toBeVisible()
+  expect(extensionBodies).toEqual([])
+
+  await page.getByRole('button', { name: '开启 AI 增强' }).click()
+  await expect(page.getByText('✨ AI · OpenAI')).toBeVisible()
+  await expect(page.getByText('brain: 大脑,也可指思考能力。')).toBeVisible()
+  expect(extensionBodies).toHaveLength(1)
+  expect(extensionBodies[0]).toMatchObject({
+    term: 'brain',
+    apiKey: 'user-ai-key',
+  })
+  expect(extensionBodies[0]?.context).toContain(firstSentence)
+  expect(JSON.stringify(extensionBodies[0])).not.toContain(articleTitle)
+})
+
+test('shows the local read expansion panel after completion without network requests', async ({ page }) => {
+  const extensionRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/extensions/ai')) {
+      extensionRequests.push(request.url())
+    }
+  })
+  await openFreshApp(page)
+  await page.getByRole('button', { name: 'Start reading' }).click()
+  await page.getByRole('button', { name: "I finished today's reading" }).click()
+
+  await expect(page.getByRole('heading', { name: '读后拓展' })).toBeVisible()
+  await expect(page.getByText('默认本地抽词,不发送文章内容。')).toBeVisible()
+  await expect(page.getByText('本地释义 · 零外发').first()).toBeVisible()
+  expect(extensionRequests).toEqual([])
+
+  await page.getByLabel('AI 增强(用你自己的 key)').check()
+  await page.getByRole('button', { name: '配置 AI key' }).first().click()
+  await expect(page.locator('.read-expansion-panel__settings-anchor')).toBeFocused()
 })
 
 test('shows article-not-ready fallback when the daily package is not available yet', async ({ page }) => {

@@ -2,11 +2,28 @@
 import { computed, useTemplateRef } from 'vue'
 
 import type { DailyArticle } from '@/features/article/types'
+import type { ReadExpansionSettings } from '@/features/extension/settings'
+import type { AiWordExpansionState, ReadExpansionTerm } from '@/features/extension/types'
 import type { PracticeSessionRecord } from '@/features/storage/practiceStorage'
+
+import ReadExpansionPanel from './ReadExpansionPanel.vue'
 
 const props = defineProps<{
   article: DailyArticle
   session: PracticeSessionRecord | null
+  readExpansionTerms: ReadExpansionTerm[]
+  readExpansionAiStates: Record<string, AiWordExpansionState>
+  aiConfigured: boolean
+  aiProviderLabel: string
+  showAiConsentPrompt: boolean
+}>()
+
+const readExpansionSettings = defineModel<ReadExpansionSettings>('readExpansionSettings', { required: true })
+
+const emit = defineEmits<{
+  requestAiExpansion: [term: ReadExpansionTerm]
+  acceptAiExpansion: []
+  declineAiExpansion: []
 }>()
 
 const vocabulary = computed(() => props.article.sentences.flatMap(sentence => sentence.vocab ?? []))
@@ -69,6 +86,17 @@ defineExpose({ focusPanel })
         </li>
       </ul>
     </section>
+    <ReadExpansionPanel
+      v-model:settings="readExpansionSettings"
+      :terms="readExpansionTerms"
+      :ai-states="readExpansionAiStates"
+      :ai-configured="aiConfigured"
+      :provider-label="aiProviderLabel"
+      :show-consent-prompt="showAiConsentPrompt"
+      @request-ai="emit('requestAiExpansion', $event)"
+      @accept-ai="emit('acceptAiExpansion')"
+      @decline-ai="emit('declineAiExpansion')"
+    />
   </section>
 </template>
 
