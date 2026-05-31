@@ -47,7 +47,7 @@ const showCloudConsent = shallowRef(false)
 const completedSession = shallowRef<PracticeSessionRecord | null>(null)
 const startedAt = shallowRef<number | null>(null)
 const hasJustCompleted = shallowRef(false)
-const hiddenTranslationIds = shallowRef<string[]>([])
+const visibleTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
 const completionPanel = useTemplateRef<InstanceType<typeof CompletionPanel>>('completionPanel')
@@ -89,7 +89,7 @@ onMounted(() => {
 watch(article, (nextArticle) => {
   player.stop()
   view.value = 'today'
-  hiddenTranslationIds.value = []
+  visibleTranslationIds.value = []
   selectedToken.value = null
   startedAt.value = null
   hasJustCompleted.value = false
@@ -101,7 +101,7 @@ watch(article, (nextArticle) => {
 watch(preferences, () => {
   saveDisplayPreferences(window.localStorage, preferences.value)
   if (!preferences.value.showTranslation) {
-    hiddenTranslationIds.value = []
+    visibleTranslationIds.value = []
   }
 })
 
@@ -153,8 +153,8 @@ function pressSentence(sentenceId: string) {
     return
   }
 
-  const currentIds = hiddenTranslationIds.value
-  hiddenTranslationIds.value = currentIds.includes(sentenceId)
+  const currentIds = visibleTranslationIds.value
+  visibleTranslationIds.value = currentIds.includes(sentenceId)
     ? currentIds.filter(id => id !== sentenceId)
     : [...currentIds, sentenceId]
 }
@@ -345,7 +345,7 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :article="article"
         :active-sentence-id="player.activeSentenceId.value"
         :preferences="preferences"
-        :hidden-translation-ids="hiddenTranslationIds"
+        :visible-translation-ids="visibleTranslationIds"
         :selected-token-id="selectedToken?.id ?? null"
         :selected-token="selectedToken"
         :is-selected-token-saved="selectedToken ? savedVocabularyIds.includes(selectedToken.id) : false"

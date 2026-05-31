@@ -4,6 +4,7 @@ import type { ArticleToken } from '@/features/article/types'
 defineProps<{
   tokens: ArticleToken[]
   showPronunciation: boolean
+  isActiveSentence: boolean
   selectedTokenId: string | null
 }>()
 
@@ -26,9 +27,13 @@ const emit = defineEmits<{
         <ruby
           v-if="showPronunciation && token.ipa"
           class="sentence-text__ruby"
-          data-testid="ipa-token"
         >
-          {{ token.text }}<rp>(</rp><rt aria-hidden="true">/{{ token.ipa }}/</rt><rp>)</rp>
+          {{ token.text }}<rp>(</rp><rt
+            class="sentence-text__rt"
+            :class="{ 'sentence-text__rt--placeholder': !isActiveSentence }"
+            :data-testid="isActiveSentence ? 'ipa-token' : undefined"
+            aria-hidden="true"
+          >/{{ token.ipa }}/</rt><rp>)</rp>
         </ruby>
         <span v-else>
           {{ token.text }}
@@ -47,11 +52,23 @@ const emit = defineEmits<{
   ruby-position: over;
 }
 
-.sentence-text__ruby rt {
-  color: var(--yomu-muted);
+.sentence-text__rt {
+  color: var(--yomu-ink-soft);
+  font-family:
+    "Charis SIL",
+    "Doulos SIL",
+    "Noto Sans",
+    "Segoe UI Symbol",
+    "Apple Symbols",
+    "Arial Unicode MS",
+    sans-serif;
   font-size: 0.58em;
   font-weight: 500;
   letter-spacing: 0;
+}
+
+.sentence-text__rt--placeholder {
+  visibility: hidden;
 }
 
 .sentence-text__punctuation {
