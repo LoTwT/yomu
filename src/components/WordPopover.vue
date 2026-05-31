@@ -1,14 +1,24 @@
 <script setup lang="ts">
 import type { ArticleToken } from '@/features/article/types'
+import type { AiWordExpansionState, ReadExpansionTerm } from '@/features/extension/types'
+
+import ReadExpansionCard from './ReadExpansionCard.vue'
 
 defineProps<{
   token: ArticleToken | null
   saved: boolean
+  expansionTerm: ReadExpansionTerm | null
+  aiState: AiWordExpansionState
+  aiEnabled: boolean
+  aiConfigured: boolean
+  providerLabel: string
 }>()
 
 const emit = defineEmits<{
   save: [token: ArticleToken]
   close: []
+  requestAi: [term: ReadExpansionTerm]
+  openSettings: []
 }>()
 </script>
 
@@ -21,7 +31,18 @@ const emit = defineEmits<{
     aria-label="Word meaning"
     data-testid="word-popover"
   >
-    <div>
+    <ReadExpansionCard
+      v-if="expansionTerm"
+      :term="expansionTerm"
+      :ai-state="aiState"
+      :ai-enabled="aiEnabled"
+      :ai-configured="aiConfigured"
+      :provider-label="providerLabel"
+      compact
+      @request-ai="emit('requestAi', $event)"
+      @open-settings="emit('openSettings')"
+    />
+    <div v-else>
       <p class="word-popover__word">
         {{ token.text }}
       </p>
@@ -54,6 +75,10 @@ const emit = defineEmits<{
   padding: 0.85rem;
   background: color-mix(in srgb, var(--yomu-paper) 94%, white);
   box-shadow: 0 14px 32px rgb(47 39 27 / 12%);
+}
+
+.word-popover :deep(.read-expansion-card) {
+  flex: 1 1 16rem;
 }
 
 .word-popover__word,

@@ -8,7 +8,7 @@ import { buildMimoTtsPayload } from '@/features/tts/mimoPayload'
 import { createMemorySentenceAudioCache } from '@/features/tts/sentenceAudioCache'
 import { defaultTtsSettings, type TtsSettings } from '@/features/tts/settings'
 import type { TtsSynthesisRequest } from '@/features/tts/types'
-import { handleMimoTtsRequest, handleUrlImportRequest } from '@/worker'
+import { handleAiExpansionRequest, handleMimoTtsRequest, handleUrlImportRequest } from '@/worker'
 
 const request: TtsSynthesisRequest = {
   provider: 'mimo',
@@ -251,6 +251,123 @@ describe('MiMo TTS adapter', () => {
     expect(rejected.status).toBe(400)
     expect(await rejected.text()).not.toContain('secret-key')
     expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps AI expansion BYOK responses no-store and sends only minimal context', async () => {
+    const providerFetch = vi.fn(async () =>
+      new Response(JSON.stringify({
+        output_text: JSON.stringify({
+          meaning: '睡眠: 身体和大脑恢复的时间。',
+          examples: ['Sleep helps your brain rest.'],
+          background: 'Often used as both a noun and a verb.',
+        }),
+      }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleAiExpansionRequest(new Request('https://yomu.test/api/extensions/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        apiKey: 'secret-ai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4.1-mini',
+        term: 'sleep',
+        localGloss: '睡眠',
+        context: `${'A'.repeat(400)} should be clamped`,
+      }),
+    }))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('pragma')).toBe('no-cache')
+    expect(await response.text()).not.toContain('secret-ai-key')
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+    expect(providerFetch.mock.calls[0]?.[0]).toBe('https://api.openai.com/v1/responses')
+    const providerBody = JSON.stringify(providerFetch.mock.calls[0]?.[1]?.body)
+    expect(providerBody).toContain('word: sleep')
+    expect(providerBody).not.toContain('secret-ai-key')
+    expect(providerBody).not.toContain('A'.repeat(361))
+  })
+
+  it('requires AI BYOK and rejects unsupported AI proxy hosts', async () => {
+    const missingKey = await handleAiExpansionRequest(new Request('https://yomu.test/api/extensions/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        term: 'sleep',
+        context: 'Sleep helps memory.',
+      }),
+    }))
+
+    expect(missingKey.status).toBe(401)
+    expect(missingKey.headers.get('cache-control')).toBe('no-store')
+    expect(await missingKey.text()).not.toContain('secret-ai-key')
+
+    const providerFetch = vi.fn()
+    vi.stubGlobal('fetch', providerFetch)
+    const unsupportedHost = await handleAiExpansionRequest(new Request('https://yomu.test/api/extensions/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        apiKey: 'secret-ai-key',
+        baseUrl: 'https://example.com/v1',
+        term: 'sleep',
+        context: 'Sleep helps memory.',
+      }),
+    }))
+
+    expect(unsupportedHost.status).toBe(400)
+    expect(await unsupportedHost.text()).not.toContain('secret-ai-key')
+    expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it('keeps AI provider network and parse failures no-store and redacted', async () => {
+    const networkFailure = vi.fn(async () => {
+      throw new Error('upstream failed with secret-ai-key')
+    })
+    vi.stubGlobal('fetch', networkFailure)
+
+    const failedFetch = await handleAiExpansionRequest(new Request('https://yomu.test/api/extensions/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        apiKey: 'secret-ai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        term: 'sleep',
+        context: 'Sleep helps memory.',
+      }),
+    }))
+
+    expect(failedFetch.status).toBe(502)
+    expect(failedFetch.headers.get('cache-control')).toBe('no-store')
+    expect(failedFetch.headers.get('pragma')).toBe('no-cache')
+    expect(await failedFetch.text()).not.toContain('secret-ai-key')
+
+    const invalidJson = vi.fn(async () =>
+      new Response('not json', {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', invalidJson)
+
+    const failedParse = await handleAiExpansionRequest(new Request('https://yomu.test/api/extensions/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        apiKey: 'secret-ai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        term: 'sleep',
+        context: 'Sleep helps memory.',
+      }),
+    }))
+
+    expect(failedParse.status).toBe(502)
+    expect(failedParse.headers.get('cache-control')).toBe('no-store')
+    expect(failedParse.headers.get('pragma')).toBe('no-cache')
+    expect(await failedParse.text()).not.toContain('secret-ai-key')
   })
 
   it('keeps URL import SSRF checks server-side before fetching remote pages', async () => {

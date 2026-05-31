@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import type { ArticleToken, DailyArticle } from '@/features/article/types'
+import type { AiWordExpansionState, ReadExpansionTerm } from '@/features/extension/types'
 import type { DisplayPreferences } from '@/features/preferences/types'
 
 import SentenceText from './SentenceText.vue'
@@ -15,6 +16,11 @@ const props = defineProps<{
   selectedTokenId: string | null
   selectedToken: ArticleToken | null
   isSelectedTokenSaved: boolean
+  selectedExpansionTerm: ReadExpansionTerm | null
+  aiStateForSelectedTerm: AiWordExpansionState
+  aiEnabled: boolean
+  aiConfigured: boolean
+  providerLabel: string
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +28,8 @@ const emit = defineEmits<{
   selectToken: [token: ArticleToken]
   saveToken: [token: ArticleToken]
   closeTokenPopover: []
+  requestAiExpansion: [term: ReadExpansionTerm]
+  openExpansionSettings: []
   togglePlayback: []
   complete: []
 }>()
@@ -111,8 +119,15 @@ function translationToggleLabel(sentenceIndex: number, sentenceId: string): stri
             class="article-reader__word-popover"
             :token="selectedToken"
             :saved="isSelectedTokenSaved"
+            :expansion-term="selectedExpansionTerm"
+            :ai-state="aiStateForSelectedTerm"
+            :ai-enabled="aiEnabled"
+            :ai-configured="aiConfigured"
+            :provider-label="providerLabel"
             @save="emit('saveToken', $event)"
             @close="emit('closeTokenPopover')"
+            @request-ai="emit('requestAiExpansion', $event)"
+            @open-settings="emit('openExpansionSettings')"
           />
         </li>
       </template>

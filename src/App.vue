@@ -5,6 +5,8 @@ import ArticleStatusCard from './components/ArticleStatusCard.vue'
 import ArticleReader from './components/ArticleReader.vue'
 import AssistiveDisplayControls from './components/AssistiveDisplayControls.vue'
 import CompletionPanel from './components/CompletionPanel.vue'
+import ReadExpansionConsent from './components/ReadExpansionConsent.vue'
+import ReadExpansionSettingsPanel from './components/ReadExpansionSettingsPanel.vue'
 import ReadAloudControls from './components/ReadAloudControls.vue'
 import TodayCard from './components/TodayCard.vue'
 import TtsSettingsPanel from './components/TtsSettingsPanel.vue'
@@ -17,6 +19,17 @@ import type { ArticleToken, DailyArticle } from './features/article/types'
 import type { DisplayPreferences } from './features/preferences/types'
 import { defaultDisplayPreferences } from './features/preferences/types'
 import { useReadAloudSession } from './features/player/useReadAloudSession'
+import { requestAiWordExpansion } from './features/extension/aiAdapter'
+import { extractReadExpansionTerms, findReadExpansionTermForToken } from './features/extension/localExtraction'
+import {
+  defaultReadExpansionSettings,
+  getAiProviderLabel,
+  isAiExpansionConfigured,
+  loadReadExpansionSettings,
+  saveReadExpansionSettings,
+  type ReadExpansionSettings,
+} from './features/extension/settings'
+import type { AiWordExpansionState, ReadExpansionTerm } from './features/extension/types'
 import {
   loadDisplayPreferences,
   loadPracticeSession,
@@ -40,7 +53,10 @@ const articleLoadResult = shallowRef<ArticlePackageLoadResult>({ status: 'loadin
 const view = shallowRef<'today' | 'reader'>('today')
 const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreferences })
 const ttsSettings = shallowRef<TtsSettings>({ ...defaultTtsSettings, mimo: { ...defaultTtsSettings.mimo } })
+const readExpansionSettings = shallowRef<ReadExpansionSettings>(defaultReadExpansionSettings)
 const showTtsSettings = shallowRef(false)
+const showReadExpansionSettings = shallowRef(false)
+const showAiExpansionConsent = shallowRef(false)
 const webSpeechAvailable = shallowRef(false)
 const cloudConsentAccepted = shallowRef(false)
 const showCloudConsent = shallowRef(false)
@@ -50,8 +66,10 @@ const hasJustCompleted = shallowRef(false)
 const visibleTranslationIds = shallowRef<string[]>([])
 const selectedToken = shallowRef<ArticleToken | null>(null)
 const savedVocabularyIds = shallowRef<string[]>([])
+const readExpansionAiStates = shallowRef<Record<string, AiWordExpansionState>>({})
 const completionPanel = useTemplateRef<InstanceType<typeof CompletionPanel>>('completionPanel')
 let pendingReadAloudAction: (() => void) | null = null
+let pendingAiExpansionTerm: ReadExpansionTerm | null = null
 const article = computed<DailyArticle | null>(() =>
   articleLoadResult.value.status === 'ready' ? articleLoadResult.value.article : null,
 )
@@ -63,6 +81,27 @@ const player = useReadAloudSession(article, createConfiguredSentencePlayer(() =>
 const activeIndex = computed(() => Math.max(player.currentIndex.value, 0))
 const activeTtsProvider = computed(() => getActiveTtsProvider(ttsSettings.value))
 const providerLabel = computed(() => getTtsProviderLabel(ttsSettings.value))
+const readExpansionTerms = computed(() => article.value ? extractReadExpansionTerms(article.value) : [])
+const selectedTokenSentence = computed(() => selectedToken.value && article.value
+  ? article.value.sentences.find(sentence =>
+      sentence.tokens.some(token => token.id === selectedToken.value?.id),
+    ) ?? null
+  : null)
+const selectedExpansionTerm = computed(() =>
+  selectedToken.value
+    ? findReadExpansionTermForToken(readExpansionTerms.value, selectedToken.value, {
+        context: selectedTokenSentence.value?.original,
+        sentenceId: selectedTokenSentence.value?.id,
+      })
+    : null,
+)
+const aiExpansionConfigured = computed(() => isAiExpansionConfigured(readExpansionSettings.value))
+const aiProviderLabel = computed(() => getAiProviderLabel(readExpansionSettings.value))
+const selectedAiExpansionState = computed<AiWordExpansionState>(() =>
+  selectedExpansionTerm.value
+    ? readExpansionAiStates.value[selectedExpansionTerm.value.id] ?? { status: 'idle' }
+    : { status: 'idle' },
+)
 const canPlayReadAloud = computed(() => {
   if (activeTtsProvider.value === 'mimo') {
     return true
@@ -82,6 +121,7 @@ onMounted(() => {
   const storedPreferences = loadDisplayPreferences(window.localStorage)
   preferences.value = storedPreferences
   ttsSettings.value = loadTtsSettings(window.localStorage)
+  readExpansionSettings.value = loadReadExpansionSettings(window.localStorage)
   webSpeechAvailable.value = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
   savedVocabularyIds.value = loadSavedVocabularyIds(window.localStorage)
   void refreshTodayArticle()
@@ -92,6 +132,9 @@ watch(article, (nextArticle) => {
   view.value = 'today'
   visibleTranslationIds.value = []
   selectedToken.value = null
+  readExpansionAiStates.value = {}
+  showAiExpansionConsent.value = false
+  pendingAiExpansionTerm = null
   startedAt.value = null
   hasJustCompleted.value = false
   completedSession.value = nextArticle
@@ -112,6 +155,14 @@ watch(ttsSettings, () => {
   showCloudConsent.value = false
   pendingReadAloudAction = null
   player.stop()
+})
+
+watch(readExpansionSettings, () => {
+  saveReadExpansionSettings(window.localStorage, readExpansionSettings.value)
+  if (!readExpansionSettings.value.ai.enabled) {
+    showAiExpansionConsent.value = false
+    pendingAiExpansionTerm = null
+  }
 })
 
 watch(player.activeSentenceId, (sentenceId) => {
@@ -241,6 +292,74 @@ function useWebSpeechReadAloud() {
   }
 }
 
+function requestAiExpansion(term: ReadExpansionTerm) {
+  if (!readExpansionSettings.value.ai.enabled || !aiExpansionConfigured.value) {
+    showReadExpansionSettings.value = true
+    return
+  }
+
+  if (!readExpansionSettings.value.ai.consentAccepted) {
+    pendingAiExpansionTerm = term
+    showAiExpansionConsent.value = true
+    return
+  }
+
+  void fetchAiExpansion(term)
+}
+
+function acceptAiExpansion() {
+  readExpansionSettings.value = {
+    ...readExpansionSettings.value,
+    ai: {
+      ...readExpansionSettings.value.ai,
+      consentAccepted: true,
+    },
+  }
+  showAiExpansionConsent.value = false
+  const term = pendingAiExpansionTerm
+  pendingAiExpansionTerm = null
+  if (term) {
+    void fetchAiExpansion(term)
+  }
+}
+
+function declineAiExpansion() {
+  showAiExpansionConsent.value = false
+  pendingAiExpansionTerm = null
+}
+
+async function fetchAiExpansion(term: ReadExpansionTerm): Promise<void> {
+  const currentState = readExpansionAiStates.value[term.id]
+  if (currentState?.status === 'loading' || currentState?.status === 'ready') {
+    return
+  }
+
+  readExpansionAiStates.value = {
+    ...readExpansionAiStates.value,
+    [term.id]: { status: 'loading' },
+  }
+
+  try {
+    const expansion = await requestAiWordExpansion({
+      provider: 'openai',
+      apiKey: readExpansionSettings.value.ai.openai.apiKey,
+      baseUrl: readExpansionSettings.value.ai.openai.baseUrl,
+      model: readExpansionSettings.value.ai.openai.model,
+      term,
+    })
+    readExpansionAiStates.value = {
+      ...readExpansionAiStates.value,
+      [term.id]: { status: 'ready', expansion },
+    }
+  }
+  catch {
+    readExpansionAiStates.value = {
+      ...readExpansionAiStates.value,
+      [term.id]: { status: 'failed', message: 'AI 释义暂时取不到。本地释义仍可使用。' },
+    }
+  }
+}
+
 function completeReading() {
   if (!article.value) {
     return
@@ -363,6 +482,16 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         v-if="showTtsSettings"
         v-model="ttsSettings"
       />
+      <ReadExpansionSettingsPanel
+        v-if="showReadExpansionSettings"
+        v-model="readExpansionSettings"
+      />
+      <ReadExpansionConsent
+        v-if="showAiExpansionConsent && !hasJustCompleted"
+        :provider-label="aiProviderLabel"
+        @accept="acceptAiExpansion"
+        @decline="declineAiExpansion"
+      />
 
       <ArticleReader
         :article="article"
@@ -372,10 +501,17 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :selected-token-id="selectedToken?.id ?? null"
         :selected-token="selectedToken"
         :is-selected-token-saved="selectedToken ? savedVocabularyIds.includes(selectedToken.id) : false"
+        :selected-expansion-term="selectedExpansionTerm"
+        :ai-state-for-selected-term="selectedAiExpansionState"
+        :ai-enabled="readExpansionSettings.ai.enabled"
+        :ai-configured="aiExpansionConfigured"
+        :provider-label="aiProviderLabel"
         @press-sentence="pressSentence"
         @select-token="selectToken"
         @save-token="saveToken"
         @close-token-popover="closeTokenPopover"
+        @request-ai-expansion="requestAiExpansion"
+        @open-expansion-settings="showReadExpansionSettings = true"
         @toggle-playback="togglePlayback"
         @complete="completeReading"
       />
@@ -408,8 +544,17 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
 
       <CompletionPanel
         ref="completionPanel"
+        v-model:read-expansion-settings="readExpansionSettings"
         :article="article"
         :session="hasJustCompleted ? completedSession : null"
+        :read-expansion-terms="readExpansionTerms"
+        :read-expansion-ai-states="readExpansionAiStates"
+        :ai-configured="aiExpansionConfigured"
+        :ai-provider-label="aiProviderLabel"
+        :show-ai-consent-prompt="showAiExpansionConsent"
+        @request-ai-expansion="requestAiExpansion"
+        @accept-ai-expansion="acceptAiExpansion"
+        @decline-ai-expansion="declineAiExpansion"
       />
     </template>
   </main>

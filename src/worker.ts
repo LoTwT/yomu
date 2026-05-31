@@ -19,9 +19,14 @@ interface Env {
 
 const mimoTtsPath = '/api/tts/mimo'
 const urlImportPath = '/api/import/url'
+const aiExpansionPath = '/api/extensions/ai'
 const defaultTokenPlanBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
+const defaultOpenAiBaseUrl = 'https://api.openai.com/v1'
 const allowedMimoHosts = new Set(['token-plan-cn.xiaomimimo.com'])
+const allowedAiHosts = new Set(['api.openai.com'])
 const maxTtsSentenceChars = 1_200
+const maxAiContextChars = 360
+const maxAiTermChars = 80
 const ttsNoStoreHeaders = {
   'cache-control': 'no-store',
   pragma: 'no-cache',
@@ -32,6 +37,9 @@ export default {
     const url = new URL(request.url)
     if (url.pathname === mimoTtsPath) {
       return handleMimoTtsRequest(request, env)
+    }
+    if (url.pathname === aiExpansionPath) {
+      return handleAiExpansionRequest(request)
     }
     if (url.pathname === urlImportPath) {
       return handleUrlImportRequest(request)
@@ -215,6 +223,71 @@ export async function handleMimoTtsRequest(request: Request, env: Env): Promise<
   return ttsJson(normalized)
 }
 
+export async function handleAiExpansionRequest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return privateJsonError('Only POST is supported for AI expansion.', 405)
+  }
+  const body = await readJsonBody(request)
+  if (!body.ok) {
+    return privateJsonError(body.message, 400)
+  }
+
+  const provider = body.value.provider === 'openai' ? 'openai' : null
+  if (!provider) {
+    return privateJsonError('This AI provider is not supported.', 400)
+  }
+
+  const apiKey = typeof body.value.apiKey === 'string' ? body.value.apiKey.trim() : ''
+  if (!apiKey) {
+    return privateJsonError('Add your AI API key before requesting AI expansion.', 401)
+  }
+
+  const baseUrl = normalizeAiBaseUrl(typeof body.value.baseUrl === 'string' ? body.value.baseUrl : defaultOpenAiBaseUrl)
+  if (!baseUrl) {
+    return privateJsonError('This AI endpoint is not supported.', 400)
+  }
+
+  const term = normalizeAiTextField(body.value.term, maxAiTermChars)
+  const context = normalizeAiTextField(body.value.context, maxAiContextChars)
+  const localGloss = normalizeAiTextField(body.value.localGloss, maxAiContextChars)
+  if (!term) {
+    return privateJsonError('A word is required for AI expansion.', 400)
+  }
+
+  const model = normalizeAiTextField(body.value.model, 80) || 'gpt-4.1-mini'
+  try {
+    const providerResponse = await fetch(`${baseUrl}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify(buildOpenAiExpansionPayload({
+        term,
+        context,
+        localGloss,
+        model,
+      })),
+    })
+
+    if (!providerResponse.ok) {
+      return mapAiProviderError(providerResponse.status)
+    }
+
+    const payload = await providerResponse.json() as Record<string, unknown>
+    const expansion = normalizeOpenAiExpansion(payload, model)
+    if (!expansion) {
+      return privateJsonError('The AI provider did not return a usable word expansion.', 502)
+    }
+
+    return privateJson(expansion)
+  }
+  catch {
+    return privateJsonError('The AI provider is temporarily unavailable.', 502)
+  }
+}
+
 async function readJsonBody(request: Request): Promise<
   | { ok: true, value: Record<string, unknown> }
   | { ok: false, message: string }
@@ -312,6 +385,20 @@ function mapProviderError(status: number): Response {
   return ttsJsonError('This sentence could not be synthesized.', 502)
 }
 
+function mapAiProviderError(status: number): Response {
+  if (status === 401 || status === 403) {
+    return privateJsonError('The AI provider rejected this request.', status)
+  }
+  if (status === 429) {
+    return privateJsonError('The AI provider is rate-limited right now.', 429)
+  }
+  if (status >= 500) {
+    return privateJsonError('The AI provider is temporarily unavailable.', 502)
+  }
+
+  return privateJsonError('This word could not be expanded.', 502)
+}
+
 function json(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), {
     status,
@@ -329,6 +416,14 @@ function ttsJson(payload: unknown, status = 200): Response {
 
 function ttsJsonError(message: string, status: number): Response {
   return ttsJson({ error: message }, status)
+}
+
+function privateJson(payload: unknown, status = 200): Response {
+  return json(payload, status, ttsNoStoreHeaders)
+}
+
+function privateJsonError(message: string, status: number): Response {
+  return privateJson({ error: message }, status)
 }
 
 function jsonImportFailure(failure: ImportFailure, status: number): Response {
@@ -433,6 +528,122 @@ function normalizeMimoBaseUrl(baseUrl: string): string | null {
   catch {
     return null
   }
+}
+
+function normalizeAiBaseUrl(baseUrl: string): string | null {
+  try {
+    const url = new URL(normalizeBaseUrl(baseUrl))
+    if (url.protocol !== 'https:' || !allowedAiHosts.has(url.hostname)) {
+      return null
+    }
+
+    return url.toString().replace(/\/+$/, '')
+  }
+  catch {
+    return null
+  }
+}
+
+function normalizeAiTextField(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value.trim().slice(0, maxLength)
+}
+
+function buildOpenAiExpansionPayload(input: {
+  term: string
+  context: string
+  localGloss: string
+  model: string
+}): Record<string, unknown> {
+  return {
+    model: input.model,
+    input: [
+      {
+        role: 'system',
+        content: 'You write concise English-learning word notes. Return only valid JSON with keys meaning, examples, background. Do not include markdown.',
+      },
+      {
+        role: 'user',
+        content: [
+          `word: ${input.term}`,
+          `local_gloss: ${input.localGloss || 'none'}`,
+          `sentence_context: ${input.context || input.term}`,
+          'Write Chinese explanations for a Chinese learner. Keep examples short and based on the word, not the full article.',
+        ].join('\n'),
+      },
+    ],
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'word_expansion',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            meaning: { type: 'string' },
+            examples: {
+              type: 'array',
+              items: { type: 'string' },
+              maxItems: 2,
+            },
+            background: { type: 'string' },
+          },
+          required: ['meaning', 'examples', 'background'],
+        },
+      },
+    },
+  }
+}
+
+function normalizeOpenAiExpansion(payload: Record<string, unknown>, model: string): Record<string, unknown> | null {
+  const rawText = findOpenAiOutputText(payload)
+  if (!rawText) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(rawText) as Record<string, unknown>
+    const meaning = typeof parsed.meaning === 'string' ? parsed.meaning.trim() : ''
+    if (!meaning) {
+      return null
+    }
+
+    return {
+      meaning,
+      examples: Array.isArray(parsed.examples)
+        ? parsed.examples.filter((example): example is string => typeof example === 'string' && example.trim().length > 0).slice(0, 2)
+        : [],
+      background: typeof parsed.background === 'string' ? parsed.background.trim() : '',
+      provider: 'OpenAI',
+      model,
+    }
+  }
+  catch {
+    return null
+  }
+}
+
+function findOpenAiOutputText(payload: Record<string, unknown>): string | null {
+  if (typeof payload.output_text === 'string') {
+    return payload.output_text
+  }
+
+  const output = Array.isArray(payload.output) ? payload.output : []
+  for (const item of output) {
+    if (!isRecord(item) || !Array.isArray(item.content)) {
+      continue
+    }
+    for (const content of item.content) {
+      if (isRecord(content) && typeof content.text === 'string') {
+        return content.text
+      }
+    }
+  }
+
+  return null
 }
 
 function mimeTypeForFormat(format: TtsAudioFormat): string {
