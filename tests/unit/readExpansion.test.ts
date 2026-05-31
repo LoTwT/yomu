@@ -38,7 +38,7 @@ describe('read expansion local floor', () => {
     const terms = extractReadExpansionTerms(publicDomainSampleArticle)
 
     expect(terms.length).toBeGreaterThan(0)
-    expect(terms.some(term => term.term === 'overhead' && term.rank === 'above-level')).toBe(true)
+    expect(terms.some(term => term.term === 'telescope' && term.rank === 'above-level')).toBe(true)
     expect(terms.every(term => !term.context.includes(publicDomainSampleArticle.sentences.map(sentence => sentence.original).join(' ')))).toBe(true)
   })
 })

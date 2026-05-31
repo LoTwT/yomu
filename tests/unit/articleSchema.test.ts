@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { isArticlePackageReady } from '@/features/article/articlePackageLoader'
-import { publicDomainSampleArticle } from '@/features/article/publicDomainSample'
+import { publicDomainFallbackArticles, publicDomainSampleArticle } from '@/features/article/publicDomainSample'
 import { sampleArticle } from '@/features/article/sampleArticle'
 
 describe('article schema fixture', () => {
@@ -26,23 +26,56 @@ describe('article schema fixture', () => {
     expect(sampleArticle.qaStatus).toBe('approved')
   })
 
-  it('bundles one public-domain example with complete rights metadata for the empty-state fallback', () => {
+  it('bundles public-domain examples with complete rights metadata for the empty-state fallback', () => {
+    expect(publicDomainFallbackArticles.map(article => article.publicDomainMetadata?.difficulty.key)).toEqual([
+      'beginner',
+      'intermediate',
+      'advanced',
+    ])
+
+    for (const article of publicDomainFallbackArticles) {
+      expect(isArticlePackageReady(article)).toBe(true)
+      expect(article.rights.sourceType).toBe('public-domain')
+      expect(article.publicDomainMetadata).toMatchObject({
+        sourceName: 'Project Gutenberg',
+        language: 'en',
+        rightsStatus: 'public-domain-us',
+        allowedUses: {
+          tts: true,
+          cache: true,
+          translation: true,
+        },
+        noRewrite: true,
+      })
+      expect(article.publicDomainMetadata?.id).toMatch(/^gutenberg-/)
+      expect(article.publicDomainMetadata?.retrievedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(article.publicDomainMetadata?.sourceUrl).toMatch(/^https:\/\/www\.gutenberg\.org\/ebooks\/\d+/)
+      expect(article.publicDomainMetadata?.sourceLabel).toContain('美国公共领域')
+      expect(article.publicDomainMetadata?.difficulty.label).toMatch(/^约 /)
+      expect(article.publicDomainMetadata?.difficulty.basis).toContain('average words per sentence')
+      expect(article.sentences.every(sentence => sentence.textHash && sentence.audio?.cacheKey)).toBe(true)
+      expect(article.sentences.every(sentence => sentence.audioRef.url.startsWith('missing://tts-consent-required/'))).toBe(true)
+    }
+  })
+
+  it('keeps Alice as the default public-domain example', () => {
     expect(isArticlePackageReady(publicDomainSampleArticle)).toBe(true)
     expect(publicDomainSampleArticle.rights.sourceType).toBe('public-domain')
     expect(publicDomainSampleArticle.publicDomainMetadata).toMatchObject({
       title: 'Alice’s Adventures in Wonderland',
       author: 'Lewis Carroll',
-      year: '1865',
+      publicationYear: '1865',
       sourceUrl: 'https://www.gutenberg.org/ebooks/11',
-      sourceArchiveDate: '2025-06-26',
-      allowedUses: {
-        tts: true,
-        cache: true,
-        translation: true,
-      },
     })
     expect(publicDomainSampleArticle.publicDomainMetadata?.publicDomainBasis).toContain('public domain in the USA')
-    expect(publicDomainSampleArticle.sentences.every(sentence => sentence.textHash && sentence.audio?.cacheKey)).toBe(true)
-    expect(publicDomainSampleArticle.sentences.every(sentence => sentence.audioRef.url.startsWith('missing://tts-consent-required/'))).toBe(true)
+  })
+
+  it('rejects public-domain packages without no-rewrite rights metadata', () => {
+    const invalid = structuredClone(publicDomainSampleArticle)
+    if (invalid.publicDomainMetadata) {
+      invalid.publicDomainMetadata.noRewrite = false as true
+    }
+
+    expect(isArticlePackageReady(invalid)).toBe(false)
   })
 })

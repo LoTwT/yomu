@@ -15,6 +15,11 @@ import {
   loadTodayArticlePackage,
   type ArticlePackageLoadResult,
 } from './features/article/articlePackageLoader'
+import {
+  getPublicDomainFallbackArticle,
+  publicDomainDifficultyOptions,
+} from './features/article/publicDomainSample'
+import type { PublicDomainDifficultyKey } from './features/article/types'
 import type { ArticleToken, DailyArticle } from './features/article/types'
 import type { DisplayPreferences } from './features/preferences/types'
 import { defaultDisplayPreferences } from './features/preferences/types'
@@ -51,6 +56,7 @@ import {
 
 const articleLoadResult = shallowRef<ArticlePackageLoadResult>({ status: 'loading' })
 const view = shallowRef<'today' | 'reader'>('today')
+const publicDomainDifficulty = shallowRef<PublicDomainDifficultyKey>('beginner')
 const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreferences })
 const ttsSettings = shallowRef<TtsSettings>({ ...defaultTtsSettings, mimo: { ...defaultTtsSettings.mimo } })
 const readExpansionSettings = shallowRef<ReadExpansionSettings>(defaultReadExpansionSettings)
@@ -75,6 +81,9 @@ const article = computed<DailyArticle | null>(() =>
 )
 const articleStatus = computed(() =>
   articleLoadResult.value.status === 'ready' ? null : articleLoadResult.value,
+)
+const publicDomainFallbackArticle = computed(() =>
+  getPublicDomainFallbackArticle(publicDomainDifficulty.value),
 )
 const player = useReadAloudSession(article, createConfiguredSentencePlayer(() => ttsSettings.value))
 
@@ -393,6 +402,14 @@ async function refreshTodayArticle() {
   articleLoadResult.value = await loadTodayArticlePackage()
 }
 
+function openPublicDomainFallback() {
+  articleLoadResult.value = {
+    status: 'ready',
+    article: publicDomainFallbackArticle.value,
+    source: 'public-domain',
+  }
+}
+
 function openCachedArticle() {
   const cachedArticle = articleLoadResult.value.status !== 'ready' && 'cachedArticle' in articleLoadResult.value
     ? articleLoadResult.value.cachedArticle
@@ -467,8 +484,13 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
     <ArticleStatusCard
       v-else-if="view === 'today' && articleStatus"
       :state="articleStatus"
+      :public-domain-article="publicDomainFallbackArticle"
+      :public-domain-difficulty="publicDomainDifficulty"
+      :public-domain-difficulties="publicDomainDifficultyOptions"
       @retry="refreshTodayArticle"
       @open-cached="openCachedArticle"
+      @set-public-domain-difficulty="publicDomainDifficulty = $event"
+      @open-public-domain="openPublicDomainFallback"
     />
 
     <template v-else-if="article">
