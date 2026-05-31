@@ -14,11 +14,12 @@ export interface SentencePlayer {
     sentenceId: string
     audioUrl: string
     text: string
+    textHash: string
     language: string
     durationMs: number
     playbackRate: number
     onEnded: () => void
-  }) => SentencePlaybackHandle
+  }) => SentencePlaybackHandle | Promise<SentencePlaybackHandle>
 }
 
 const sentencePauseMs = 600
@@ -27,7 +28,7 @@ const paragraphPauseMs = 1100
 export function createBrowserSentencePlayer(): SentencePlayer {
   return {
     playSentence(options) {
-      if (options.audioUrl.startsWith('fixture://')) {
+      if (options.audioUrl.startsWith('fixture://') || options.audioUrl.startsWith('webspeech://')) {
         return playWithSpeechSynthesis(options)
       }
 
@@ -62,6 +63,7 @@ export function useReadAloudSession(
 
   let currentPlayback: SentencePlaybackHandle | null = null
   let advanceTimer: ReturnType<typeof setTimeout> | null = null
+  let playbackRunId = 0
 
   function clearAdvanceTimer() {
     if (!advanceTimer) {
@@ -73,6 +75,7 @@ export function useReadAloudSession(
   }
 
   function stopCurrentPlayback() {
+    playbackRunId += 1
     clearAdvanceTimer()
     currentPlayback?.stop()
     currentPlayback = null
@@ -87,6 +90,7 @@ export function useReadAloudSession(
     }
 
     stopCurrentPlayback()
+    const runId = playbackRunId
     activeSentenceId.value = sentence.id
 
     if (!isPlayableAudioRef(sentence.audioRef.url, sentence.audioRef.durationMs)) {
@@ -97,10 +101,11 @@ export function useReadAloudSession(
 
     audioStatus.value = 'loading'
     isPlaying.value = true
-    currentPlayback = player.playSentence({
+    const playbackResult = player.playSentence({
       sentenceId: sentence.id,
       audioUrl: sentence.audioRef.url,
       text: sentence.original,
+      textHash: sentence.textHash ?? sentence.id,
       language: currentArticle.language,
       durationMs: sentence.audioRef.durationMs,
       playbackRate: playbackRate.value,
@@ -108,7 +113,32 @@ export function useReadAloudSession(
         scheduleNextSentence(index)
       },
     })
-    audioStatus.value = 'playing'
+
+    if (!isPromiseLike(playbackResult)) {
+      currentPlayback = playbackResult
+      audioStatus.value = 'playing'
+      return
+    }
+
+    void Promise.resolve(playbackResult)
+      .then((playback) => {
+        if (runId !== playbackRunId || activeSentenceId.value !== sentence.id) {
+          playback.stop()
+          return
+        }
+
+        currentPlayback = playback
+        audioStatus.value = 'playing'
+      })
+      .catch(() => {
+        if (runId !== playbackRunId || activeSentenceId.value !== sentence.id) {
+          return
+        }
+
+        currentPlayback = null
+        isPlaying.value = false
+        audioStatus.value = 'failed'
+      })
   }
 
   function scheduleNextSentence(index: number) {
@@ -211,12 +241,16 @@ export function useReadAloudSession(
 }
 
 function isPlayableAudioRef(url: string, durationMs: number): boolean {
-  return Boolean(url) && durationMs > 0 && !url.startsWith('missing://')
+  return Boolean(url) && (durationMs > 0 || url.startsWith('missing://tts-consent-required/'))
 }
 
 function getSentenceGroup(sentenceId: string): string {
   const paragraphMatch = /^(.+)-s\d+$/i.exec(sentenceId)
   return paragraphMatch?.[1] ?? 'default'
+}
+
+function isPromiseLike(value: SentencePlaybackHandle | Promise<SentencePlaybackHandle>): value is Promise<SentencePlaybackHandle> {
+  return typeof (value as Promise<SentencePlaybackHandle>).then === 'function'
 }
 
 function playWithAudioElement(options: Parameters<SentencePlayer['playSentence']>[0]): SentencePlaybackHandle {

@@ -7,6 +7,7 @@ import AssistiveDisplayControls from './components/AssistiveDisplayControls.vue'
 import CompletionPanel from './components/CompletionPanel.vue'
 import ReadAloudControls from './components/ReadAloudControls.vue'
 import TodayCard from './components/TodayCard.vue'
+import TtsSettingsPanel from './components/TtsSettingsPanel.vue'
 import {
   loadCachedArticlePackage,
   loadTodayArticlePackage,
@@ -25,10 +26,24 @@ import {
   saveSavedVocabularyIds,
   type PracticeSessionRecord,
 } from './features/storage/practiceStorage'
+import { createConfiguredSentencePlayer } from './features/tts/configuredSentencePlayer'
+import {
+  defaultTtsSettings,
+  getActiveTtsProvider,
+  getTtsProviderLabel,
+  loadTtsSettings,
+  saveTtsSettings,
+  type TtsSettings,
+} from './features/tts/settings'
 
 const articleLoadResult = shallowRef<ArticlePackageLoadResult>({ status: 'loading' })
 const view = shallowRef<'today' | 'reader'>('today')
 const preferences = shallowRef<DisplayPreferences>({ ...defaultDisplayPreferences })
+const ttsSettings = shallowRef<TtsSettings>({ ...defaultTtsSettings, mimo: { ...defaultTtsSettings.mimo } })
+const showTtsSettings = shallowRef(false)
+const webSpeechAvailable = shallowRef(false)
+const cloudConsentAccepted = shallowRef(false)
+const showCloudConsent = shallowRef(false)
 const completedSession = shallowRef<PracticeSessionRecord | null>(null)
 const startedAt = shallowRef<number | null>(null)
 const hasJustCompleted = shallowRef(false)
@@ -42,13 +57,31 @@ const article = computed<DailyArticle | null>(() =>
 const articleStatus = computed(() =>
   articleLoadResult.value.status === 'ready' ? null : articleLoadResult.value,
 )
-const player = useReadAloudSession(article)
+const player = useReadAloudSession(article, createConfiguredSentencePlayer(() => ttsSettings.value))
 
 const activeIndex = computed(() => Math.max(player.currentIndex.value, 0))
+const activeTtsProvider = computed(() => getActiveTtsProvider(ttsSettings.value))
+const providerLabel = computed(() => getTtsProviderLabel(ttsSettings.value))
+const canPlayReadAloud = computed(() => {
+  if (activeTtsProvider.value === 'mimo') {
+    return true
+  }
+
+  return webSpeechAvailable.value
+})
+const readAloudDisabledReason = computed(() => {
+  if (!canPlayReadAloud.value) {
+    return '这个浏览器不支持 Web Speech 朗读。填入 MiMo key 后可启用神经语音。'
+  }
+
+  return null
+})
 
 onMounted(() => {
   const storedPreferences = loadDisplayPreferences(window.localStorage)
   preferences.value = storedPreferences
+  ttsSettings.value = loadTtsSettings(window.localStorage)
+  webSpeechAvailable.value = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
   savedVocabularyIds.value = loadSavedVocabularyIds(window.localStorage)
   void refreshTodayArticle()
 })
@@ -70,6 +103,13 @@ watch(preferences, () => {
   if (!preferences.value.showTranslation) {
     hiddenTranslationIds.value = []
   }
+})
+
+watch(ttsSettings, () => {
+  saveTtsSettings(window.localStorage, ttsSettings.value)
+  cloudConsentAccepted.value = false
+  showCloudConsent.value = false
+  player.stop()
 })
 
 watch(player.activeSentenceId, (sentenceId) => {
@@ -144,7 +184,38 @@ function togglePlayback() {
     return
   }
 
+  handlePlay()
+}
+
+function handlePlay() {
+  if (!canPlayReadAloud.value) {
+    showTtsSettings.value = true
+    return
+  }
+
+  if (activeTtsProvider.value === 'mimo' && !cloudConsentAccepted.value) {
+    showCloudConsent.value = true
+    return
+  }
+
   player.play()
+}
+
+function acceptCloudReadAloud() {
+  cloudConsentAccepted.value = true
+  showCloudConsent.value = false
+  player.play()
+}
+
+function continueReadOnly() {
+  showCloudConsent.value = false
+}
+
+function useWebSpeechReadAloud() {
+  ttsSettings.value = {
+    ...ttsSettings.value,
+    provider: 'webspeech',
+  }
 }
 
 function completeReading() {
@@ -265,6 +336,10 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         </button>
         <AssistiveDisplayControls v-model="preferences" />
       </div>
+      <TtsSettingsPanel
+        v-if="showTtsSettings"
+        v-model="ttsSettings"
+      />
 
       <ArticleReader
         :article="article"
@@ -288,14 +363,23 @@ async function keepSelectedTokenClearOfStickyControls(): Promise<void> {
         :total="article.sentences.length"
         :is-playing="player.isPlaying.value"
         :audio-status="player.audioStatus.value"
+        :active-provider="activeTtsProvider"
         :playback-rate="player.playbackRate.value"
-        @play="player.play()"
+        :provider-label="providerLabel"
+        :can-play="canPlayReadAloud"
+        :disabled-reason="readAloudDisabledReason"
+        :show-cloud-consent="showCloudConsent"
+        @play="handlePlay"
         @pause="player.pause()"
         @previous="player.previous()"
         @next="player.next()"
         @repeat="player.repeat()"
         @skip-audio="player.next()"
         @retry-audio="player.repeat()"
+        @open-settings="showTtsSettings = !showTtsSettings"
+        @accept-cloud-read-aloud="acceptCloudReadAloud"
+        @continue-read-only="continueReadOnly"
+        @use-web-speech="useWebSpeechReadAloud"
         @set-rate="player.setPlaybackRate($event)"
       />
 

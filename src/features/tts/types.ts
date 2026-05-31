@@ -1,4 +1,4 @@
-export type TtsProviderId = 'mimo'
+export type TtsProviderId = 'webspeech' | 'mimo'
 export type TtsAudioFormat = 'mp3' | 'wav'
 export type TtsCacheSource = 'cache' | 'network'
 

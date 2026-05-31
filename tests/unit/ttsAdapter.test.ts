@@ -57,6 +57,7 @@ describe('MiMo TTS adapter', () => {
       endpoint: '/api/tts/mimo',
       fetchImpl,
       cache: createMemorySentenceAudioCache(),
+      getCredentials: () => ({ apiKey: 'user-key', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' }),
     })
 
     const first = await provider.synthesizeSentence(request)
@@ -66,8 +67,9 @@ describe('MiMo TTS adapter', () => {
     expect(second.source).toBe('cache')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/tts/mimo')
+    expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).toContain('user-key')
     expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).not.toContain('MIMO_API_KEY')
-    expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).not.toContain('xiaomimimo.com')
+    expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain('xiaomimimo.com')
   })
 
   it('formats the MiMo chat-completions TTS payload with assistant text and optional style guidance', () => {
@@ -90,7 +92,7 @@ describe('MiMo TTS adapter', () => {
     ])
   })
 
-  it('keeps MiMo credentials server-side and maps provider failures without exposing key state', async () => {
+  it('requires BYOK credentials and maps provider failures without exposing key state', async () => {
     const missingKey = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
       method: 'POST',
       body: JSON.stringify(request),
@@ -98,23 +100,72 @@ describe('MiMo TTS adapter', () => {
       ASSETS: { fetch: vi.fn() },
     })
 
-    expect(missingKey.status).toBe(503)
-    expect(await missingKey.text()).not.toContain('key')
+    expect(missingKey.status).toBe(401)
+    expect(missingKey.headers.get('cache-control')).toBe('no-store')
+    expect(missingKey.headers.get('pragma')).toBe('no-cache')
+    expect(await missingKey.text()).not.toContain('secret-key')
 
     const providerFetch = vi.fn(async () => new Response('no', { status: 401 }))
     vi.stubGlobal('fetch', providerFetch)
 
     const rejected = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
       method: 'POST',
-      body: JSON.stringify(request),
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
     }), {
       ASSETS: { fetch: vi.fn() },
-      MIMO_API_KEY: 'secret-key',
     })
 
     expect(rejected.status).toBe(401)
+    expect(rejected.headers.get('cache-control')).toBe('no-store')
+    expect(rejected.headers.get('pragma')).toBe('no-cache')
     expect(await rejected.text()).not.toContain('secret-key')
     expect(providerFetch.mock.calls[0]?.[0]).toBe('https://token-plan-cn.xiaomimimo.com/v1/chat/completions')
+  })
+
+  it('marks successful MiMo BYOK endpoint responses as no-store', async () => {
+    const providerFetch = vi.fn(async () =>
+      new Response(JSON.stringify({
+        audioBase64: btoa('mp3-bytes'),
+        mimeType: 'audio/mpeg',
+        durationMs: 1200,
+      }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('pragma')).toBe('no-cache')
+    expect(await response.text()).not.toContain('secret-key')
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects unsupported MiMo base URLs instead of proxying arbitrary hosts', async () => {
+    const providerFetch = vi.fn()
+    vi.stubGlobal('fetch', providerFetch)
+
+    const rejected = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...request,
+        apiKey: 'secret-key',
+        baseUrl: 'https://example.com/v1',
+      }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(rejected.status).toBe(400)
+    expect(await rejected.text()).not.toContain('secret-key')
+    expect(providerFetch).not.toHaveBeenCalled()
   })
 
   it('keeps URL import SSRF checks server-side before fetching remote pages', async () => {

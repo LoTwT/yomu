@@ -20,6 +20,17 @@ async function openFreshApp(page: Page) {
   await page.reload()
 }
 
+async function openFreshAppWithStorage(page: Page, entries: Record<string, string>) {
+  await page.goto('/')
+  await page.evaluate((storageEntries) => {
+    localStorage.clear()
+    for (const [key, value] of Object.entries(storageEntries)) {
+      localStorage.setItem(key, value)
+    }
+  }, entries)
+  await page.reload()
+}
+
 async function installSpeechSynthesisProbe(page: Page) {
   await page.addInitScript(() => {
     const spokenTexts: string[] = []
@@ -58,28 +69,36 @@ async function installSpeechSynthesisProbe(page: Page) {
 }
 
 test('renders today card and starts the in-page read aloud experience', async ({ page }) => {
+  const ttsRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/tts/mimo')) {
+      ttsRequests.push(request.url())
+    }
+  })
   await installSpeechSynthesisProbe(page)
   await openFreshApp(page)
 
   await expect(page.getByRole('heading', { name: articleTitle })).toBeVisible()
   await page.getByRole('button', { name: 'Start reading' }).click()
 
-  const controls = page.getByRole('region', { name: 'Read aloud controls' })
+  const controls = page.getByRole('region', { name: '逐句领读控制' })
   await expect(controls).toBeVisible()
-  await expect.poll(() => controls.evaluate(element => element.getBoundingClientRect().height)).toBeLessThan(82)
-  await controls.getByRole('button', { name: 'More read-aloud options' }).click()
-  await expect(controls.getByRole('button', { name: 'Repeat sentence' })).toBeVisible()
+  await expect(controls.getByText('浏览器朗读')).toBeVisible()
+  await expect.poll(() => controls.evaluate(element => element.getBoundingClientRect().height)).toBeLessThan(132)
+  await controls.getByRole('button', { name: '更多朗读选项' }).click()
+  await expect(controls.getByRole('button', { name: '重复本句' })).toBeVisible()
   await page.keyboard.press('Escape')
 
-  await page.getByRole('button', { name: 'Play lead voice' }).click()
+  await page.getByRole('button', { name: '播放朗读' }).click()
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-  await expect(page.locator('.read-aloud-controls__status')).toContainText('Lead voice playing')
-  await expect(page.getByText(`1/${sentenceCount}`)).toBeVisible()
+  await expect(page.locator('.read-aloud-controls__status')).toContainText('第 1/12 句,浏览器朗读进行中')
+  await expect(page.getByText(`1/${sentenceCount}`, { exact: true })).toBeVisible()
   const spokenTexts = await page.evaluate(() => (window as unknown as { __spokenTexts: string[] }).__spokenTexts)
   expect(spokenTexts).toEqual([
     `en-US|1|${firstSentence}`,
   ])
+  expect(ttsRequests).toEqual([])
 })
 
 test('toggles IPA and translation as display scaffolds and keeps them off by default', async ({ page }) => {
@@ -120,7 +139,7 @@ test('stores completion records locally after an explicit finish action', async 
   const completionHeading = page.getByRole('heading', { name: "You've finished today's reading ✓" })
   await expect(completionHeading).toBeVisible()
   await expect(completionHeading).toBeFocused()
-  await expect(page.getByRole('region', { name: 'Read aloud controls' })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: '逐句领读控制' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'Background / source' })).toBeVisible()
   const sourceLink = page.getByRole('link', { name: primarySourceTitle })
   await expect(sourceLink).toBeVisible()
@@ -164,23 +183,36 @@ test('shows offline fallback when the article package cannot load and no saved p
   await expect(page.getByText('Reconnect to load it')).toBeVisible()
 })
 
-test('keeps visual reading available when a sentence audio ref fails', async ({ page }) => {
-  await page.route('**/articles/today.json', async (route) => {
-    const response = await route.fetch()
-    const article = await response.json()
-    article.sentences[0].audioRef.url = 'missing://audio/s1'
-    await route.fulfill({ json: article })
+test('keeps visual reading available when cloud TTS fails', async ({ page }) => {
+  await page.route('**/api/tts/mimo', route => route.fulfill({
+    status: 502,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'The speech provider is temporarily unavailable.' }),
+  }))
+  await openFreshAppWithStorage(page, {
+    'yomu:tts-settings': JSON.stringify({
+      provider: 'mimo',
+      mimo: {
+        apiKey: 'user-key',
+        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+        model: 'mimo-v2.5-tts',
+        voice: 'Mia',
+        format: 'mp3',
+      },
+    }),
   })
-  await openFreshApp(page)
 
   await page.getByRole('button', { name: 'Start reading' }).click()
-  await page.getByRole('button', { name: 'Play lead voice' }).click()
+  await page.getByRole('button', { name: '播放朗读' }).click()
+  await page.getByRole('button', { name: '开始云朗读' }).click()
 
   await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
-  await expect(page.locator('[aria-live="polite"]').filter({ hasText: "This line's read-aloud didn't load." })).toHaveCount(1)
-  await expect(page.locator('.read-aloud-controls__fallback')).toContainText("This line's read-aloud didn't load.")
-  await expect(page.getByRole('button', { name: 'Skip' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
+  await expect(page.locator('[aria-live="polite"]').filter({ hasText: '第 1/12 句,这一句朗读没有加载成功' })).toHaveCount(1)
+  await expect(page.locator('.read-aloud-controls__fallback')).toContainText('这一句朗读没有加载成功。')
+  await expect(page.getByRole('button', { name: '跳过' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '重试' })).toBeVisible()
+  await page.getByRole('button', { name: '改用浏览器朗读' }).click()
+  await expect(page.getByRole('region', { name: '逐句领读控制' }).getByText('浏览器朗读')).toBeVisible()
   await expect(page.locator('#s1')).toContainText('Everynight')
 })
 
@@ -192,11 +224,11 @@ test.describe('mobile word popover layout', () => {
     await page.getByRole('button', { name: 'Start reading' }).click()
     await page.getByLabel('IPA').check()
     await page.getByLabel('Translation').check()
-    await page.getByRole('button', { name: 'Play lead voice' }).click()
+    await page.getByRole('button', { name: '播放朗读' }).click()
 
     await expect(page.locator('#s1')).toHaveAttribute('aria-current', 'true')
     await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
-    await page.getByRole('button', { name: 'Pause lead voice' }).click()
+    await page.getByRole('button', { name: '暂停朗读' }).click()
     await page.getByRole('button', { name: 'Save word' }).click()
     await page.waitForTimeout(100)
 
