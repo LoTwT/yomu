@@ -6,12 +6,19 @@ export interface MimoTtsProviderOptions {
   endpoint?: string
   fetchImpl?: typeof fetch
   cache?: SentenceAudioCache
+  getCredentials?: () => MimoTtsCredentials
+}
+
+interface MimoTtsCredentials {
+  apiKey: string
+  baseUrl?: string
 }
 
 export function createMimoTtsProvider(options: MimoTtsProviderOptions = {}): SentenceTtsProvider {
   const endpoint = options.endpoint ?? '/api/tts/mimo'
   const fetchImpl = options.fetchImpl ?? fetch
   const cache = options.cache ?? createNullSentenceAudioCache()
+  const getCredentials: () => MimoTtsCredentials = options.getCredentials ?? (() => ({ apiKey: '' }))
 
   return {
     async synthesizeSentence(request: TtsSynthesisRequest): Promise<TtsSynthesisResult> {
@@ -21,6 +28,7 @@ export function createMimoTtsProvider(options: MimoTtsProviderOptions = {}): Sen
         return { ...cached, source: 'cache' }
       }
 
+      const credentials = getCredentials()
       const response = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -28,6 +36,8 @@ export function createMimoTtsProvider(options: MimoTtsProviderOptions = {}): Sen
           'content-type': 'application/json',
         },
         body: JSON.stringify({
+          apiKey: credentials.apiKey,
+          baseUrl: credentials.baseUrl,
           sentenceId: request.sentenceId,
           text: request.text,
           textHash: request.textHash,

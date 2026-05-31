@@ -2,13 +2,19 @@
 import { computed, shallowRef } from 'vue'
 
 import type { AudioStatus } from '@/features/player/useReadAloudSession'
+import type { TtsProviderId } from '@/features/tts/types'
 
 const props = defineProps<{
   activeIndex: number
   total: number
   isPlaying: boolean
   audioStatus: AudioStatus
+  activeProvider: TtsProviderId
   playbackRate: number
+  providerLabel: string
+  canPlay: boolean
+  disabledReason: string | null
+  showCloudConsent: boolean
 }>()
 
 const emit = defineEmits<{
@@ -19,17 +25,37 @@ const emit = defineEmits<{
   repeat: []
   retryAudio: []
   skipAudio: []
+  openSettings: []
+  acceptCloudReadAloud: []
+  continueReadOnly: []
+  useWebSpeech: []
   setRate: [rate: number]
 }>()
 
 const rates = [0.85, 1, 1.15]
 const isMoreOpen = shallowRef(false)
+const sentencePositionLabel = computed(() => props.total > 0
+  ? `第 ${props.activeIndex + 1}/${props.total} 句`
+  : '未选择句子')
 const progressPercent = computed(() => {
   if (props.total <= 0) {
     return 0
   }
 
   return Math.min(100, Math.max(0, ((props.activeIndex + 1) / props.total) * 100))
+})
+const liveStatusText = computed(() => {
+  if (props.audioStatus === 'loading') {
+    return `${sentencePositionLabel.value},准备朗读中`
+  }
+  if (props.audioStatus === 'failed') {
+    return `${sentencePositionLabel.value},这一句朗读没有加载成功`
+  }
+  if (props.isPlaying) {
+    return `${sentencePositionLabel.value},${props.providerLabel}进行中`
+  }
+
+  return `${sentencePositionLabel.value},朗读已暂停`
 })
 
 function setRate(rate: number) {
@@ -44,36 +70,51 @@ function repeatSentence() {
 </script>
 
 <template>
-  <section class="read-aloud-controls" aria-label="Read aloud controls" role="region">
+  <section class="read-aloud-controls" aria-label="逐句领读控制" role="region">
     <div class="read-aloud-controls__meter" aria-hidden="true">
       <span :style="{ inlineSize: `${progressPercent}%` }" />
     </div>
     <p class="read-aloud-controls__status read-aloud-controls__sr" aria-live="polite">
-      <span v-if="audioStatus === 'loading'">Loading audio...</span>
-      <span v-else-if="audioStatus === 'failed'">This line's read-aloud didn't load.</span>
-      <span v-else-if="isPlaying">Lead voice playing</span>
-      <span v-else>Lead voice paused</span>
+      {{ liveStatusText }}
     </p>
+    <div class="read-aloud-controls__provider-row">
+      <span class="read-aloud-controls__provider">{{ providerLabel }}</span>
+      <button type="button" class="read-aloud-controls__settings" @click="emit('openSettings')">
+        语音设置
+      </button>
+    </div>
+    <div v-if="showCloudConsent" class="read-aloud-controls__cloud-consent">
+      <p>
+        MiMo 云朗读只会在你按下播放时发送当前句子,并按所选语音服务条款处理。
+      </p>
+      <button type="button" @click="emit('acceptCloudReadAloud')">
+        开始云朗读
+      </button>
+      <button type="button" @click="emit('continueReadOnly')">
+        继续阅读
+      </button>
+    </div>
     <div class="read-aloud-controls__row">
-      <button type="button" aria-label="Previous sentence" @click="emit('previous')">
+      <button type="button" aria-label="上一句" @click="emit('previous')">
         ◁
       </button>
       <button
         type="button"
         class="read-aloud-controls__primary"
-        :aria-label="isPlaying ? 'Pause lead voice' : 'Play lead voice'"
+        :disabled="!canPlay"
+        :aria-label="isPlaying ? '暂停朗读' : '播放朗读'"
         @click="isPlaying ? emit('pause') : emit('play')"
       >
         {{ isPlaying ? '❚❚' : '▶' }}
       </button>
-      <button type="button" aria-label="Next sentence" @click="emit('next')">
+      <button type="button" aria-label="下一句" @click="emit('next')">
         ▷
       </button>
       <span class="read-aloud-controls__count" aria-hidden="true">{{ activeIndex + 1 }}/{{ total }}</span>
       <div class="read-aloud-controls__more-wrap">
         <button
           type="button"
-          aria-label="More read-aloud options"
+          aria-label="更多朗读选项"
           :aria-expanded="isMoreOpen"
           aria-controls="read-aloud-more"
           @click="isMoreOpen = !isMoreOpen"
@@ -87,8 +128,8 @@ function repeatSentence() {
           class="read-aloud-controls__more"
           @keydown.esc.stop.prevent="isMoreOpen = false"
         >
-          <fieldset class="read-aloud-controls__rates" aria-label="Playback speed">
-            <legend>Speed</legend>
+          <fieldset class="read-aloud-controls__rates" aria-label="朗读速度">
+            <legend>速度</legend>
             <button
               v-for="rate in rates"
               :key="rate"
@@ -100,18 +141,31 @@ function repeatSentence() {
             </button>
           </fieldset>
           <button type="button" class="read-aloud-controls__repeat" @click="repeatSentence">
-            Repeat sentence
+            重复本句
           </button>
         </div>
       </div>
     </div>
+    <div v-if="disabledReason" class="read-aloud-controls__fallback">
+      <span>{{ disabledReason }}</span>
+      <button type="button" @click="emit('openSettings')">
+        打开语音设置
+      </button>
+    </div>
     <div v-if="audioStatus === 'failed'" class="read-aloud-controls__fallback">
-      <span aria-hidden="true">This line's read-aloud didn't load.</span>
+      <span aria-hidden="true">这一句朗读没有加载成功。</span>
       <button type="button" @click="emit('skipAudio')">
-        Skip
+        跳过
       </button>
       <button type="button" @click="emit('retryAudio')">
-        Try again
+        重试
+      </button>
+      <button
+        v-if="activeProvider === 'mimo'"
+        type="button"
+        @click="emit('useWebSpeech')"
+      >
+        改用浏览器朗读
       </button>
     </div>
   </section>
@@ -155,6 +209,33 @@ function repeatSentence() {
   gap: 0.45rem;
 }
 
+.read-aloud-controls__provider-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
+  margin-block-end: 0.45rem;
+  padding-inline: 0.25rem;
+}
+
+.read-aloud-controls__provider {
+  color: var(--yomu-muted);
+  font-size: 0.82rem;
+}
+
+.read-aloud-controls__settings {
+  min-block-size: 2rem !important;
+  min-inline-size: 0 !important;
+  border: 0 !important;
+  padding-inline: 0 !important;
+  background: transparent !important;
+  color: var(--yomu-accent) !important;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--yomu-accent) 45%, transparent);
+  text-underline-offset: 0.18em;
+}
+
 .read-aloud-controls__sr {
   position: absolute;
   width: 1px;
@@ -188,6 +269,22 @@ function repeatSentence() {
   padding-block-start: 0.55rem;
   color: var(--yomu-muted);
   font-size: 0.9rem;
+}
+
+.read-aloud-controls__cloud-consent {
+  display: grid;
+  gap: 0.55rem;
+  border-block-start: 1px solid var(--yomu-rule);
+  border-block-end: 1px solid var(--yomu-rule);
+  margin-block: 0.55rem;
+  padding-block: 0.65rem;
+  color: var(--yomu-muted);
+  font-size: 0.9rem;
+}
+
+.read-aloud-controls__cloud-consent p {
+  margin: 0;
+  line-height: 1.55;
 }
 
 .read-aloud-controls__more {
@@ -232,6 +329,11 @@ function repeatSentence() {
   font: inherit;
   font-size: 0.9rem;
   cursor: pointer;
+}
+
+.read-aloud-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .read-aloud-controls__primary {

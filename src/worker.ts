@@ -14,15 +14,18 @@ interface Env {
   ASSETS: {
     fetch: (request: Request) => Promise<Response>
   }
-  MIMO_API_KEY?: string
-  MIMO_BASE_URL?: string
   MIMO_TTS_MODEL?: string
 }
 
 const mimoTtsPath = '/api/tts/mimo'
 const urlImportPath = '/api/import/url'
 const defaultTokenPlanBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
+const allowedMimoHosts = new Set(['token-plan-cn.xiaomimimo.com'])
 const maxTtsSentenceChars = 1_200
+const ttsNoStoreHeaders = {
+  'cache-control': 'no-store',
+  pragma: 'no-cache',
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -156,23 +159,29 @@ async function resolveDnsAnswers(hostname: string, type: 'A' | 'AAAA'): Promise<
 
 export async function handleMimoTtsRequest(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') {
-    return jsonError('Only POST is supported for sentence synthesis.', 405)
+    return ttsJsonError('Only POST is supported for sentence synthesis.', 405)
   }
-  if (!env.MIMO_API_KEY) {
-    return jsonError('Speech synthesis is not configured.', 503)
-  }
-
   const body = await readJsonBody(request)
   if (!body.ok) {
-    return jsonError(body.message, 400)
+    return ttsJsonError(body.message, 400)
+  }
+
+  const apiKey = typeof body.value.apiKey === 'string' ? body.value.apiKey.trim() : ''
+  if (!apiKey) {
+    return ttsJsonError('Add your MiMo API key before cloud read-aloud.', 401)
+  }
+
+  const baseUrl = normalizeMimoBaseUrl(typeof body.value.baseUrl === 'string' ? body.value.baseUrl : defaultTokenPlanBaseUrl)
+  if (!baseUrl) {
+    return ttsJsonError('This MiMo endpoint is not supported.', 400)
   }
 
   const text = typeof body.value.text === 'string' ? body.value.text.trim() : ''
   if (!text) {
-    return jsonError('Sentence text is required.', 400)
+    return ttsJsonError('Sentence text is required.', 400)
   }
   if (text.length > maxTtsSentenceChars) {
-    return jsonError('This sentence is too long for one synthesis request.', 413)
+    return ttsJsonError('This sentence is too long for one synthesis request.', 413)
   }
 
   const format = body.value.format === 'wav' ? 'wav' : defaultMimoTtsFormat
@@ -184,10 +193,10 @@ export async function handleMimoTtsRequest(request: Request, env: Env): Promise<
     format,
   })
 
-  const providerResponse = await fetch(`${normalizeBaseUrl(env.MIMO_BASE_URL ?? defaultTokenPlanBaseUrl)}/chat/completions`, {
+  const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${env.MIMO_API_KEY}`,
+      authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
       accept: 'application/json, audio/mpeg, audio/wav',
     },
@@ -200,10 +209,10 @@ export async function handleMimoTtsRequest(request: Request, env: Env): Promise<
 
   const normalized = await normalizeProviderAudioResponse(providerResponse, format)
   if (!normalized) {
-    return jsonError('The speech provider did not return audio for this sentence.', 502)
+    return ttsJsonError('The speech provider did not return audio for this sentence.', 502)
   }
 
-  return json(normalized)
+  return ttsJson(normalized)
 }
 
 async function readJsonBody(request: Request): Promise<
@@ -291,27 +300,35 @@ function findDurationMs(payload: Record<string, unknown>): number | undefined {
 
 function mapProviderError(status: number): Response {
   if (status === 401 || status === 403) {
-    return jsonError('The speech provider rejected this sentence.', status)
+    return ttsJsonError('The speech provider rejected this sentence.', status)
   }
   if (status === 429) {
-    return jsonError('The speech provider is rate-limited right now.', 429)
+    return ttsJsonError('The speech provider is rate-limited right now.', 429)
   }
   if (status >= 500) {
-    return jsonError('The speech provider is temporarily unavailable.', 502)
+    return ttsJsonError('The speech provider is temporarily unavailable.', 502)
   }
 
-  return jsonError('This sentence could not be synthesized.', 502)
+  return ttsJsonError('This sentence could not be synthesized.', 502)
 }
 
-function json(payload: unknown, status = 200): Response {
+function json(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
+    headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
   })
 }
 
 function jsonError(message: string, status: number): Response {
   return json({ error: message }, status)
+}
+
+function ttsJson(payload: unknown, status = 200): Response {
+  return json(payload, status, ttsNoStoreHeaders)
+}
+
+function ttsJsonError(message: string, status: number): Response {
+  return ttsJson({ error: message }, status)
 }
 
 function jsonImportFailure(failure: ImportFailure, status: number): Response {
@@ -402,6 +419,20 @@ function encodeBase64(buffer: ArrayBuffer): string {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '')
+}
+
+function normalizeMimoBaseUrl(baseUrl: string): string | null {
+  try {
+    const url = new URL(normalizeBaseUrl(baseUrl))
+    if (url.protocol !== 'https:' || !allowedMimoHosts.has(url.hostname)) {
+      return null
+    }
+
+    return url.toString().replace(/\/+$/, '')
+  }
+  catch {
+    return null
+  }
 }
 
 function mimeTypeForFormat(format: TtsAudioFormat): string {
