@@ -11,7 +11,7 @@ const props = defineProps<{
   article: DailyArticle
   activeSentenceId: string | null
   preferences: DisplayPreferences
-  hiddenTranslationIds: string[]
+  visibleTranslationIds: string[]
   selectedTokenId: string | null
   selectedToken: ArticleToken | null
   isSelectedTokenSaved: boolean
@@ -37,7 +37,7 @@ const selectedTokenSentenceId = computed(() => {
 })
 
 function isTranslationVisible(sentenceId: string): boolean {
-  return props.preferences.showTranslation && !props.hiddenTranslationIds.includes(sentenceId)
+  return props.preferences.showTranslation && props.visibleTranslationIds.includes(sentenceId)
 }
 
 function translationToggleLabel(sentenceIndex: number, sentenceId: string): string {
@@ -76,15 +76,16 @@ function translationToggleLabel(sentenceIndex: number, sentenceId: string): stri
             <SentenceText
               :tokens="sentence.tokens"
               :show-pronunciation="preferences.showPronunciation"
+              :is-active-sentence="sentence.id === activeSentenceId"
               :selected-token-id="selectedTokenId"
               @select-token="emit('selectToken', $event)"
             />
           </div>
           <div v-if="preferences.showTranslation" class="article-reader__translation-wrap">
             <p
+              v-if="isTranslationVisible(sentence.id)"
               :id="`${sentence.id}-translation`"
               class="article-reader__translation"
-              :hidden="!isTranslationVisible(sentence.id)"
               data-testid="sentence-translation"
             >
               {{ sentence.translation }}
@@ -93,7 +94,7 @@ function translationToggleLabel(sentenceIndex: number, sentenceId: string): stri
               class="article-reader__translation-toggle"
               type="button"
               :aria-expanded="isTranslationVisible(sentence.id)"
-              :aria-controls="`${sentence.id}-translation`"
+              :aria-controls="isTranslationVisible(sentence.id) ? `${sentence.id}-translation` : undefined"
               :aria-label="translationToggleLabel(sentenceIndex, sentence.id)"
               @click="emit('pressSentence', sentence.id)"
             >
@@ -217,15 +218,13 @@ function translationToggleLabel(sentenceIndex: number, sentenceId: string): stri
 
 .article-reader__translation {
   border-inline-start: 2px solid var(--yomu-translation-rule);
+  max-block-size: 9rem;
   margin: 0;
   padding-inline-start: 0.8rem;
   color: var(--yomu-muted);
   font-size: 0.95rem;
   line-height: 1.7;
-}
-
-.article-reader__translation[hidden] {
-  display: none;
+  overflow: auto;
 }
 
 .article-reader__translation-toggle {

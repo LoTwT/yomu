@@ -102,6 +102,7 @@ test('renders today card and starts the in-page read aloud experience', async ({
 })
 
 test('toggles IPA and translation as display scaffolds and keeps them off by default', async ({ page }) => {
+  await installSpeechSynthesisProbe(page)
   await openFreshApp(page)
   await page.getByRole('button', { name: 'Start reading' }).click()
 
@@ -112,23 +113,30 @@ test('toggles IPA and translation as display scaffolds and keeps them off by def
   await page.getByLabel('Translation').check()
 
   const visibleTranslations = page.locator('[data-testid="sentence-translation"]:visible')
-  await expect(page.getByTestId('ipa-token').first()).toBeVisible()
-  await expect(page.getByTestId('ipa-token').first()).toContainText('/ˈɛvri/')
-  await expect(visibleTranslations).toHaveCount(sentenceCount)
-  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('ipa-token')).toHaveCount(0)
+  await expect(visibleTranslations).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).not.toHaveAttribute('aria-controls')
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: '播放朗读' }).click()
+  await expect(page.locator('#s1').getByTestId('ipa-token').first()).toBeVisible()
+  await expect(page.locator('#s1').getByTestId('ipa-token').first()).toContainText('/ˈɛvri/')
+  await expect(page.locator('#s2').getByTestId('ipa-token')).toHaveCount(0)
 
   expect(await page.locator('[role="button"] .sentence-text__token').count()).toBe(0)
 
-  await page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true }).focus()
-  await page.keyboard.press('Enter')
-  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toHaveAttribute('aria-expanded', 'false')
-  await expect(visibleTranslations).toHaveCount(sentenceCount - 1)
-
+  await page.getByRole('button', { name: 'Show translation for sentence 1', exact: true }).focus()
   await page.keyboard.press('Enter')
   await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('button', { name: 'Hide translation for sentence 1', exact: true })).toHaveAttribute('aria-controls', 's1-translation')
   await expect(visibleTranslations.first()).toContainText(firstTranslationSnippet)
-  await expect(visibleTranslations).toHaveCount(sentenceCount)
+  await expect(visibleTranslations).toHaveCount(1)
+
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByRole('button', { name: 'Show translation for sentence 1', exact: true })).not.toHaveAttribute('aria-controls')
+  await expect(visibleTranslations).toHaveCount(0)
 })
 
 test('stores completion records locally after an explicit finish action', async ({ page }) => {

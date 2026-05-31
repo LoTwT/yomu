@@ -93,8 +93,8 @@ Buttons: **◁ prev · ▶/⏸ play-pause · ▷ next · 🔁 repeat** + speed +
 - States: `idle | playing | paused | sentenceLoading(准备中) | sentenceFailed | ttsUnavailable`. `sentenceLoading` shows a quiet "准备中…" on the play control while the current sentence's audio resolves (§7). `ttsUnavailable` = TTS gated/disabled (§5.4) → the control bar collapses to a clear disabled affordance, never a play button that silently does nothing.
 
 ### 4.4 Per-sentence augment (under `cur`)
-- **IPA** line (English V1): monospace, accent color. Toggle.
-- **Bilingual 中文** line: collapsible, **default collapsed**; lazy-loaded on expand. Toggle.
+- **IPA** (English V1): current sentence only; non-current sentences keep the reading surface visually calm. Toggle. The implementation may reserve ruby space while hiding non-current IPA to avoid layout jumps.
+- **Bilingual 中文** line: collapsible, **default collapsed**; lazy-loaded on per-sentence expand. Toggle.
 - **查词**: tap a word in `cur` → lightweight gloss (M2 fidelity; M1 wires the affordance).
 - Augment is a **slot** (§6) — IPA today, furigana reserved for Japanese; same structural slot, pluggable annotator.
 
@@ -193,7 +193,7 @@ WCAG AA (≥4.5:1) verified for the signature elements, light + dark:
 | element | light | dark |
 |---|---|---|
 | active-sentence text on amber highlight | **11.76** ✓ | **10.36** ✓ |
-| IPA (teal) on augment wash | **4.98** ✓ | **5.39** ✓ |
+| IPA ruby text (`--yomu-ink-soft`) | **10.11 on paper / 8.14 on active wash** ✓ | dark token review required when dark theme lands |
 | body / bilingual text | 8.81 ✓ | 10.26 ✓ |
 | 「云朗读」cloud label (`--cloud`) | **5.56** ✓ (was #a59a89 2.72 FAIL → #6f6658) | **4.70** ✓ (#938979) |
 
