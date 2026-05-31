@@ -19,6 +19,7 @@ export function createMimoTtsProvider(options: MimoTtsProviderOptions = {}): Sen
   const fetchImpl = options.fetchImpl ?? fetch
   const cache = options.cache ?? createNullSentenceAudioCache()
   const getCredentials: () => MimoTtsCredentials = options.getCredentials ?? (() => ({ apiKey: '' }))
+  const pendingRequests = new Map<string, Promise<TtsSynthesisResult>>()
 
   return {
     async synthesizeSentence(request: TtsSynthesisRequest): Promise<TtsSynthesisResult> {
@@ -28,49 +29,77 @@ export function createMimoTtsProvider(options: MimoTtsProviderOptions = {}): Sen
         return { ...cached, source: 'cache' }
       }
 
-      const credentials = getCredentials()
-      const response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          apiKey: credentials.apiKey,
-          baseUrl: credentials.baseUrl,
-          sentenceId: request.sentenceId,
-          text: request.text,
-          textHash: request.textHash,
-          language: request.language,
-          model: request.model,
-          voice: request.voice,
-          style: request.style,
-          format: request.format,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(toUserSafeTtsError(response.status))
+      const pending = pendingRequests.get(cacheKey)
+      if (pending) {
+        return pending
       }
 
-      const payload = await response.json() as TtsEndpointResponse
-      const result: Omit<TtsSynthesisResult, 'source'> = {
-        provider: request.provider,
-        model: request.model,
-        voice: request.voice,
-        format: request.format,
-        sentenceId: request.sentenceId,
-        textHash: request.textHash,
+      const pendingRequest = synthesizeUncachedSentence({
+        cache,
         cacheKey,
-        audioUrl: createAudioObjectUrl(payload),
-        mimeType: payload.mimeType,
-        durationMs: payload.durationMs ?? estimateDurationMs(request.text),
-      }
-
-      await cache.put(cacheKey, result)
-      return { ...result, source: 'network' }
+        endpoint,
+        fetchImpl,
+        getCredentials,
+        request,
+      }).finally(() => {
+        pendingRequests.delete(cacheKey)
+      })
+      pendingRequests.set(cacheKey, pendingRequest)
+      return pendingRequest
     },
   }
+}
+
+async function synthesizeUncachedSentence(options: {
+  cache: SentenceAudioCache
+  cacheKey: string
+  endpoint: string
+  fetchImpl: typeof fetch
+  getCredentials: () => MimoTtsCredentials
+  request: TtsSynthesisRequest
+}): Promise<TtsSynthesisResult> {
+  const { cache, cacheKey, endpoint, fetchImpl, getCredentials, request } = options
+  const credentials = getCredentials()
+  const response = await fetchImpl(endpoint, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      apiKey: credentials.apiKey,
+      baseUrl: credentials.baseUrl,
+      sentenceId: request.sentenceId,
+      text: request.text,
+      textHash: request.textHash,
+      language: request.language,
+      model: request.model,
+      voice: request.voice,
+      style: request.style,
+      format: request.format,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(toUserSafeTtsError(response.status))
+  }
+
+  const payload = await response.json() as TtsEndpointResponse
+  const result: Omit<TtsSynthesisResult, 'source'> = {
+    provider: request.provider,
+    model: request.model,
+    voice: request.voice,
+    format: request.format,
+    sentenceId: request.sentenceId,
+    textHash: request.textHash,
+    cacheKey,
+    audioUrl: createAudioObjectUrl(payload),
+    mimeType: payload.mimeType,
+    durationMs: payload.durationMs ?? estimateDurationMs(request.text),
+  }
+
+  await cache.put(cacheKey, result)
+  return { ...result, source: 'network' }
 }
 
 function createAudioObjectUrl(payload: TtsEndpointResponse): string {

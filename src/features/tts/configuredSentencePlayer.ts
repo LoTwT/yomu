@@ -4,6 +4,7 @@ import { createTtsCacheKey } from './cacheKey'
 import { createMimoTtsProvider } from './mimoAdapter'
 import { createMemorySentenceAudioCache } from './sentenceAudioCache'
 import { getActiveTtsProvider, type TtsSettings } from './settings'
+import type { TtsSynthesisRequest } from './types'
 
 export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): SentencePlayer {
   const browserPlayer = createBrowserSentencePlayer()
@@ -30,10 +31,7 @@ export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): 
       }
 
       const result = await mimoProvider.synthesizeSentence({
-        provider: 'mimo',
-        model: settings.mimo.model,
-        voice: settings.mimo.voice,
-        format: settings.mimo.format,
+        ...createMimoSynthesisBase(settings),
         sentenceId: options.sentenceId,
         text: options.text,
         textHash: options.textHash,
@@ -46,6 +44,23 @@ export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): 
         durationMs: result.durationMs,
       })
     },
+    prefetchSentences(options) {
+      const settings = getSettings()
+      if (getActiveTtsProvider(settings) !== 'mimo') {
+        return
+      }
+
+      const requestBase = createMimoSynthesisBase(settings)
+      return Promise.all(options.sentences.map(sentence =>
+        mimoProvider.synthesizeSentence({
+          ...requestBase,
+          sentenceId: sentence.id,
+          text: sentence.original,
+          textHash: sentence.textHash ?? sentence.id,
+          language: 'en',
+        }).catch(() => null),
+      )).then(() => undefined)
+    },
   }
 }
 
@@ -57,4 +72,13 @@ export function previewConfiguredCacheKey(settings: TtsSettings, textHash: strin
     format: settings.provider === 'mimo' ? settings.mimo.format : 'mp3',
     textHash,
   })
+}
+
+function createMimoSynthesisBase(settings: TtsSettings): Pick<TtsSynthesisRequest, 'provider' | 'model' | 'voice' | 'format'> {
+  return {
+    provider: 'mimo',
+    model: settings.mimo.model,
+    voice: settings.mimo.voice,
+    format: settings.mimo.format,
+  }
 }

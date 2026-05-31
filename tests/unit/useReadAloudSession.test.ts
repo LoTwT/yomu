@@ -126,6 +126,35 @@ describe('useReadAloudSession', () => {
     vi.useRealTimers()
   })
 
+  it('anchors prefetch while async current-sentence audio is still loading', async () => {
+    let resolvePlayback!: (handle: { stop: () => void }) => void
+    const prefetchSentences = vi.fn()
+    const player: SentencePlayer = {
+      playSentence: vi.fn(() =>
+        new Promise((resolve) => {
+          resolvePlayback = resolve
+        }),
+      ),
+      prefetchSentences,
+    }
+    const session = useReadAloudSession(shallowRef<DailyArticle | null>(sampleArticle), player)
+
+    session.play('s1')
+
+    expect(session.audioStatus.value).toBe('loading')
+    expect(prefetchSentences).toHaveBeenCalledWith({
+      language: 'en',
+      sentences: [
+        { id: 's2', original: sampleArticle.sentences[1]!.original, textHash: sampleArticle.sentences[1]!.textHash },
+        { id: 's3', original: sampleArticle.sentences[2]!.original, textHash: sampleArticle.sentences[2]!.textHash },
+      ],
+    })
+    expect(player.playSentence).toHaveBeenCalledTimes(1)
+
+    resolvePlayback({ stop: vi.fn() })
+    await Promise.resolve()
+  })
+
   it('pauses without changing the active sentence and can repeat it', () => {
     const stop = vi.fn()
     const player: SentencePlayer = {
