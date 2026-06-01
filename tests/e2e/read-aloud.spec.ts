@@ -265,7 +265,20 @@ test('shows article-not-ready fallback when the daily package is not available y
 
   await expect(page.getByRole('heading', { name: "Today's piece is still being prepared." })).toBeVisible()
   await expect(page.getByText("It'll be ready shortly.")).toBeVisible()
+  await expect(page.getByRole('heading', { name: '先读一篇' })).toBeVisible()
+  await expect(page.getByText('运行时不会直连 Project Gutenberg')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '约 初级' })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('button', { name: '约 进阶' }).click()
+  await expect(page.getByText('The Time Traveller Speaks')).toBeVisible()
+  await expect(page.getByText('Project Gutenberg · 美国公共领域')).toBeVisible()
+  await expect(page.getByRole('link', { name: /Project Gutenberg.*在新窗口打开/ })).toHaveAttribute('href', 'https://www.gutenberg.org/ebooks/35')
+  await page.getByRole('button', { name: '读这一篇' }).click()
+  await expect(page.getByText('Today · 约 进阶')).toBeVisible()
+  await expect(page.getByText('Public-domain fallback')).toBeVisible()
+  await page.getByRole('button', { name: 'Start reading' }).click()
+  await expect(page.locator('#public-domain-time-machine-table-s1')).toContainText('TheTimeTraveller')
+  await expect(page.locator('#public-domain-time-machine-table-s1')).toContainText('wasexpoundingareconditemattertous')
 })
 
 test('shows offline fallback when the article package cannot load and no saved package exists', async ({ page }) => {
@@ -277,6 +290,7 @@ test('shows offline fallback when the article package cannot load and no saved p
 
   await expect(page.getByRole('heading', { name: "You're offline, and today's piece isn't saved yet." })).toBeVisible()
   await expect(page.getByText('Reconnect to load it')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '先读一篇' })).toBeVisible()
 })
 
 test('keeps visual reading available when cloud TTS fails', async ({ page }) => {

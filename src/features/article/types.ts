@@ -2,6 +2,14 @@ export type LanguageCode = 'en'
 
 export type ArticleTopic = 'knowledge' | 'story'
 
+export type PublicDomainDifficultyKey = 'beginner' | 'intermediate' | 'advanced'
+
+export interface PublicDomainDifficultyMetadata {
+  key: PublicDomainDifficultyKey
+  label: string
+  basis: string
+}
+
 export interface ArticleRights {
   sourceType: 'ai-generated' | 'public-domain' | 'user-import'
   rightsStatus: 'owned' | 'public-domain'
@@ -26,19 +34,26 @@ export interface ImportedArticleMetadata {
 }
 
 export interface PublicDomainArticleMetadata {
+  id: string
   title: string
   author: string
-  year: string
+  publicationYear: string
+  language: LanguageCode
   sourceUrl: string
-  sourceArchiveDate: string
+  sourceName: string
+  retrievedAt: string
   publicDomainBasis: string
   regionPosture: string
+  rightsStatus: 'public-domain-us' | 'unknown' | 'restricted'
   allowedUses: {
     tts: boolean
     cache: boolean
     translation: boolean
   }
+  difficulty: PublicDomainDifficultyMetadata
   excerptRange: string
+  noRewrite: true
+  sourceLabel: string
   providerCachePolicy: string
 }
 

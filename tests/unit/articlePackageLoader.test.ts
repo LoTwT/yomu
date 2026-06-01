@@ -5,6 +5,7 @@ import {
   loadTodayArticlePackage,
   saveCachedArticlePackage,
 } from '@/features/article/articlePackageLoader'
+import { getPublicDomainFallbackArticle as getBundledPublicDomainFallbackArticle } from '@/features/article/publicDomainSample'
 import { sampleArticle } from '@/features/article/sampleArticle'
 
 describe('article package loader', () => {
@@ -48,5 +49,15 @@ describe('article package loader', () => {
 
     expect(result.status).toBe('ready')
     expect(result.status === 'ready' ? result.source : null).toBe('cache')
+  })
+
+  it('keeps public-domain fallback articles ready for same-origin bundled use', () => {
+    window.localStorage.clear()
+    const article = getBundledPublicDomainFallbackArticle('advanced')
+
+    expect(article.publicDomainMetadata?.difficulty.key).toBe('advanced')
+    expect(article.publicDomainMetadata?.noRewrite).toBe(true)
+    expect(article.publicDomainMetadata?.sourceUrl).toBe('https://www.gutenberg.org/ebooks/35')
+    expect(loadCachedArticlePackage(window.localStorage)?.id).not.toBe(article.id)
   })
 })

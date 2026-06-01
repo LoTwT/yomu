@@ -6,7 +6,7 @@ const CACHED_ARTICLE_PACKAGE_KEY = 'yomu:cached-article-package'
 
 export type ArticlePackageLoadResult =
   | { status: 'loading' }
-  | { status: 'ready', article: DailyArticle, source: 'network' | 'cache' }
+  | { status: 'ready', article: DailyArticle, source: 'network' | 'cache' | 'public-domain' }
   | { status: 'not-ready', cachedArticle: DailyArticle | null }
   | { status: 'offline', cachedArticle: DailyArticle | null }
   | { status: 'error', message: string, cachedArticle: DailyArticle | null }
@@ -196,18 +196,32 @@ function isPublicDomainMetadata(value: unknown): boolean {
     return false
   }
 
-  return typeof value.title === 'string'
+  return typeof value.id === 'string'
+    && typeof value.title === 'string'
     && typeof value.author === 'string'
-    && typeof value.year === 'string'
+    && typeof value.publicationYear === 'string'
+    && value.language === 'en'
     && typeof value.sourceUrl === 'string'
-    && typeof value.sourceArchiveDate === 'string'
+    && typeof value.sourceName === 'string'
+    && typeof value.retrievedAt === 'string'
     && typeof value.publicDomainBasis === 'string'
     && typeof value.regionPosture === 'string'
+    && (value.rightsStatus === 'public-domain-us' || value.rightsStatus === 'unknown' || value.rightsStatus === 'restricted')
     && typeof value.allowedUses.tts === 'boolean'
     && typeof value.allowedUses.cache === 'boolean'
     && typeof value.allowedUses.translation === 'boolean'
+    && isPublicDomainDifficulty(value.difficulty)
     && typeof value.excerptRange === 'string'
+    && value.noRewrite === true
+    && typeof value.sourceLabel === 'string'
     && typeof value.providerCachePolicy === 'string'
+}
+
+function isPublicDomainDifficulty(value: unknown): boolean {
+  return isRecord(value)
+    && (value.key === 'beginner' || value.key === 'intermediate' || value.key === 'advanced')
+    && typeof value.label === 'string'
+    && typeof value.basis === 'string'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
