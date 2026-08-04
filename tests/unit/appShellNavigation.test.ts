@@ -8,19 +8,24 @@ import App from '@/App.vue'
 import { platformServicesKey } from '@/app/platformServices'
 import { createYomuRouter } from '@/app/router'
 import { themeControllerKey } from '@/app/themePreference'
+import type { ArticleRecord, ReadingAttempt } from '@/data/entities'
+import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import type { ThemeController, ThemePreference, ThemeSnapshot } from '@/platform/themeController'
-import {
-  LEGACY_TODAY_ARTICLE_ID,
-} from '@/views/library/libraryFixtures'
 
 const mountedApps: Array<ReturnType<typeof createApp>> = []
 
 beforeEach(() => {
-  window.scrollTo = vi.fn()
+  Object.defineProperty(window, 'scrollTo', {
+    configurable: true,
+    value: vi.fn(),
+  })
 })
 
-async function mountAt(path: string) {
+async function mountAt(
+  path: string,
+  seed: { articles?: ArticleRecord[], attempts?: ReadingAttempt[] } = {},
+) {
   const host = document.createElement('div')
   document.body.append(host)
 
@@ -28,15 +33,16 @@ async function mountAt(path: string) {
   await router.push(path)
   await router.isReady()
 
+  const repositories = createMemoryLocalRepositories(seed)
   const app = createApp(App)
   mountedApps.push(app)
-  app.provide(platformServicesKey, createFakePlatformServices().services)
+  app.provide(platformServicesKey, createFakePlatformServices({ repositories }).services)
   app.provide(themeControllerKey, createTestThemeController())
   app.use(router)
   app.mount(host)
-  await nextTick()
+  await settleView()
 
-  return { host, router }
+  return { host, router, repositories }
 }
 
 function createTestThemeController(): ThemeController {
@@ -60,6 +66,12 @@ function createTestThemeController(): ThemeController {
       listeners.clear()
     },
   }
+}
+
+async function settleView(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await Promise.resolve()
+  await nextTick()
 }
 
 afterEach(() => {
@@ -95,48 +107,92 @@ describe('responsive app shell', () => {
     expect(host.querySelector('h1')?.textContent).toContain('设置')
   })
 
-  it('renders each library article once with a stable article id', async () => {
-    const { host } = await mountAt('/')
+  it('renders repository articles once and links them to the canonical reader', async () => {
+    const article = createArticle()
+    const attempt = createAttempt(article)
+    const { host } = await mountAt('/', {
+      articles: [article],
+      attempts: [attempt],
+    })
     const articleObjects = [...host.querySelectorAll<HTMLElement>('[data-article-id]')]
-    const articleIds = articleObjects.map(element => element.dataset.articleId)
 
-    expect(articleObjects).toHaveLength(4)
-    expect(new Set(articleIds).size).toBe(articleIds.length)
-    expect(host.querySelectorAll('.article-collection')).toHaveLength(1)
-    expect(host.querySelectorAll('.article-object__link')).toHaveLength(4)
-    expect(host.querySelectorAll('.article-object__progress')).toHaveLength(4)
-    expect(host.querySelectorAll('.article-object__link span[lang="en"]')).toHaveLength(4)
-    expect(host.querySelectorAll('.article-object__summary[lang="en"]')).toHaveLength(4)
-    expect(host.querySelector('.continue-card__title[lang="en"]')).not.toBeNull()
-    expect(host.querySelector('.continue-card__summary[lang="en"]')).not.toBeNull()
-    expect(host.querySelector('.recommendation-card__title[lang="en"]')).not.toBeNull()
-    expect(host.querySelector('.recommendation-card__summary[lang="en"]')).not.toBeNull()
-    for (const link of host.querySelectorAll<HTMLAnchorElement>('.article-object__link')) {
-      expect(link.getAttribute('href')).toBe(`/unavailable/${link.closest('[data-article-id]')?.getAttribute('data-article-id')}`)
-      expect(link.getAttribute('aria-label')).toContain('尚未接入')
-      expect(link.getAttribute('title')).toBe('尚未接入')
-    }
-    expect(host.querySelector('.recommendation-card__link')?.getAttribute('href'))
-      .toBe('/unavailable/pride-and-prejudice-excerpt')
-    expect(host.querySelector('.recommendation-card__link')?.getAttribute('aria-label'))
-      .toContain('尚未接入')
-    expect(host.querySelector('.recommendation-card__link svg')).not.toBeNull()
+    expect(articleObjects).toHaveLength(1)
+    expect(articleObjects[0]?.dataset.articleId).toBe(article.id)
+    expect(host.querySelectorAll('[data-testid="article-collection"]')).toHaveLength(1)
+    expect(host.querySelector('.article-object__link')?.getAttribute('href'))
+      .toBe(`/read/${article.id}`)
     expect(host.querySelector('.continue-card__button')?.getAttribute('href'))
-      .toBe(`/read/${LEGACY_TODAY_ARTICLE_ID}`)
+      .toBe(`/read/${article.id}`)
+    expect(host.textContent).toContain('未评估')
+    expect(host.textContent).toContain('第 2 / 3 句')
+    expect(host.querySelector('.recommendation-card__link')?.getAttribute('href'))
+      .toBe('/legacy')
   })
 
-  it('only opens the real Today article in the compatibility reader', async () => {
-    const router = createYomuRouter(createMemoryHistory())
+  it('shows an honest empty library and keeps Today behind the explicit legacy route', async () => {
+    const { host, router } = await mountAt('/')
+    expect(host.querySelector('[data-testid="library-empty-state"]')).not.toBeNull()
+    expect(host.textContent).toContain('导入一段英文即可开始')
 
-    await router.push(`/read/${LEGACY_TODAY_ARTICLE_ID}`)
-    expect(router.currentRoute.value.name).toBe('legacy-reader')
+    await router.push('/legacy')
+    expect(router.currentRoute.value.name).toBe('legacy')
 
-    const { host, router: unavailableRouter } = await mountAt('/read/not-integrated')
-    expect(unavailableRouter.currentRoute.value.name).toBe('article-unavailable')
-    expect(unavailableRouter.currentRoute.value.fullPath).toBe('/unavailable/not-integrated')
-    expect(host.querySelector('.shell-header')).not.toBeNull()
-    expect(host.querySelector('h1')?.textContent).toContain('这篇文章还不能打开')
-    expect(host.textContent).toContain('Yomu 不会用其他正文代替它')
-    expect(host.textContent).toContain('not-integrated')
+    const missing = await mountAt('/read/not-integrated')
+    expect(missing.router.currentRoute.value.name).toBe('reader')
+    expect(missing.router.currentRoute.value.fullPath).toBe('/read/not-integrated')
+    expect(missing.host.querySelector('.shell-header')).toBeNull()
+    expect(missing.host.textContent).toContain('找不到这篇文章')
+    expect(missing.host.textContent).toContain('不会用 Today 或其他正文替代它')
   })
 })
+
+function createArticle(): ArticleRecord {
+  return {
+    id: 'article-repository',
+    schemaVersion: 2,
+    contentHash: 'repository-article-hash',
+    title: 'A real repository article',
+    description: 'This article is loaded from the local repository.',
+    language: 'en',
+    level: 'unassessed',
+    source: { kind: 'paste', label: '粘贴文本' },
+    rights: {
+      status: 'user-provided-unknown',
+      note: 'User-provided content.',
+      ttsAllowed: true,
+      translationAllowed: true,
+      cacheAllowed: true,
+    },
+    capabilities: {
+      sentenceTranslation: 'none',
+      sentenceIpa: 'none',
+      tokenMeaning: 'none',
+    },
+    sentences: [0, 1, 2].map(index => ({
+      id: `article-repository:s${index + 1}`,
+      order: index,
+      paragraphIndex: 0,
+      textHash: `sentence-hash-${index}`,
+      original: `This is repository sentence ${index + 1}.`,
+      tokens: [],
+    })),
+    factSources: [],
+    wordCount: 15,
+    estimatedReadTimeMinutes: 1,
+    createdAt: '2026-08-04T08:00:00.000Z',
+    updatedAt: '2026-08-04T08:00:00.000Z',
+  }
+}
+
+function createAttempt(article: ArticleRecord): ReadingAttempt {
+  return {
+    id: 'attempt-repository',
+    articleId: article.id,
+    currentSentenceId: article.sentences[1]?.id,
+    furthestSentenceOrdinal: 1,
+    activeDurationSec: 30,
+    status: 'active',
+    startedAt: '2026-08-04T08:00:00.000Z',
+    lastOpenedAt: '2026-08-04T08:05:00.000Z',
+  }
+}

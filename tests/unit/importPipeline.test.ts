@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { loadCachedArticlePackage, saveCachedArticlePackage } from '@/features/article/articlePackageLoader'
-import { importArticleFromPaste, importArticleFromTextFile, importArticleFromUrl } from '@/features/import/importArticle'
-import { saveImportedArticle, loadImportedArticle, loadImportedArticleSummaries } from '@/features/import/importedArticleStorage'
+import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
+import {
+  importArticleFromPaste,
+  importArticleFromTextFile,
+  importArticleFromUrl,
+} from '@/features/import/importArticle'
+import { saveImportedArticle } from '@/features/import/saveImportedArticle'
 import { segmentEnglishSentences } from '@/features/import/sentenceSegmenter'
 import { parseSupportedHttpUrl } from '@/features/import/sourceGuards'
 import type { RemoteServiceRequest, RemoteServicesAdapter } from '@/platform/contracts'
@@ -14,10 +18,9 @@ const readableEnglish = [
 ].join(' ')
 
 describe('BYO import pipeline', () => {
-  it('imports pasted text with stable metadata and non-executable sentence content', async () => {
+  it('creates a canonical local preview without executable or playback state', async () => {
     const result = await importArticleFromPaste({
       text: `<article><p>${readableEnglish}</p></article>`,
-      now: new Date('2026-05-31T00:00:00.000Z'),
     })
 
     expect(result.ok).toBe(true)
@@ -25,16 +28,14 @@ describe('BYO import pipeline', () => {
       return
     }
 
-    expect(result.metadata.sourceType).toBe('paste')
-    expect(result.metadata.sourceRef.url).toBeUndefined()
-    expect(result.article.rights.sourceType).toBe('user-import')
-    expect(result.article.importMetadata?.textHash).toMatch(/^[0-9a-f]{16}$/)
-    expect(result.article.sentences).toHaveLength(3)
-    expect(result.article.sentences.every(sentence => !sentence.original.includes('<'))).toBe(true)
-    expect(result.article.sentences.map(sentence => sentence.paragraphIndex)).toEqual([0, 0, 0])
-    expect(result.article.sentences.every(sentence => sentence.textHash && sentence.audio?.cacheKey)).toBe(true)
-    expect(result.article.sentences.every(sentence => !sentence.audio?.cacheKey.includes('careful'))).toBe(true)
-    expect(result.article.sentences.every(sentence => sentence.audioRef.url.startsWith('missing://tts-consent-required/'))).toBe(true)
+    expect(result.draft.source).toEqual({ kind: 'paste', label: '粘贴文本' })
+    expect(result.draft.contentHash).toMatch(/^[0-9a-f]{16}$/)
+    expect(result.draft.sentences).toHaveLength(3)
+    expect(result.draft.sentences.every(sentence => !sentence.original.includes('<'))).toBe(true)
+    expect(result.draft.sentences.map(sentence => sentence.paragraphIndex)).toEqual([0, 0, 0])
+    expect(result.draft.sentences.every(sentence => sentence.textHash)).toBe(true)
+    expect(JSON.stringify(result.draft)).not.toContain('audioRef')
+    expect(JSON.stringify(result.draft)).not.toContain('cacheKey')
   })
 
   it('rejects dangerous pasted script blocks instead of rendering or cleaning them silently', async () => {
@@ -127,7 +128,6 @@ describe('BYO import pipeline', () => {
     const result = await importArticleFromUrl({
       url: 'https://example.com/story',
       remote: remote.adapter,
-      now: new Date('2026-05-31T00:00:00.000Z'),
     })
 
     expect(result.ok).toBe(true)
@@ -135,29 +135,79 @@ describe('BYO import pipeline', () => {
       return
     }
 
-    expect(result.metadata.sourceRef.url).toBe('https://example.com/story')
-    expect(result.article.factSources).toEqual([{ title: 'example.com', url: 'https://example.com/story' }])
+    expect(result.draft.source).toEqual({
+      kind: 'url',
+      label: 'example.com',
+      url: 'https://example.com/story',
+    })
     expect(remote.request).toHaveBeenCalledWith(expect.objectContaining({
       operation: 'url-import',
       body: expect.objectContaining({ url: 'https://example.com/story' }),
     }))
   })
 
-  it('stores imported articles in a separate local library index', async () => {
-    window.localStorage.clear()
-    const result = await importArticleFromPaste({ text: readableEnglish })
-    expect(result.ok).toBe(true)
-    if (!result.ok) {
+  it('atomically saves ArticleRecord plus Attempt and deduplicates by body, not title', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const parsed = await importArticleFromPaste({ text: readableEnglish })
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) {
+      return
+    }
+    const ids = ['article-uuid', 'attempt-uuid']
+    const dependencies = {
+      now: () => new Date('2026-08-04T10:00:00.000Z'),
+      randomUUID: () => ids.shift() ?? 'unexpected-id',
+    }
+
+    const created = await saveImportedArticle(repositories, parsed.draft, dependencies)
+    expect(created.kind).toBe('created')
+    if (created.kind !== 'created') {
+      return
+    }
+    expect(created.article).toMatchObject({
+      id: 'article-uuid',
+      level: 'unassessed',
+      rights: { status: 'user-provided-unknown' },
+      capabilities: {
+        sentenceTranslation: 'none',
+        sentenceIpa: 'none',
+        tokenMeaning: 'none',
+      },
+    })
+    expect(created.article.sentences[0]?.id).toBe('article-uuid:p1-s1')
+    expect(created.article.sentences[0]?.tokens[0]?.id).toBe('article-uuid:p1-s1:t1')
+    expect(created.attempt).toMatchObject({
+      id: 'attempt-uuid',
+      articleId: 'article-uuid',
+      currentSentenceId: 'article-uuid:p1-s1',
+      status: 'active',
+    })
+
+    const duplicate = await saveImportedArticle(repositories, {
+      ...parsed.draft,
+      title: 'A completely different title',
+    })
+    expect(duplicate).toMatchObject({ kind: 'duplicate', article: { id: 'article-uuid' } })
+    expect(await repositories.articles.count()).toBe(1)
+    expect(await repositories.attempts.count()).toBe(1)
+  })
+
+  it('rolls back a malformed save without leaving an article or attempt', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const parsed = await importArticleFromPaste({ text: readableEnglish })
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) {
       return
     }
 
-    saveImportedArticle(window.localStorage, result.article)
-
-    expect(loadImportedArticleSummaries(window.localStorage)).toHaveLength(1)
-    expect(loadImportedArticle(window.localStorage, result.article.id)?.id).toBe(result.article.id)
-
-    saveCachedArticlePackage(window.localStorage, result.article)
-    expect(loadCachedArticlePackage(window.localStorage)?.id).toBe(result.article.id)
+    await expect(saveImportedArticle(repositories, {
+      ...parsed.draft,
+      sentences: [],
+    }, {
+      randomUUID: () => 'malformed-id',
+    })).rejects.toThrow()
+    expect(await repositories.articles.count()).toBe(0)
+    expect(await repositories.attempts.count()).toBe(0)
   })
 })
 

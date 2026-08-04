@@ -17,7 +17,8 @@
     "test": "vitest run",
     "check:boundaries": "node scripts/check-platform-boundaries.mjs",
     "check:build-targets": "vue-tsc -b && node scripts/check-build-targets.mjs",
-    "test:e2e": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost playwright test"
+    "test:e2e": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost playwright test",
+    "verify": "pnpm typecheck && pnpm test && pnpm check:boundaries && pnpm check:build-targets && pnpm test:e2e"
   },
   "dependencies": {
     "@ayingott/theme": "0.2.0",

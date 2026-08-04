@@ -1,28 +1,34 @@
 # Yomu
 
-Daily read-aloud language practice app.
+Local-first English reading library.
 
-Yomu is a miru-adjacent PWA for one daily target-language article with sentence-level lead voice, soft active-sentence highlighting, optional bilingual support, and pronunciation annotations.
+Yomu lets readers bring English content into a private library on the current device, read sentence by sentence, use local read-aloud when available, and resume from the saved sentence without an account.
 
-## V0 Spike
+## Current scope
 
-This repo currently contains the first technical spike for the V0 core:
+The v2 implementation currently includes:
 
-- sentence-first article schema with rights/source metadata;
-- in-page read-aloud state machine and active sentence highlighting;
-- assistive display toggles for on-demand translation and IPA ruby;
-- local completion/preference storage.
+- responsive Paper / Ink application shell built with `@ayingott/theme`;
+- IndexedDB-backed `ArticleRecord`, `ReadingAttempt`, and vocabulary repositories;
+- pasted-text parsing, editable preview, atomic save, body-hash deduplication, and a real local library;
+- canonical reader routing with sentence position and active-time persistence;
+- Web/PWA, desktop-shell, and mobile-shell target builds behind `PlatformServices` boundaries;
+- explicit `/legacy` access to the Today compatibility reader while Reader v2 is developed.
 
-Recorder / ASR / pronunciation scoring are intentionally out of V0.
+TXT / Markdown import and URL Beta are the next Stage 2 slices. Accounts, cloud sync, SRS, PDF / Word import, recorder / ASR, and pronunciation scoring are outside the v2 scope.
+
+The library is isolated per browser profile or app installation. It does not automatically appear on another device.
 
 ## Commands
 
 ```bash
 pnpm install
-pnpm run typecheck
+pnpm typecheck
 pnpm test
-pnpm run build
+pnpm check:boundaries
+pnpm check:build-targets
 CI=1 pnpm test:e2e
+pnpm verify
 ```
 
 ## Deploy
@@ -30,8 +36,8 @@ CI=1 pnpm test:e2e
 Yomu deploys as a Cloudflare Workers Static Assets app.
 
 ```bash
-pnpm run build
-pnpm run deploy
+pnpm build
+pnpm deploy
 ```
 
 Production route: `yomu.ayingott.me`.

@@ -2,10 +2,10 @@
 import { PhArrowRight, PhCalendarBlank } from '@phosphor-icons/vue'
 import { RouterLink } from 'vue-router'
 
-import type { LibraryArticle } from './libraryFixtures'
+import type { LibraryArticleViewModel } from '@/features/library/libraryViewModel'
 
 defineProps<{
-  article: LibraryArticle
+  article: LibraryArticleViewModel
 }>()
 </script>
 
@@ -16,7 +16,7 @@ defineProps<{
         {{ article.title }}
       </h3>
       <p class="continue-card__meta">
-        {{ article.level }} · {{ article.estimatedMinutes }} 分钟 · {{ article.lastSentence }}
+        {{ article.sourceLabel }} · {{ article.levelLabel }} · {{ article.estimatedMinutes }} 分钟
       </p>
       <p v-if="article.summary" class="continue-card__summary" lang="en">
         {{ article.summary }}
@@ -33,7 +33,7 @@ defineProps<{
       />
       <RouterLink
         class="continue-card__button"
-        :to="{ name: 'legacy-reader', params: { articleId: article.id } }"
+        :to="{ name: 'reader', params: { articleId: article.id } }"
       >
         继续阅读
         <PhArrowRight aria-hidden="true" :size="21" />
@@ -42,7 +42,7 @@ defineProps<{
 
     <p class="continue-card__device">
       <PhCalendarBlank aria-hidden="true" :size="17" />
-      存储在此设备
+      {{ article.currentSentenceLabel ?? article.status }} · 存储在此设备
     </p>
   </article>
 </template>
