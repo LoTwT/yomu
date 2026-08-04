@@ -2,12 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createTtsCacheKey } from '@/features/tts/cacheKey'
 import { maxUrlResponseBytes } from '@/features/import/sourceGuards'
+import { createTimedSentencePlayer } from '@/features/player/useReadAloudSession'
 import { createConfiguredSentencePlayer } from '@/features/tts/configuredSentencePlayer'
 import { createMimoTtsProvider } from '@/features/tts/mimoAdapter'
 import { buildMimoTtsPayload } from '@/features/tts/mimoPayload'
 import { createMemorySentenceAudioCache } from '@/features/tts/sentenceAudioCache'
 import { defaultTtsSettings, type TtsSettings } from '@/features/tts/settings'
-import type { TtsSynthesisRequest } from '@/features/tts/types'
+import type {
+  SentenceAudioCache,
+  TtsEndpointResponse,
+  TtsSynthesisRequest,
+  TtsSynthesisResult,
+} from '@/features/tts/types'
+import type { RemoteServiceRequest, RemoteServicesAdapter } from '@/platform/contracts'
 import { handleAiExpansionRequest, handleMimoTtsRequest, handleUrlImportRequest } from '@/worker'
 
 const request: TtsSynthesisRequest = {
@@ -26,6 +33,7 @@ describe('MiMo TTS adapter', () => {
   beforeEach(() => {
     class TestUrl extends URL {
       static createObjectURL = vi.fn(() => 'blob:yomu-audio')
+      static revokeObjectURL = vi.fn()
     }
 
     vi.stubGlobal('URL', TestUrl)
@@ -45,19 +53,33 @@ describe('MiMo TTS adapter', () => {
     expect(createTtsCacheKey({ ...request, voice: 'Dean' })).not.toBe(cacheKey)
   })
 
-  it('calls the same-origin yomu endpoint and reuses sentence-level cache hits', async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({
-        audioBase64: btoa('mp3-bytes'),
-        mimeType: 'audio/mpeg',
-        durationMs: 1200,
-      }), {
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
+  it('revokes replaced, deleted, and cleared object URLs from the memory cache', async () => {
+    const cache = createMemorySentenceAudioCache()
+
+    await cache.put('first', createCachedResult('blob:first'))
+    await cache.put('first', createCachedResult('blob:replacement'))
+    await cache.put('remote', createCachedResult('https://cdn.example/audio.mp3'))
+    await cache.delete('first')
+    await cache.put('last', createCachedResult('blob:last'))
+    await cache.clear()
+
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls.map(([url]) => url)).toEqual([
+      'blob:first',
+      'blob:replacement',
+      'blob:last',
+    ])
+    await expect(cache.get('remote')).resolves.toBeNull()
+  })
+
+  it('delegates MiMo synthesis to the remote service boundary and reuses cache hits', async () => {
+    const remote = createRemoteRecorder(() => ({
+      audioBase64: btoa('mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1200,
+    } satisfies TtsEndpointResponse))
     const provider = createMimoTtsProvider({
-      endpoint: '/api/tts/mimo',
-      fetchImpl,
+      remote: remote.adapter,
       cache: createMemorySentenceAudioCache(),
       getCredentials: () => ({ apiKey: 'user-key', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' }),
     })
@@ -67,40 +89,40 @@ describe('MiMo TTS adapter', () => {
 
     expect(first.source).toBe('network')
     expect(second.source).toBe('cache')
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/api/tts/mimo')
-    expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).toContain('user-key')
-    expect(JSON.stringify(fetchImpl.mock.calls[0]?.[1])).not.toContain('MIMO_API_KEY')
-    expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain('xiaomimimo.com')
+    expect(remote.request).toHaveBeenCalledTimes(1)
+    expect(remote.request.mock.calls[0]?.[0]).toMatchObject({
+      operation: 'mimo-tts',
+      body: {
+        apiKey: 'user-key',
+        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+        sentenceId: request.sentenceId,
+      },
+    })
+    expect(JSON.stringify(remote.request.mock.calls[0]?.[0])).not.toContain('MIMO_API_KEY')
   })
 
   it('dedupes in-flight MiMo synthesis requests for the same sentence cache key', async () => {
-    let resolveFetch!: (response: Response) => void
-    const fetchImpl = vi.fn(() =>
-      new Promise<Response>((resolve) => {
-        resolveFetch = resolve
+    let resolveRemote!: (response: TtsEndpointResponse) => void
+    const remote = createRemoteRecorder(() =>
+      new Promise<TtsEndpointResponse>((resolve) => {
+        resolveRemote = resolve
       }),
     )
     const provider = createMimoTtsProvider({
-      endpoint: '/api/tts/mimo',
-      fetchImpl,
+      remote: remote.adapter,
       cache: createMemorySentenceAudioCache(),
       getCredentials: () => ({ apiKey: 'user-key', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1' }),
     })
 
     const first = provider.synthesizeSentence(request)
     const second = provider.synthesizeSentence(request)
-    await Promise.resolve()
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(1))
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
-
-    resolveFetch(new Response(JSON.stringify({
+    resolveRemote({
       audioBase64: btoa('mp3-bytes'),
       mimeType: 'audio/mpeg',
       durationMs: 1200,
-    }), {
-      headers: { 'content-type': 'application/json' },
-    }))
+    })
 
     const [firstResult, secondResult] = await Promise.all([first, second])
     const cached = await provider.synthesizeSentence(request)
@@ -108,20 +130,175 @@ describe('MiMo TTS adapter', () => {
     expect(firstResult.source).toBe('network')
     expect(secondResult.source).toBe('network')
     expect(cached.source).toBe('cache')
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(remote.request).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts a new generation after cache clear without reusing or recaching stale requests', async () => {
+    const deferredRequests: Array<{
+      request: RemoteServiceRequest
+      resolve: (response: TtsEndpointResponse) => void
+    }> = []
+    const remote = createRemoteRecorder(remoteRequest =>
+      new Promise<TtsEndpointResponse>((resolve) => {
+        deferredRequests.push({ request: remoteRequest, resolve })
+      }),
+    )
+    const entries = new Map<string, Omit<TtsSynthesisResult, 'source'>>()
+    const cache: SentenceAudioCache = {
+      get: vi.fn(async cacheKey => entries.get(cacheKey) ?? null),
+      put: vi.fn(async (cacheKey, result) => {
+        entries.set(cacheKey, result)
+      }),
+      delete: vi.fn(async cacheKey => {
+        entries.delete(cacheKey)
+      }),
+      clear: vi.fn(async () => {
+        entries.clear()
+      }),
+    }
+    let apiKey = 'key-a'
+    const provider = createMimoTtsProvider({
+      remote: remote.adapter,
+      cache,
+      getCredentials: () => ({ apiKey }),
+    })
+
+    const stale = provider.synthesizeSentence(request)
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(1))
+
+    apiKey = 'key-b'
+    await provider.clearCache()
+    expect(deferredRequests[0]?.request.signal?.aborted).toBe(true)
+    expect(cache.clear).toHaveBeenCalledTimes(1)
+
+    const current = provider.synthesizeSentence(request)
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(2))
+    expect(remote.request.mock.calls.map(call => call[0].body.apiKey)).toEqual(['key-a', 'key-b'])
+
+    deferredRequests[0]?.resolve({
+      audioBase64: btoa('stale-mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1100,
+    })
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+    expect(cache.put).not.toHaveBeenCalled()
+
+    const joinedCurrent = provider.synthesizeSentence(request)
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(2))
+
+    deferredRequests[1]?.resolve({
+      audioBase64: btoa('current-mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 2200,
+    })
+    const [currentResult, joinedResult] = await Promise.all([current, joinedCurrent])
+    expect(currentResult).toMatchObject({ source: 'network', durationMs: 2200 })
+    expect(joinedResult).toMatchObject({ source: 'network', durationMs: 2200 })
+    expect(cache.put).toHaveBeenCalledTimes(1)
+
+    const cached = await provider.synthesizeSentence(request)
+    expect(cached).toMatchObject({ source: 'cache', durationMs: 2200 })
+    expect(remote.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels pending synthesis without clearing completed cache entries', async () => {
+    let resolvePending!: (response: TtsEndpointResponse) => void
+    const pendingRequest = {
+      ...request,
+      sentenceId: 'p1-s2',
+      text: 'This sentence remains pending until the session stops.',
+      textHash: 'pending-text-hash',
+    }
+    const remote = createRemoteRecorder(remoteRequest => {
+      if (remoteRequest.body.textHash === request.textHash) {
+        return {
+          audioBase64: btoa('cached-mp3-bytes'),
+          mimeType: 'audio/mpeg',
+          durationMs: 1200,
+        } satisfies TtsEndpointResponse
+      }
+      return new Promise<TtsEndpointResponse>((resolve) => {
+        resolvePending = resolve
+      })
+    })
+    const cache = createMemorySentenceAudioCache()
+    const clearCache = vi.spyOn(cache, 'clear')
+    const provider = createMimoTtsProvider({
+      remote: remote.adapter,
+      cache,
+      getCredentials: () => ({ apiKey: 'user-key' }),
+    })
+
+    await provider.synthesizeSentence(request)
+    const pending = provider.synthesizeSentence(pendingRequest)
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(2))
+
+    provider.cancelPending()
+    expect(remote.request.mock.calls[1]?.[0].signal?.aborted).toBe(true)
+    resolvePending({
+      audioBase64: btoa('stale-mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1300,
+    })
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+
+    const cached = await provider.synthesizeSentence(request)
+    expect(cached.source).toBe('cache')
+    expect(clearCache).not.toHaveBeenCalled()
+    expect(remote.request).toHaveBeenCalledTimes(2)
+  })
+
+  it('removes a cache entry committed while pending cancellation invalidates its generation', async () => {
+    vi.mocked(URL.createObjectURL)
+      .mockReturnValueOnce('blob:stale-audio')
+      .mockReturnValueOnce('blob:fresh-audio')
+    const remote = createRemoteRecorder(() => ({
+      audioBase64: btoa('mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1200,
+    } satisfies TtsEndpointResponse))
+    const entries = new Map<string, Omit<TtsSynthesisResult, 'source'>>()
+    let cancelDuringPut = true
+    let provider!: ReturnType<typeof createMimoTtsProvider>
+    const cache: SentenceAudioCache = {
+      get: vi.fn(async cacheKey => entries.get(cacheKey) ?? null),
+      put: vi.fn(async (cacheKey, result) => {
+        entries.set(cacheKey, result)
+        if (cancelDuringPut) {
+          cancelDuringPut = false
+          provider.cancelPending()
+        }
+      }),
+      delete: vi.fn(async cacheKey => {
+        entries.delete(cacheKey)
+      }),
+      clear: vi.fn(async () => {
+        entries.clear()
+      }),
+    }
+    provider = createMimoTtsProvider({
+      remote: remote.adapter,
+      cache,
+      getCredentials: () => ({ apiKey: 'user-key' }),
+    })
+
+    await expect(provider.synthesizeSentence(request))
+      .rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:stale-audio')
+    expect(entries.size).toBe(0)
+
+    const retry = await provider.synthesizeSentence(request)
+    expect(retry).toMatchObject({ source: 'network', audioUrl: 'blob:fresh-audio' })
+    expect(remote.request).toHaveBeenCalledTimes(2)
   })
 
   it('prefetches upcoming MiMo sentences but skips Web Speech', async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({
-        audioBase64: btoa('mp3-bytes'),
-        mimeType: 'audio/mpeg',
-        durationMs: 1200,
-      }), {
-        headers: { 'content-type': 'application/json' },
-      }),
-    )
-    vi.stubGlobal('fetch', fetchImpl)
+    const remote = createRemoteRecorder(() => ({
+      audioBase64: btoa('mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1200,
+    } satisfies TtsEndpointResponse))
 
     let settings: TtsSettings = {
       ...defaultTtsSettings,
@@ -131,7 +308,10 @@ describe('MiMo TTS adapter', () => {
         apiKey: 'user-key',
       },
     }
-    const player = createConfiguredSentencePlayer(() => settings)
+    const player = createConfiguredSentencePlayer(() => settings, {
+      browserPlayer: createTimedSentencePlayer(),
+      remote: remote.adapter,
+    })
 
     await player.prefetchSentences?.({
       language: 'en',
@@ -152,9 +332,44 @@ describe('MiMo TTS adapter', () => {
       ],
     })
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
-    expect(fetchImpl.mock.calls.map(call => JSON.parse(String(call[1]?.body)).sentenceId)).toEqual(['p1-s2', 'p1-s3'])
-    expect(fetchImpl.mock.calls.every(call => String(call[0]) === '/api/tts/mimo')).toBe(true)
+    expect(remote.request).toHaveBeenCalledTimes(2)
+    expect(remote.request.mock.calls.map(call => call[0].body.sentenceId)).toEqual(['p1-s2', 'p1-s3'])
+    expect(remote.request.mock.calls.every(call => call[0].operation === 'mimo-tts')).toBe(true)
+  })
+
+  it('routes configured-player pending cancellation without requiring a cache clear', async () => {
+    const remote = createRemoteRecorder(remoteRequest =>
+      new Promise<TtsEndpointResponse>((_resolve, reject) => {
+        remoteRequest.signal?.addEventListener('abort', () => reject(remoteRequest.signal?.reason), {
+          once: true,
+        })
+      }),
+    )
+    const settings: TtsSettings = {
+      ...defaultTtsSettings,
+      provider: 'mimo',
+      mimo: {
+        ...defaultTtsSettings.mimo,
+        apiKey: 'user-key',
+      },
+    }
+    const player = createConfiguredSentencePlayer(() => settings, {
+      browserPlayer: createTimedSentencePlayer(),
+      remote: remote.adapter,
+    })
+
+    const prefetch = player.prefetchSentences?.({
+      language: 'en',
+      sentences: [
+        { id: 'p1-s2', original: 'The pending sentence should be canceled.', textHash: 'hash-s2' },
+      ],
+    })
+    await vi.waitFor(() => expect(remote.request).toHaveBeenCalledTimes(1))
+
+    await player.cancelPending?.()
+
+    expect(remote.request.mock.calls[0]?.[0].signal?.aborted).toBe(true)
+    await expect(prefetch).resolves.toBeUndefined()
   })
 
   it('formats the MiMo chat-completions TTS payload with assistant text and optional style guidance', () => {
@@ -498,3 +713,30 @@ describe('MiMo TTS adapter', () => {
     expect(canceled).toBe(true)
   })
 })
+
+function createRemoteRecorder(
+  handler: (request: RemoteServiceRequest) => unknown | Promise<unknown>,
+): { adapter: RemoteServicesAdapter, request: ReturnType<typeof vi.fn> } {
+  const request = vi.fn(handler)
+  const adapter: RemoteServicesAdapter = {
+    request<TResponse>(remoteRequest: RemoteServiceRequest): Promise<TResponse> {
+      return Promise.resolve(request(remoteRequest)) as Promise<TResponse>
+    },
+  }
+  return { adapter, request }
+}
+
+function createCachedResult(audioUrl: string): Omit<TtsSynthesisResult, 'source'> {
+  return {
+    provider: request.provider,
+    model: request.model,
+    voice: request.voice,
+    format: request.format,
+    sentenceId: request.sentenceId,
+    textHash: request.textHash,
+    cacheKey: createTtsCacheKey(request),
+    audioUrl,
+    mimeType: 'audio/mpeg',
+    durationMs: 1200,
+  }
+}

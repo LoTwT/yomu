@@ -11,26 +11,39 @@ export type ArticlePackageLoadResult =
   | { status: 'offline', cachedArticle: DailyArticle | null }
   | { status: 'error', message: string, cachedArticle: DailyArticle | null }
 
+export interface ArticlePackageStorage {
+  getItem: (key: string) => string | null
+  setItem: (key: string, value: string) => void
+}
+
 interface LoadTodayArticlePackageOptions {
   fetchImpl?: typeof fetch
   online?: boolean
   packageUrl?: string
-  storage?: Storage
+  storage: ArticlePackageStorage
 }
 
 export async function loadTodayArticlePackage(
-  options: LoadTodayArticlePackageOptions = {},
+  options: LoadTodayArticlePackageOptions,
 ): Promise<ArticlePackageLoadResult> {
-  const fetchImpl = options.fetchImpl ?? window.fetch.bind(window)
-  const online = options.online ?? navigator.onLine
+  const fetchImpl = options.fetchImpl
+  const online = options.online ?? true
   const packageUrl = options.packageUrl ?? TODAY_ARTICLE_PACKAGE_URL
-  const storage = options.storage ?? window.localStorage
+  const storage = options.storage
   const cachedArticle = loadCachedArticlePackage(storage)
 
   if (!online) {
     return cachedArticle
       ? { status: 'ready', article: cachedArticle, source: 'cache' }
       : { status: 'offline', cachedArticle: null }
+  }
+
+  if (!fetchImpl) {
+    return {
+      status: 'error',
+      message: 'The article package loader is unavailable on this platform.',
+      cachedArticle,
+    }
   }
 
   try {
@@ -70,7 +83,7 @@ export async function loadTodayArticlePackage(
   }
 }
 
-export function loadCachedArticlePackage(storage: Storage): DailyArticle | null {
+export function loadCachedArticlePackage(storage: ArticlePackageStorage): DailyArticle | null {
   try {
     const raw = storage.getItem(CACHED_ARTICLE_PACKAGE_KEY)
     if (!raw) {
@@ -85,7 +98,7 @@ export function loadCachedArticlePackage(storage: Storage): DailyArticle | null 
   }
 }
 
-export function saveCachedArticlePackage(storage: Storage, article: DailyArticle): void {
+export function saveCachedArticlePackage(storage: ArticlePackageStorage, article: DailyArticle): void {
   if (!article.rights.cacheAllowed || article.qaStatus !== 'approved') {
     return
   }

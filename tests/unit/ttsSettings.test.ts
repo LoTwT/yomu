@@ -6,6 +6,7 @@ import {
   getTtsProviderLabel,
   isMimoConfigured,
   loadTtsSettings,
+  sanitizeTtsSettingsForExport,
   saveTtsSettings,
 } from '@/features/tts/settings'
 
@@ -21,10 +22,10 @@ describe('TTS settings', () => {
     expect(getTtsProviderLabel(settings)).toContain('浏览器')
   })
 
-  it('stores BYOK MiMo settings locally and clears the key explicitly', () => {
+  it('persists public MiMo configuration while keeping the key session-only by default', () => {
     window.localStorage.clear()
 
-    saveTtsSettings(window.localStorage, {
+    const sessionSettings = {
       provider: 'mimo',
       mimo: {
         apiKey: 'user-secret',
@@ -33,15 +34,51 @@ describe('TTS settings', () => {
         voice: 'Mia',
         format: 'mp3',
       },
-    })
+    } as const
+    saveTtsSettings(window.localStorage, sessionSettings)
 
     const settings = loadTtsSettings(window.localStorage)
     expect(settings.provider).toBe('mimo')
-    expect(settings.mimo.apiKey).toBe('user-secret')
+    expect(settings.mimo.apiKey).toBe('')
     expect(settings.mimo.baseUrl).toBe(defaultMimoBaseUrl)
-    expect(isMimoConfigured(settings)).toBe(true)
-    expect(getTtsProviderLabel(settings)).toBe('云朗读 · MiMo')
-    expect(clearMimoApiKey(settings).mimo.apiKey).toBe('')
-    expect(getTtsProviderLabel(clearMimoApiKey(settings))).toBe('浏览器朗读')
+    expect(isMimoConfigured(settings)).toBe(false)
+    expect(getTtsProviderLabel(settings)).toBe('浏览器朗读')
+    expect(JSON.stringify([...storageValues(window.localStorage)])).not.toContain('user-secret')
+
+    const exported = sanitizeTtsSettingsForExport(sessionSettings)
+    expect(exported.mimo).not.toHaveProperty('apiKey')
+    expect(JSON.stringify(exported)).not.toContain('user-secret')
+  })
+
+  it('never reads a key from legacy settings storage and clears the runtime key explicitly', () => {
+    window.localStorage.clear()
+    const sessionSettings = {
+      provider: 'mimo',
+      mimo: {
+        apiKey: 'user-secret',
+        baseUrl: defaultMimoBaseUrl,
+        model: 'mimo-v2.5-tts',
+        voice: 'Mia',
+        format: 'mp3',
+      },
+    } as const
+
+    saveTtsSettings(window.localStorage, sessionSettings)
+    window.localStorage.setItem(
+      'yomu:v2:secret:tts:mimo',
+      JSON.stringify({ schemaVersion: 2, secret: sessionSettings.mimo.apiKey }),
+    )
+
+    const loaded = loadTtsSettings(window.localStorage)
+    expect(loaded.mimo.apiKey).toBe('')
+    expect(isMimoConfigured(loaded)).toBe(false)
+
+    const cleared = clearMimoApiKey(sessionSettings)
+    expect(cleared.mimo.apiKey).toBe('')
+    expect(getTtsProviderLabel(cleared)).toBe('浏览器朗读')
   })
 })
+
+function storageValues(storage: Storage): string[] {
+  return Array.from({ length: storage.length }, (_, index) => storage.getItem(storage.key(index) ?? '') ?? '')
+}

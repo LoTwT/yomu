@@ -1,21 +1,22 @@
+@import "tailwindcss";
+@import "@ayingott/theme/fonts.css";
+@import "@ayingott/theme";
+
 :root {
-  color-scheme: light;
-  --yomu-paper: #fbf8f1;
-  --yomu-paper-soft: #f5ead8;
-  --yomu-ink: #24211d;
-  --yomu-ink-soft: #443d31;
-  --yomu-muted: #776b57;
-  --yomu-rule: #dfcfb5;
-  --yomu-accent: #9d5f34;
-  --yomu-focus: #66569d;
-  --yomu-active: #f0dec2;
-  --yomu-translation-rule: #6b8d7b;
-  --yomu-serif: "Newsreader", Georgia, "Times New Roman", serif;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  background: var(--yomu-paper);
-  color: var(--yomu-ink);
+  /* Stage 1 compatibility bridge. New UI uses @ayingott/theme semantic roles. */
+  --yomu-paper: var(--surface-canvas);
+  --yomu-paper-soft: var(--surface-subtle);
+  --yomu-ink: var(--text-primary);
+  --yomu-ink-soft: var(--text-secondary);
+  --yomu-muted: var(--text-muted);
+  --yomu-rule: var(--border-default);
+  --yomu-accent: var(--accent-primary-active);
+  --yomu-focus: var(--focus-ring-color);
+  --yomu-active: var(--accent-soft);
+  --yomu-translation-rule: var(--status-success-border);
+  --yomu-serif: var(--font-reading);
+  background: var(--surface-canvas);
+  color: var(--text-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -28,13 +29,31 @@ body {
   min-inline-size: 320px;
   min-block-size: 100vh;
   margin: 0;
-  background:
-    radial-gradient(circle at 0 0, rgb(157 95 52 / 10%), transparent 24rem),
-    var(--yomu-paper);
+  background: var(--surface-canvas);
 }
 
-button {
+button,
+a,
+input,
+select,
+textarea {
   -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text-primary);
 }
 
 .app-shell {

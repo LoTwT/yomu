@@ -9,14 +9,18 @@ import ReadExpansionConsent from './ReadExpansionConsent.vue'
 import ReadExpansionSettingsPanel from './ReadExpansionSettingsPanel.vue'
 
 const settings = defineModel<ReadExpansionSettings>('settings', { required: true })
+const rememberOnDevice = defineModel<boolean>('rememberOnDevice', { default: false })
 
-defineProps<{
+withDefaults(defineProps<{
   terms: ReadExpansionTerm[]
   aiStates: Record<string, AiWordExpansionState>
   aiConfigured: boolean
   providerLabel: string
   showConsentPrompt: boolean
-}>()
+  canRememberOnDevice?: boolean
+}>(), {
+  canRememberOnDevice: true,
+})
 
 const emit = defineEmits<{
   requestAi: [term: ReadExpansionTerm]
@@ -38,11 +42,9 @@ function focusSettings() {
 
   region.scrollIntoView({
     block: 'nearest',
-    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    behavior: 'auto',
   })
-  window.requestAnimationFrame(() => {
-    region.focus({ preventScroll: true })
-  })
+  region.focus({ preventScroll: true })
 }
 </script>
 
@@ -66,7 +68,11 @@ function focusSettings() {
       tabindex="-1"
       aria-label="读后拓展 AI 设置"
     >
-      <ReadExpansionSettingsPanel v-model="settings" />
+      <ReadExpansionSettingsPanel
+        v-model="settings"
+        v-model:remember-on-device="rememberOnDevice"
+        :can-remember-on-device="canRememberOnDevice"
+      />
     </div>
 
     <ReadExpansionConsent

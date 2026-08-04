@@ -3,7 +3,13 @@ import { computed } from 'vue'
 
 import { clearMimoApiKey, defaultMimoBaseUrl, isMimoConfigured, type TtsSettings } from '@/features/tts/settings'
 
+const props = withDefaults(defineProps<{
+  canRememberOnDevice?: boolean
+}>(), {
+  canRememberOnDevice: true,
+})
 const model = defineModel<TtsSettings>({ required: true })
+const rememberOnDevice = defineModel<boolean>('rememberOnDevice', { default: false })
 
 const hasMimoKey = computed(() => isMimoConfigured(model.value))
 const maskedMimoKey = computed(() => {
@@ -15,10 +21,16 @@ const maskedMimoKey = computed(() => {
 })
 
 function updateProvider(provider: TtsSettings['provider']) {
-  model.value = {
+  const nextSettings = {
     ...model.value,
     provider,
   }
+  if (provider === 'webspeech') {
+    rememberOnDevice.value = false
+    model.value = clearMimoApiKey(nextSettings)
+    return
+  }
+  model.value = nextSettings
 }
 
 function updateMimoField<Key extends keyof TtsSettings['mimo']>(key: Key, value: TtsSettings['mimo'][Key]) {
@@ -32,6 +44,7 @@ function updateMimoField<Key extends keyof TtsSettings['mimo']>(key: Key, value:
 }
 
 function clearKey() {
+  rememberOnDevice.value = false
   model.value = clearMimoApiKey(model.value)
 }
 </script>
@@ -43,7 +56,7 @@ function clearKey() {
         朗读
       </p>
       <p class="tts-settings__summary">
-        Web Speech 是默认朗读档;MiMo 是使用你自己的 key 的神经语音升级档。
+        Web Speech 是默认朗读方式；MiMo 是使用你自己的 Key 的神经语音增强。
       </p>
     </div>
 
@@ -59,7 +72,7 @@ function clearKey() {
         >
         <span>
           <strong>Web Speech</strong>
-          <small>无需 key,由你的浏览器/系统朗读。</small>
+          <small>无需 Key，由你的浏览器或系统朗读。</small>
         </span>
       </label>
       <label>
@@ -71,8 +84,8 @@ function clearKey() {
           @change="updateProvider('mimo')"
         >
         <span>
-          <strong>MiMo 自备 key</strong>
-          <small>神经语音升级档,使用你自己的 MiMo key。</small>
+          <strong>MiMo 自备 Key</strong>
+          <small>神经语音增强，使用你自己的 MiMo Key。</small>
         </span>
       </label>
     </fieldset>
@@ -88,10 +101,10 @@ function clearKey() {
         v-else
         class="tts-settings__notice"
       >
-        填 key 解锁神经语音;未配置时仍使用 Web Speech 领读。
+        填入 Key 后解锁神经语音；未配置时仍使用 Web Speech 朗读。
       </p>
       <label class="tts-settings__field">
-        <span>密钥(API key)</span>
+        <span>密钥（API Key）</span>
         <input
           type="password"
           autocomplete="off"
@@ -143,18 +156,30 @@ function clearKey() {
         </label>
       </div>
       <p class="tts-settings__privacy">
-        key 只存你本机浏览器,仅在按下播放时发送给 yomu。yomu 只转发到 MiMo,不在本站保存这个 key。
+        默认只在当前会话内存中保留。仅在按下播放时发送给 Yomu；Yomu 只转发到 MiMo，不在本站保存这个 Key。
       </p>
       <p class="tts-settings__privacy">
-        浏览器、扩展或页面脚本不可信时,本地 key 仍有暴露风险。获取方式:在小米/MiMo 控制台创建 Token Plan key 后粘贴到这里。
+        浏览器、扩展或页面脚本不可信时，本地 Key 仍有暴露风险。获取方式：在小米/MiMo 控制台创建 Token Plan Key 后粘贴到这里。
       </p>
+      <label class="tts-settings__remember">
+        <input
+          v-model="rememberOnDevice"
+          type="checkbox"
+          :disabled="!hasMimoKey || !props.canRememberOnDevice"
+        >
+        <span>
+          <strong>记住在此设备</strong>
+          <small v-if="props.canRememberOnDevice">默认关闭。开启后会把 Key 写入此设备；不会同步到其他设备。</small>
+          <small v-else>当前运行环境不提供设备级 Key 存储，只会保留到本次会话结束。</small>
+        </span>
+      </label>
       <button
         type="button"
         class="tts-settings__clear"
         :disabled="!hasMimoKey"
         @click="clearKey"
       >
-        清除 MiMo key
+        清除 MiMo Key
       </button>
     </div>
   </section>
@@ -243,6 +268,32 @@ function clearKey() {
 .tts-settings__mimo {
   display: grid;
   gap: 0.8rem;
+}
+
+.tts-settings__remember {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  border: 1px solid var(--yomu-rule);
+  border-radius: 0.85rem;
+  padding: 0.75rem;
+  color: var(--yomu-ink-soft);
+}
+
+.tts-settings__remember input {
+  margin-block-start: 0.2rem;
+  accent-color: var(--yomu-accent);
+}
+
+.tts-settings__remember span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.tts-settings__remember small {
+  color: var(--yomu-muted);
+  line-height: 1.5;
 }
 
 .tts-settings__grid {

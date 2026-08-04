@@ -13,6 +13,15 @@ export interface ReadExpansionSettings {
   }
 }
 
+export interface ExportedReadExpansionSettings {
+  schemaVersion: 2
+  ai: {
+    enabled: boolean
+    provider: 'openai'
+    openai: Omit<OpenAiByokSettings, 'apiKey'>
+  }
+}
+
 export const defaultOpenAiBaseUrl = 'https://api.openai.com/v1'
 export const defaultOpenAiModel = 'gpt-4.1-mini'
 
@@ -29,24 +38,61 @@ export const defaultReadExpansionSettings: ReadExpansionSettings = {
   },
 }
 
-const readExpansionSettingsKey = 'yomu:read-expansion-settings'
+const legacyReadExpansionSettingsKey = 'yomu:read-expansion-settings'
+const readExpansionSettingsKey = 'yomu:v2:read-expansion-settings'
 
 export function loadReadExpansionSettings(storage: Storage): ReadExpansionSettings {
-  const raw = storage.getItem(readExpansionSettingsKey)
-  if (!raw) {
-    return cloneDefaultReadExpansionSettings()
-  }
-
-  try {
-    return normalizeReadExpansionSettings(JSON.parse(raw))
-  }
-  catch {
-    return cloneDefaultReadExpansionSettings()
-  }
+  return loadPersistedReadExpansionSettings(storage)
+    ?? cloneDefaultReadExpansionSettings()
 }
 
 export function saveReadExpansionSettings(storage: Storage, settings: ReadExpansionSettings): void {
-  storage.setItem(readExpansionSettingsKey, JSON.stringify(normalizeReadExpansionSettings(settings)))
+  storage.setItem(readExpansionSettingsKey, JSON.stringify(sanitizeReadExpansionSettingsForExport(settings)))
+}
+
+export function hasLegacyOpenAiApiKey(storage: Storage): boolean {
+  const legacy = parseStoredRecord(storage.getItem(legacyReadExpansionSettingsKey))
+  const ai = legacy && isRecord(legacy.ai) ? legacy.ai : null
+  const openai = ai && isRecord(ai.openai) ? ai.openai : null
+  return typeof openai?.apiKey === 'string' && openai.apiKey.trim().length > 0
+}
+
+export function clearLegacyOpenAiApiKey(storage: Storage): void {
+  const raw = storage.getItem(legacyReadExpansionSettingsKey)
+  if (!raw) {
+    return
+  }
+
+  const legacy = parseStoredRecord(raw)
+  if (!legacy) {
+    storage.removeItem(legacyReadExpansionSettingsKey)
+    return
+  }
+
+  if (isRecord(legacy.ai) && isRecord(legacy.ai.openai)) {
+    delete legacy.ai.openai.apiKey
+  }
+  if (isRecord(legacy.ai)) {
+    legacy.ai.consentAccepted = false
+  }
+  storage.setItem(legacyReadExpansionSettingsKey, JSON.stringify(legacy))
+}
+
+export function sanitizeReadExpansionSettingsForExport(
+  settings: ReadExpansionSettings,
+): ExportedReadExpansionSettings {
+  const normalized = normalizeReadExpansionSettings(settings)
+  return {
+    schemaVersion: 2,
+    ai: {
+      enabled: normalized.ai.enabled,
+      provider: 'openai',
+      openai: {
+        baseUrl: normalized.ai.openai.baseUrl,
+        model: normalized.ai.openai.model,
+      },
+    },
+  }
 }
 
 export function clearAiApiKey(settings: ReadExpansionSettings): ReadExpansionSettings {
@@ -94,6 +140,30 @@ function cloneDefaultReadExpansionSettings(): ReadExpansionSettings {
   return normalizeReadExpansionSettings(defaultReadExpansionSettings)
 }
 
+function loadPersistedReadExpansionSettings(storage: Storage): ReadExpansionSettings | null {
+  const current = parseStoredRecord(storage.getItem(readExpansionSettingsKey))
+  if (current) {
+    return clearAiApiKey(normalizeReadExpansionSettings(current))
+  }
+
+  const legacy = parseStoredRecord(storage.getItem(legacyReadExpansionSettingsKey))
+  if (!legacy) {
+    return null
+  }
+
+  const migrated = clearAiApiKey(normalizeReadExpansionSettings(legacy))
+  try {
+    storage.setItem(
+      readExpansionSettingsKey,
+      JSON.stringify(sanitizeReadExpansionSettingsForExport(migrated)),
+    )
+  }
+  catch {
+    // Reading settings must still work when storage is unavailable or full.
+  }
+  return migrated
+}
+
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
   return trimmed ? trimmed.replace(/\/+$/, '') : defaultOpenAiBaseUrl
@@ -105,4 +175,18 @@ function normalizeNonEmptyString(value: unknown, fallback: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function parseStoredRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return isRecord(parsed) ? parsed : null
+  }
+  catch {
+    return null
+  }
 }

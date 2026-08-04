@@ -8,13 +8,19 @@ import {
   type ReadExpansionSettings,
 } from '@/features/extension/settings'
 
+const props = withDefaults(defineProps<{
+  canRememberOnDevice?: boolean
+}>(), {
+  canRememberOnDevice: true,
+})
 const model = defineModel<ReadExpansionSettings>({ required: true })
+const rememberOnDevice = defineModel<boolean>('rememberOnDevice', { default: false })
 
 const hasAiKey = computed(() => isAiExpansionConfigured(model.value))
 const maskedAiKey = computed(() => hasAiKey.value ? model.value.ai.openai.apiKey.trim().slice(-4) : '')
 
 function updateAiEnabled(enabled: boolean) {
-  model.value = {
+  const nextSettings: ReadExpansionSettings = {
     ...model.value,
     ai: {
       ...model.value.ai,
@@ -22,6 +28,12 @@ function updateAiEnabled(enabled: boolean) {
       consentAccepted: enabled ? model.value.ai.consentAccepted : false,
     },
   }
+  if (!enabled) {
+    rememberOnDevice.value = false
+    model.value = clearAiApiKey(nextSettings)
+    return
+  }
+  model.value = nextSettings
 }
 
 function updateOpenAiField<Key extends keyof ReadExpansionSettings['ai']['openai']>(
@@ -42,6 +54,7 @@ function updateOpenAiField<Key extends keyof ReadExpansionSettings['ai']['openai
 }
 
 function clearKey() {
+  rememberOnDevice.value = false
   model.value = clearAiApiKey(model.value)
 }
 </script>
@@ -53,7 +66,7 @@ function clearKey() {
         拓展
       </p>
       <p class="extension-settings__summary">
-        默认只用本地抽词;AI 增强需要你自己的 key,并且只在你点开 AI 释义时发送当前词和最小上下文。
+        默认只用本地抽词；AI 增强需要你自己的 Key，并且只在你点开 AI 释义时发送当前词和最小上下文。
       </p>
     </div>
 
@@ -64,8 +77,8 @@ function clearKey() {
         @change="updateAiEnabled(($event.target as HTMLInputElement).checked)"
       >
       <span>
-        <strong>AI 增强(用你自己的 key)</strong>
-        <small>关闭时拓展完全本地,不会外发。</small>
+        <strong>AI 增强（使用你自己的 Key）</strong>
+        <small>关闭时拓展完全在本地进行，不会外发。</small>
       </span>
     </label>
 
@@ -74,11 +87,11 @@ function clearKey() {
         已连接 · OpenAI(····{{ maskedAiKey }})
       </p>
       <p v-else class="extension-settings__notice">
-        填 key 后,生词卡会出现 AI 增强按钮;不填 key 仍可使用本地释义。
+        填入 Key 后，生词卡会出现 AI 增强按钮；不填 Key 仍可使用本地释义。
       </p>
 
       <label class="extension-settings__field">
-        <span>密钥(API key)</span>
+        <span>密钥（API Key）</span>
         <input
           type="password"
           autocomplete="off"
@@ -110,18 +123,30 @@ function clearKey() {
       </div>
 
       <p class="extension-settings__privacy">
-        key 只存你本机浏览器。yomu 的 Worker 只转发到 OpenAI,不在本站保存这个 key。
+        默认只在当前会话内存中保留。Yomu 的 Worker 只转发到 OpenAI，不在本站保存这个 Key。
       </p>
       <p class="extension-settings__privacy">
-        浏览器、扩展或页面脚本不可信时,本地 key 仍有暴露风险。当前只支持 OpenAI 兼容的官方接口地址。
+        浏览器、扩展或页面脚本不可信时，本地 Key 仍有暴露风险。当前只支持 OpenAI 兼容的官方接口地址。
       </p>
+      <label class="extension-settings__remember">
+        <input
+          v-model="rememberOnDevice"
+          type="checkbox"
+          :disabled="!hasAiKey || !props.canRememberOnDevice"
+        >
+        <span>
+          <strong>记住在此设备</strong>
+          <small v-if="props.canRememberOnDevice">默认关闭。开启后会把 Key 写入此设备；不会同步到其他设备。</small>
+          <small v-else>当前运行环境不提供设备级 Key 存储，只会保留到本次会话结束。</small>
+        </span>
+      </label>
       <button
         type="button"
         class="extension-settings__clear"
         :disabled="!hasAiKey"
         @click="clearKey"
       >
-        清除 AI key
+        清除 AI Key
       </button>
     </div>
   </section>
@@ -198,6 +223,32 @@ function clearKey() {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
+}
+
+.extension-settings__remember {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  border: 1px solid var(--yomu-rule);
+  border-radius: 0.85rem;
+  padding: 0.75rem;
+  color: var(--yomu-ink-soft);
+}
+
+.extension-settings__remember input {
+  margin-block-start: 0.2rem;
+  accent-color: var(--yomu-accent);
+}
+
+.extension-settings__remember span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.extension-settings__remember small {
+  color: var(--yomu-muted);
+  line-height: 1.5;
 }
 
 .extension-settings__field {

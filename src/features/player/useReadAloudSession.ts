@@ -24,22 +24,23 @@ export interface SentencePlayer {
     sentences: Array<Pick<ArticleSentence, 'id' | 'original' | 'textHash'>>
     language: string
   }) => void | Promise<void>
+  cancelPending?: () => void | Promise<void>
+  clearCache?: () => void | Promise<void>
+}
+
+export const sessionOwnedSentencePlayer: unique symbol = Symbol('session-owned-sentence-player')
+
+/**
+ * A player whose private resources transfer to the composable that receives it.
+ * Shared or host-owned players must remain plain SentencePlayer instances.
+ */
+export interface SessionOwnedSentencePlayer extends SentencePlayer {
+  readonly [sessionOwnedSentencePlayer]: true
+  disposeOnSessionTeardown: () => void | Promise<void>
 }
 
 const sentencePauseMs = 600
 const paragraphPauseMs = 1100
-
-export function createBrowserSentencePlayer(): SentencePlayer {
-  return {
-    playSentence(options) {
-      if (options.audioUrl.startsWith('fixture://') || options.audioUrl.startsWith('webspeech://')) {
-        return playWithSpeechSynthesis(options)
-      }
-
-      return playWithAudioElement(options)
-    },
-  }
-}
 
 export function createTimedSentencePlayer(): SentencePlayer {
   return {
@@ -51,7 +52,7 @@ export function createTimedSentencePlayer(): SentencePlayer {
 
 export function useReadAloudSession(
   article: Ref<DailyArticle | null>,
-  player: SentencePlayer = createBrowserSentencePlayer(),
+  player: SentencePlayer,
 ) {
   const activeSentenceId = shallowRef<string | null>(null)
   const isPlaying = shallowRef(false)
@@ -83,6 +84,26 @@ export function useReadAloudSession(
     clearAdvanceTimer()
     currentPlayback?.stop()
     currentPlayback = null
+  }
+
+  function cancelPendingPlayback() {
+    runBestEffortLifecycleAction(() => player.cancelPending?.())
+  }
+
+  function disposePlayerOnTeardown() {
+    if (!isSessionOwnedPlayer(player)) {
+      cancelPendingPlayback()
+      return
+    }
+
+    runBestEffortLifecycleAction(() => player.disposeOnSessionTeardown())
+  }
+
+  function resetPlaybackState() {
+    stopCurrentPlayback()
+    activeSentenceId.value = null
+    isPlaying.value = false
+    audioStatus.value = 'idle'
   }
 
   function playSentenceByIndex(index: number) {
@@ -200,10 +221,13 @@ export function useReadAloudSession(
   }
 
   function stop() {
-    stopCurrentPlayback()
-    activeSentenceId.value = null
-    isPlaying.value = false
-    audioStatus.value = 'idle'
+    resetPlaybackState()
+    cancelPendingPlayback()
+  }
+
+  function clearCache() {
+    resetPlaybackState()
+    return player.clearCache?.()
   }
 
   function next() {
@@ -254,6 +278,7 @@ export function useReadAloudSession(
 
   onBeforeUnmount(() => {
     stopCurrentPlayback()
+    disposePlayerOnTeardown()
   })
 
   return {
@@ -268,7 +293,23 @@ export function useReadAloudSession(
     previous,
     repeat,
     stop,
+    clearCache,
     setPlaybackRate,
+  }
+}
+
+function isSessionOwnedPlayer(player: SentencePlayer): player is SessionOwnedSentencePlayer {
+  return (player as Partial<SessionOwnedSentencePlayer>)[sessionOwnedSentencePlayer] === true
+}
+
+function runBestEffortLifecycleAction(action: () => void | Promise<void> | undefined): void {
+  try {
+    void Promise.resolve(action()).catch(() => {
+      // Playback is already stopped; lifecycle cleanup must not block component teardown.
+    })
+  }
+  catch {
+    // Playback is already stopped; lifecycle cleanup must not block component teardown.
   }
 }
 
@@ -285,133 +326,11 @@ function isPromiseLike(value: SentencePlaybackHandle | Promise<SentencePlaybackH
   return typeof (value as Promise<SentencePlaybackHandle>).then === 'function'
 }
 
-function playWithAudioElement(options: Parameters<SentencePlayer['playSentence']>[0]): SentencePlaybackHandle {
-  const audio = new Audio(options.audioUrl)
-  audio.playbackRate = options.playbackRate
-
-  let stopped = false
-  let fallbackPlayback: SentencePlaybackHandle | null = null
-
-  const cleanup = () => {
-    audio.removeEventListener('ended', handleEnded)
-    audio.removeEventListener('error', handleError)
-  }
-
-  const startFallback = () => {
-    if (stopped || fallbackPlayback) {
-      return
-    }
-
-    cleanup()
-    fallbackPlayback = playWithSpeechSynthesis(options)
-  }
-
-  function handleEnded() {
-    if (stopped) {
-      return
-    }
-
-    cleanup()
-    options.onEnded()
-  }
-
-  function handleError() {
-    startFallback()
-  }
-
-  audio.addEventListener('ended', handleEnded)
-  audio.addEventListener('error', handleError)
-
-  void audio.play().catch(startFallback)
-
-  return {
-    stop() {
-      stopped = true
-      cleanup()
-      audio.pause()
-      audio.removeAttribute('src')
-      audio.load()
-      fallbackPlayback?.stop()
-    },
-  }
-}
-
-function playWithSpeechSynthesis(options: Parameters<SentencePlayer['playSentence']>[0]): SentencePlaybackHandle {
-  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
-    return playWithTimer(options)
-  }
-
-  const utterance = new SpeechSynthesisUtterance(options.text)
-  utterance.lang = getSpeechLanguage(options.language)
-  utterance.rate = options.playbackRate
-  utterance.voice = selectLocalSpeechVoice(utterance.lang)
-
-  let stopped = false
-  const timeoutFallback = window.setTimeout(() => {
-    if (!stopped) {
-      window.speechSynthesis.cancel()
-      options.onEnded()
-    }
-  }, Math.max(1000, options.durationMs / options.playbackRate + 1500))
-
-  utterance.onend = () => {
-    if (stopped) {
-      return
-    }
-
-    window.clearTimeout(timeoutFallback)
-    options.onEnded()
-  }
-  utterance.onerror = () => {
-    if (stopped) {
-      return
-    }
-
-    window.clearTimeout(timeoutFallback)
-    options.onEnded()
-  }
-
-  window.speechSynthesis.cancel()
-  window.speechSynthesis.speak(utterance)
-
-  return {
-    stop() {
-      stopped = true
-      window.clearTimeout(timeoutFallback)
-      window.speechSynthesis.cancel()
-    },
-  }
-}
-
 function playWithTimer(options: Parameters<SentencePlayer['playSentence']>[0]): SentencePlaybackHandle {
-  const timeout = window.setTimeout(options.onEnded, Math.max(1, options.durationMs / options.playbackRate))
+  const timeout = globalThis.setTimeout(options.onEnded, Math.max(1, options.durationMs / options.playbackRate))
   return {
     stop() {
-      window.clearTimeout(timeout)
+      globalThis.clearTimeout(timeout)
     },
   }
-}
-
-function getSpeechLanguage(language: string): string {
-  if (language.toLowerCase().startsWith('en')) {
-    return 'en-US'
-  }
-
-  if (language.toLowerCase().startsWith('ja')) {
-    return 'ja-JP'
-  }
-
-  return language
-}
-
-function selectLocalSpeechVoice(language: string): SpeechSynthesisVoice | null {
-  if (typeof window.speechSynthesis.getVoices !== 'function') {
-    return null
-  }
-
-  const baseLanguage = language.split('-')[0]
-  return window.speechSynthesis.getVoices().find(voice =>
-    voice.localService
-    && (voice.lang === language || voice.lang.toLowerCase().startsWith(`${baseLanguage}-`)),
-  ) ?? null
 }

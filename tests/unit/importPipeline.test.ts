@@ -5,6 +5,7 @@ import { importArticleFromPaste, importArticleFromTextFile, importArticleFromUrl
 import { saveImportedArticle, loadImportedArticle, loadImportedArticleSummaries } from '@/features/import/importedArticleStorage'
 import { segmentEnglishSentences } from '@/features/import/sentenceSegmenter'
 import { parseSupportedHttpUrl } from '@/features/import/sourceGuards'
+import type { RemoteServiceRequest, RemoteServicesAdapter } from '@/platform/contracts'
 
 const readableEnglish = [
   'A careful reader can bring their own article into Yomu.',
@@ -117,15 +118,15 @@ describe('BYO import pipeline', () => {
     expect(parseSupportedHttpUrl('https://fd-example.test/article')).toBeInstanceOf(URL)
   })
 
-  it('imports URL text through an allowlisted response without retaining fake source data', async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(`<main><h1>Imported web article</h1><p>${readableEnglish}</p></main>`, {
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-      }),
-    )
+  it('imports URL text through the remote service boundary without retaining fake source data', async () => {
+    const remote = createRemoteRecorder(() => ({
+      text: `<main><h1>Imported web article</h1><p>${readableEnglish}</p></main>`,
+      contentType: 'text/html; charset=utf-8',
+      sourceUrl: 'https://example.com/story',
+    }))
     const result = await importArticleFromUrl({
       url: 'https://example.com/story',
-      fetchImpl,
+      remote: remote.adapter,
       now: new Date('2026-05-31T00:00:00.000Z'),
     })
 
@@ -136,6 +137,10 @@ describe('BYO import pipeline', () => {
 
     expect(result.metadata.sourceRef.url).toBe('https://example.com/story')
     expect(result.article.factSources).toEqual([{ title: 'example.com', url: 'https://example.com/story' }])
+    expect(remote.request).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'url-import',
+      body: expect.objectContaining({ url: 'https://example.com/story' }),
+    }))
   })
 
   it('stores imported articles in a separate local library index', async () => {
@@ -155,3 +160,15 @@ describe('BYO import pipeline', () => {
     expect(loadCachedArticlePackage(window.localStorage)?.id).toBe(result.article.id)
   })
 })
+
+function createRemoteRecorder(
+  handler: (request: RemoteServiceRequest) => unknown | Promise<unknown>,
+): { adapter: RemoteServicesAdapter, request: ReturnType<typeof vi.fn> } {
+  const request = vi.fn(handler)
+  const adapter: RemoteServicesAdapter = {
+    request<TResponse>(remoteRequest: RemoteServiceRequest): Promise<TResponse> {
+      return Promise.resolve(request(remoteRequest)) as Promise<TResponse>
+    },
+  }
+  return { adapter, request }
+}
