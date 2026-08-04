@@ -27,6 +27,8 @@ const remotePaths: Record<RemoteServiceOperation, string> = {
   'ai-word-expansion': '/api/extensions/ai',
 }
 
+const unsupportedTextControlCharacterPattern = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/
+
 interface WebSpeechRuntime {
   speechSynthesis?: SpeechSynthesis
   SpeechSynthesisUtterance?: typeof SpeechSynthesisUtterance
@@ -86,6 +88,10 @@ export class WebFileImportAdapter implements FileImportAdapter {
     return Boolean(this.documentRef)
   }
 
+  supportsDrop(): boolean {
+    return Boolean(this.documentRef)
+  }
+
   async pickTextFiles(options: FileImportOptions = {}): Promise<ImportedTextFile[]> {
     if (!this.documentRef) {
       throw new PlatformCapabilityError('fileImport')
@@ -96,6 +102,10 @@ export class WebFileImportAdapter implements FileImportAdapter {
     input.type = 'file'
     input.accept = extensions.join(',')
     input.multiple = options.multiple === true
+    input.hidden = true
+    input.tabIndex = -1
+    input.setAttribute('aria-hidden', 'true')
+    this.documentRef.body?.append(input)
 
     return new Promise((resolve) => {
       const finish = (files: File[]): void => {
@@ -106,6 +116,13 @@ export class WebFileImportAdapter implements FileImportAdapter {
       input.addEventListener('cancel', () => finish([]), { once: true })
       input.click()
     })
+  }
+
+  getDroppedTextFiles(payload: unknown): ImportedTextFile[] {
+    if (!this.documentRef) {
+      throw new PlatformCapabilityError('fileImport')
+    }
+    return readDroppedFiles(payload).map(toImportedTextFile)
   }
 }
 
@@ -232,8 +249,32 @@ function toImportedTextFile(file: File): ImportedTextFile {
     name: file.name,
     size: file.size,
     mediaType: file.type,
-    text: () => file.text(),
+    text: () => readUtf8TextFile(file),
   }
+}
+
+async function readUtf8TextFile(file: File): Promise<string> {
+  const bytes = await file.arrayBuffer()
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  if (unsupportedTextControlCharacterPattern.test(text)) {
+    throw new TypeError('The file contains unsupported control characters.')
+  }
+  return text
+}
+
+function readDroppedFiles(payload: unknown): File[] {
+  if (typeof payload !== 'object' || payload === null || !('dataTransfer' in payload)) {
+    return []
+  }
+  const dataTransfer = payload.dataTransfer
+  if (typeof dataTransfer !== 'object' || dataTransfer === null || !('files' in dataTransfer)) {
+    return []
+  }
+  const files = dataTransfer.files
+  if (!files || typeof files !== 'object' || !('length' in files)) {
+    return []
+  }
+  return Array.from(files as ArrayLike<File>)
 }
 
 function normalizeBaseUrl(value: string): string {

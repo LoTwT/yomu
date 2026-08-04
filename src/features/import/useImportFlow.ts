@@ -1,17 +1,42 @@
 import { computed, shallowReadonly, shallowRef } from 'vue'
 
 import { usePlatformServices } from '@/app/platformServices'
+import type { ImportedTextFile } from '@/platform/contracts'
 import {
   importArticleFromPaste,
+  importArticleFromTextFile,
   reparseImportedArticleDraft,
   type ImportedArticleDraft,
+  type ImportArticleResult,
+  type ImportSourceType,
 } from './importArticle'
 import { saveImportedArticle } from './saveImportedArticle'
 
+export type ImportInputSource = 'paste' | 'file'
+
+type ImportFlowInputState =
+  | {
+      phase: 'idle'
+      source: ImportInputSource
+      text: string
+      fileName: string
+    }
+  | {
+      phase: 'parsing'
+      source: ImportInputSource
+      text: string
+      fileName: string
+    }
+  | {
+      phase: 'error'
+      source: ImportInputSource
+      text: string
+      fileName: string
+      message: string
+    }
+
 export type ImportFlowState =
-  | { phase: 'idle', text: string }
-  | { phase: 'parsing', text: string }
-  | { phase: 'error', text: string, message: string }
+  | ImportFlowInputState
   | {
       phase: 'preview'
       draft: ImportedArticleDraft
@@ -41,45 +66,165 @@ export type ImportSaveOutcome =
 
 export function useImportFlow() {
   const services = usePlatformServices()
-  const state = shallowRef<ImportFlowState>({ phase: 'idle', text: '' })
+  let pasteText = ''
+  let selectedFile: ImportedTextFile | null = null
+  const state = shallowRef<ImportFlowState>(createInputState('idle', 'paste'))
   const resolved = shallowRef(false)
   let analysisVersion = 0
 
   const canPersist = services.repositories.persistence === 'persistent'
     && services.capabilities.localPersistence.availability === 'available'
+  const fileImportAvailable = services.capabilities.fileImport.availability !== 'unavailable'
+    && services.files.isAvailable()
+  const fileImportReason = services.capabilities.fileImport.reason
+    ?? '当前平台尚未接入文件选择。'
+  const fileDropAvailable = fileImportAvailable && services.files.supportsDrop()
+  const inputSource = computed<ImportInputSource>(() => {
+    const current = state.value
+    if (isInputState(current)) {
+      return current.source
+    }
+    return current.draft.source.kind === 'file' ? 'file' : 'paste'
+  })
   const isDirty = computed(() => {
     if (resolved.value) {
       return false
     }
     const current = state.value
-    if (current.phase === 'idle' || current.phase === 'parsing' || current.phase === 'error') {
-      return current.text.trim().length > 0
+    if (isInputState(current)) {
+      return pasteText.trim().length > 0 || selectedFile !== null
     }
     return true
   })
 
+  function createInputState(
+    phase: 'idle' | 'parsing',
+    source: ImportInputSource,
+  ): ImportFlowInputState {
+    return {
+      phase,
+      source,
+      text: pasteText,
+      fileName: selectedFile?.name ?? '',
+    }
+  }
+
+  function setInputSource(source: ImportInputSource): void {
+    const current = state.value
+    if (!isInputState(current) || current.phase === 'parsing') {
+      return
+    }
+    if (source === 'file' && !fileImportAvailable) {
+      showInputError('file', fileImportReason)
+      return
+    }
+    resolved.value = false
+    state.value = createInputState('idle', source)
+  }
+
   function setSourceText(text: string): void {
-    if (state.value.phase === 'idle'
-      || state.value.phase === 'parsing'
-      || state.value.phase === 'error') {
+    pasteText = text
+    const current = state.value
+    if (isInputState(current) && current.source === 'paste' && current.phase !== 'parsing') {
       resolved.value = false
-      state.value = { phase: 'idle', text }
+      state.value = createInputState('idle', 'paste')
     }
   }
 
   async function parsePaste(): Promise<void> {
-    const text = state.value.phase === 'idle' || state.value.phase === 'error'
-      ? state.value.text
-      : ''
-    state.value = { phase: 'parsing', text }
+    state.value = createInputState('parsing', 'paste')
     resolved.value = false
-    const result = await importArticleFromPaste({ text })
+    const result = await importArticleFromPaste({ text: pasteText })
+    presentImportResult(result, 'paste')
+  }
+
+  async function chooseFile(): Promise<void> {
+    if (!fileImportAvailable) {
+      showInputError('file', fileImportReason)
+      return
+    }
+
+    state.value = createInputState('parsing', 'file')
+    resolved.value = false
+    let files: ImportedTextFile[]
+    try {
+      files = await services.files.pickTextFiles({
+        multiple: false,
+        acceptedExtensions: ['.txt', '.md'],
+      })
+    }
+    catch {
+      showInputError('file', '无法打开文件选择器，请重试或改用粘贴文本。')
+      return
+    }
+
+    if (files.length === 0) {
+      state.value = createInputState('idle', 'file')
+      return
+    }
+    if (files.length > 1) {
+      showInputError('file', '一次只能导入一个文件，请重新选择。')
+      return
+    }
+
+    selectedFile = files[0] ?? null
+    await parseSelectedFile()
+  }
+
+  async function importDroppedFiles(payload: unknown): Promise<void> {
+    if (!fileDropAvailable) {
+      showInputError('file', fileImportReason)
+      return
+    }
+
+    let files: ImportedTextFile[]
+    try {
+      files = services.files.getDroppedTextFiles(payload)
+    }
+    catch {
+      showInputError('file', '无法读取拖放的文件，请改用文件选择器。')
+      return
+    }
+
+    if (files.length === 0) {
+      showInputError('file', '没有检测到可导入的文件，请选择 .txt 或 .md。')
+      return
+    }
+    if (files.length > 1) {
+      showInputError('file', '一次只能导入一个文件，请重新拖放。')
+      return
+    }
+
+    selectedFile = files[0] ?? null
+    await parseSelectedFile()
+  }
+
+  async function parseSelectedFile(): Promise<void> {
+    if (!selectedFile) {
+      await chooseFile()
+      return
+    }
+
+    const file = selectedFile
+    state.value = createInputState('parsing', 'file')
+    resolved.value = false
+    const result = await importArticleFromTextFile({
+      file: {
+        name: file.name,
+        size: file.size,
+        type: file.mediaType,
+        text: () => file.text(),
+      },
+    })
+    presentImportResult(result, 'file')
+  }
+
+  function presentImportResult(
+    result: ImportArticleResult,
+    source: ImportInputSource,
+  ): void {
     if (!result.ok) {
-      state.value = {
-        phase: 'error',
-        text,
-        message: toImportMessage(result.code),
-      }
+      showInputError(source, toImportMessage(result.code, source))
       return
     }
     state.value = {
@@ -88,6 +233,16 @@ export function useImportFlow() {
       title: result.draft.title,
       body: result.draft.body,
       validationMessage: '',
+    }
+  }
+
+  function showInputError(source: ImportInputSource, message: string): void {
+    state.value = {
+      phase: 'error',
+      source,
+      text: pasteText,
+      fileName: selectedFile?.name ?? '',
+      message,
     }
   }
 
@@ -135,7 +290,7 @@ export function useImportFlow() {
       if (!result.ok) {
         state.value = {
           ...state.value,
-          validationMessage: toImportMessage(result.code),
+          validationMessage: toImportMessage(result.code, current.draft.source.kind),
         }
         return
       }
@@ -179,7 +334,7 @@ export function useImportFlow() {
     if (!reparsed.ok) {
       state.value = {
         ...current,
-        validationMessage: toImportMessage(reparsed.code),
+        validationMessage: toImportMessage(reparsed.code, current.draft.source.kind),
       }
       return null
     }
@@ -222,12 +377,26 @@ export function useImportFlow() {
 
   function cancelPreview(): void {
     const current = state.value
-    if (current.phase === 'preview'
-      || current.phase === 'saving'
-      || current.phase === 'duplicate') {
+    if (current.phase === 'duplicate') {
       analysisVersion += 1
       resolved.value = false
-      state.value = { phase: 'idle', text: current.body }
+      state.value = {
+        phase: 'preview',
+        draft: current.draft,
+        title: current.title,
+        body: current.body,
+        validationMessage: '',
+      }
+      return
+    }
+    if (current.phase === 'preview' || current.phase === 'saving') {
+      analysisVersion += 1
+      resolved.value = false
+      const source = current.draft.source.kind === 'file' ? 'file' : 'paste'
+      if (source === 'paste') {
+        pasteText = current.body
+      }
+      state.value = createInputState('idle', source)
     }
   }
 
@@ -241,10 +410,18 @@ export function useImportFlow() {
 
   return {
     state: shallowReadonly(state),
+    inputSource,
     canPersist,
+    fileImportAvailable,
+    fileImportReason,
+    fileDropAvailable,
     isDirty,
+    setInputSource,
     setSourceText,
     parsePaste,
+    chooseFile,
+    importDroppedFiles,
+    parseSelectedFile,
     updateTitle,
     updateSourceLabel,
     updateBody,
@@ -254,7 +431,23 @@ export function useImportFlow() {
   }
 }
 
-function toImportMessage(code: string): string {
+function isInputState(state: ImportFlowState): state is ImportFlowInputState {
+  return state.phase === 'idle' || state.phase === 'parsing' || state.phase === 'error'
+}
+
+function toImportMessage(code: string, source: ImportSourceType): string {
+  if (source === 'file') {
+    const fileMessages: Record<string, string> = {
+      'empty-input': '这个文件没有可阅读的正文，请选择其他文件。',
+      'unsupported-file-type': '目前只支持 .txt 和 .md 文件。PDF、Word 与富文本尚未支持。',
+      'file-too-large': '文件过大；单个文件请控制在 250 KB 以内。',
+      'file-read-failed': '无法按 UTF-8 读取这个文件，请转换编码后重试。',
+    }
+    if (fileMessages[code]) {
+      return fileMessages[code]
+    }
+  }
+
   const messages: Record<string, string> = {
     'empty-input': '请先粘贴一段英文正文。',
     'too-short': '正文太短，请至少提供约 120 个字符。',

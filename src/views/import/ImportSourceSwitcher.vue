@@ -1,13 +1,42 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
 export type ImportSource = 'paste' | 'file' | 'url'
+
+const props = withDefaults(defineProps<{
+  fileAvailable: boolean
+  fileUnavailableReason?: string
+  disabled?: boolean
+}>(), {
+  fileUnavailableReason: '当前平台尚未接入文件选择。',
+  disabled: false,
+})
 
 const model = defineModel<ImportSource>({ required: true })
 
-const options = [
-  { value: 'paste', label: '粘贴文本', available: true },
-  { value: 'file', label: 'TXT / Markdown', available: false },
-  { value: 'url', label: 'URL Beta', available: false },
-] as const
+const options = computed(() => [
+  { value: 'paste', label: '粘贴文本', available: true, status: '' },
+  {
+    value: 'file',
+    label: 'TXT / Markdown',
+    available: props.fileAvailable,
+    status: props.fileAvailable ? '' : '当前平台不可用',
+  },
+  { value: 'url', label: 'URL Beta', available: false, status: '即将支持' },
+] as const)
+
+function optionTitle(option: (typeof options.value)[number]): string | undefined {
+  if (props.disabled) {
+    return '请先完成当前导入步骤'
+  }
+  if (option.value === 'file' && !option.available) {
+    return props.fileUnavailableReason
+  }
+  if (!option.available) {
+    return '将在后续版本开放'
+  }
+  return undefined
+}
 </script>
 
 <template>
@@ -19,12 +48,12 @@ const options = [
       :class="{ 'source-switcher__button--active': model === option.value }"
       type="button"
       :aria-pressed="model === option.value"
-      :disabled="!option.available"
-      :title="option.available ? undefined : '将在后续版本开放'"
+      :disabled="props.disabled || !option.available"
+      :title="optionTitle(option)"
       @click="model = option.value"
     >
       {{ option.label }}
-      <span v-if="!option.available" class="source-switcher__soon">即将支持</span>
+      <span v-if="option.status" class="source-switcher__soon">{{ option.status }}</span>
     </button>
   </div>
 </template>
