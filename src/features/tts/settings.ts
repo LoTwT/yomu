@@ -13,6 +13,12 @@ export interface TtsSettings {
   mimo: MimoByokSettings
 }
 
+export interface ExportedTtsSettings {
+  schemaVersion: 2
+  provider: TtsProviderId
+  mimo: Omit<MimoByokSettings, 'apiKey'>
+}
+
 export const defaultMimoBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
 export const defaultTtsSettings: TtsSettings = {
   provider: 'webspeech',
@@ -25,24 +31,53 @@ export const defaultTtsSettings: TtsSettings = {
   },
 }
 
-const ttsSettingsKey = 'yomu:tts-settings'
+const legacyTtsSettingsKey = 'yomu:tts-settings'
+const ttsSettingsKey = 'yomu:v2:tts-settings'
 
 export function loadTtsSettings(storage: Storage): TtsSettings {
-  const raw = storage.getItem(ttsSettingsKey)
-  if (!raw) {
-    return cloneDefaultTtsSettings()
-  }
-
-  try {
-    return normalizeTtsSettings(JSON.parse(raw))
-  }
-  catch {
-    return cloneDefaultTtsSettings()
-  }
+  return loadPersistedTtsSettings(storage) ?? cloneDefaultTtsSettings()
 }
 
 export function saveTtsSettings(storage: Storage, settings: TtsSettings): void {
-  storage.setItem(ttsSettingsKey, JSON.stringify(normalizeTtsSettings(settings)))
+  storage.setItem(ttsSettingsKey, JSON.stringify(sanitizeTtsSettingsForExport(settings)))
+}
+
+export function hasLegacyMimoApiKey(storage: Storage): boolean {
+  const legacy = parseStoredRecord(storage.getItem(legacyTtsSettingsKey))
+  const mimo = legacy && isRecord(legacy.mimo) ? legacy.mimo : null
+  return typeof mimo?.apiKey === 'string' && mimo.apiKey.trim().length > 0
+}
+
+export function clearLegacyMimoApiKey(storage: Storage): void {
+  const raw = storage.getItem(legacyTtsSettingsKey)
+  if (!raw) {
+    return
+  }
+
+  const legacy = parseStoredRecord(raw)
+  if (!legacy) {
+    storage.removeItem(legacyTtsSettingsKey)
+    return
+  }
+
+  if (isRecord(legacy.mimo)) {
+    delete legacy.mimo.apiKey
+  }
+  storage.setItem(legacyTtsSettingsKey, JSON.stringify(legacy))
+}
+
+export function sanitizeTtsSettingsForExport(settings: TtsSettings): ExportedTtsSettings {
+  const normalized = normalizeTtsSettings(settings)
+  return {
+    schemaVersion: 2,
+    provider: normalized.provider,
+    mimo: {
+      baseUrl: normalized.mimo.baseUrl,
+      model: normalized.mimo.model,
+      voice: normalized.mimo.voice,
+      format: normalized.mimo.format,
+    },
+  }
 }
 
 export function clearMimoApiKey(settings: TtsSettings): TtsSettings {
@@ -89,6 +124,27 @@ function cloneDefaultTtsSettings(): TtsSettings {
   return normalizeTtsSettings(defaultTtsSettings)
 }
 
+function loadPersistedTtsSettings(storage: Storage): TtsSettings | null {
+  const current = parseStoredRecord(storage.getItem(ttsSettingsKey))
+  if (current) {
+    return clearMimoApiKey(normalizeTtsSettings(current))
+  }
+
+  const legacy = parseStoredRecord(storage.getItem(legacyTtsSettingsKey))
+  if (!legacy) {
+    return null
+  }
+
+  const migrated = clearMimoApiKey(normalizeTtsSettings(legacy))
+  try {
+    storage.setItem(ttsSettingsKey, JSON.stringify(sanitizeTtsSettingsForExport(migrated)))
+  }
+  catch {
+    // Reading settings must still work when storage is unavailable or full.
+  }
+  return migrated
+}
+
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
   return trimmed ? trimmed.replace(/\/+$/, '') : defaultMimoBaseUrl
@@ -100,4 +156,18 @@ function normalizeNonEmptyString(value: unknown, fallback: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function parseStoredRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return isRecord(parsed) ? parsed : null
+  }
+  catch {
+    return null
+  }
 }

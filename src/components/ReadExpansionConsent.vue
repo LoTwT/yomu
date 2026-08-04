@@ -19,7 +19,7 @@ const emit = defineEmits<{
       开启 AI 增强?
     </h4>
     <p>
-      拓展会把当前词和最小原句上下文发送给你配置的 {{ providerLabel }} 模型。key 只存本机,yomu 不保存;你也可以继续只用本地释义。
+      拓展会把当前词和最小原句上下文发送给你配置的 {{ providerLabel }} 模型。Key 只存本机，Yomu 不保存；你也可以继续只用本地释义。
     </p>
     <div class="read-expansion-consent__actions">
       <button type="button" @click="emit('accept')">

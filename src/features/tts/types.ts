@@ -30,11 +30,15 @@ export interface TtsSynthesisResult {
 
 export interface SentenceTtsProvider {
   synthesizeSentence: (request: TtsSynthesisRequest) => Promise<TtsSynthesisResult>
+  cancelPending: () => void
+  clearCache: () => Promise<void>
 }
 
 export interface SentenceAudioCache {
   get: (cacheKey: string) => Promise<Omit<TtsSynthesisResult, 'source'> | null>
   put: (cacheKey: string, result: Omit<TtsSynthesisResult, 'source'>) => Promise<void>
+  delete: (cacheKey: string) => Promise<void>
+  clear: () => Promise<void>
 }
 
 export interface TtsEndpointResponse {

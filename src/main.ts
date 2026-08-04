@@ -1,6 +1,9 @@
-import { createApp } from 'vue'
-
-import App from './App.vue'
+import { bootstrapYomuApp } from './platform/bootstrap'
+import { createPlatformBootstrapForCurrentTarget } from './platform/createPlatformServices'
 import './styles/main.css'
 
-createApp(App).mount('#app')
+const { services, initialization } = await createPlatformBootstrapForCurrentTarget()
+await bootstrapYomuApp({
+  platformServices: services,
+  initialization,
+})

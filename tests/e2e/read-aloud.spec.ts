@@ -15,13 +15,13 @@ const primarySourceTitle = 'CDC — About Sleep (how much sleep you need)'
 const sentenceCount = 12
 
 async function openFreshApp(page: Page) {
-  await page.goto('/')
+  await page.goto('/legacy')
   await page.evaluate(() => localStorage.clear())
   await page.reload()
 }
 
 async function openFreshAppWithStorage(page: Page, entries: Record<string, string>) {
-  await page.goto('/')
+  await page.goto('/legacy')
   await page.evaluate((storageEntries) => {
     localStorage.clear()
     for (const [key, value] of Object.entries(storageEntries)) {
@@ -203,18 +203,19 @@ test('keeps read expansion local until AI enhancement is explicitly enabled with
   })
 
   await openFreshAppWithStorage(page, {
-    'yomu:read-expansion-settings': JSON.stringify({
+    'yomu:v2:preference:provider:ai:openai:remember-on-device': JSON.stringify(true),
+    'yomu:v2:preference:provider:read-expansion': JSON.stringify({
+      schemaVersion: 2,
       ai: {
         enabled: true,
-        consentAccepted: false,
         provider: 'openai',
         openai: {
-          apiKey: 'user-ai-key',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4.1-mini',
         },
       },
     }),
+    'yomu:v2:secret:ai:openai': 'user-ai-key',
   })
   await page.getByRole('button', { name: 'Start reading' }).click()
   await page.locator('#s1').getByRole('button', { name: firstMeaningToken.accessibleName, exact: true }).click()
@@ -254,7 +255,7 @@ test('shows the local read expansion panel after completion without network requ
   await expect(page.getByText('本地释义 · 零外发').first()).toBeVisible()
   expect(extensionRequests).toEqual([])
 
-  await page.getByLabel('AI 增强(用你自己的 key)').check()
+  await page.getByLabel('AI 增强（使用你自己的 Key）').check()
   await page.getByRole('button', { name: '配置 AI key' }).first().click()
   await expect(page.locator('.read-expansion-panel__settings-anchor')).toBeFocused()
 })
@@ -300,16 +301,18 @@ test('keeps visual reading available when cloud TTS fails', async ({ page }) => 
     body: JSON.stringify({ error: 'The speech provider is temporarily unavailable.' }),
   }))
   await openFreshAppWithStorage(page, {
-    'yomu:tts-settings': JSON.stringify({
+    'yomu:v2:preference:provider:tts:mimo:remember-on-device': JSON.stringify(true),
+    'yomu:v2:preference:provider:tts': JSON.stringify({
+      schemaVersion: 2,
       provider: 'mimo',
       mimo: {
-        apiKey: 'user-key',
         baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
         model: 'mimo-v2.5-tts',
         voice: 'Mia',
         format: 'mp3',
       },
     }),
+    'yomu:v2:secret:tts:mimo': 'user-key',
   })
 
   await page.getByRole('button', { name: 'Start reading' }).click()
@@ -354,16 +357,18 @@ test('prefetches the next two MiMo sentences only after cloud consent', async ({
   })
   await installSpeechSynthesisProbe(page)
   await openFreshAppWithStorage(page, {
-    'yomu:tts-settings': JSON.stringify({
+    'yomu:v2:preference:provider:tts:mimo:remember-on-device': JSON.stringify(true),
+    'yomu:v2:preference:provider:tts': JSON.stringify({
+      schemaVersion: 2,
       provider: 'mimo',
       mimo: {
-        apiKey: 'user-key',
         baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
         model: 'mimo-v2.5-tts',
         voice: 'Mia',
         format: 'mp3',
       },
     }),
+    'yomu:v2:secret:tts:mimo': 'user-key',
   })
 
   await page.getByRole('button', { name: 'Start reading' }).click()

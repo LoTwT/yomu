@@ -1,4 +1,9 @@
-import { createBrowserSentencePlayer, type SentencePlayer } from '@/features/player/useReadAloudSession'
+import {
+  sessionOwnedSentencePlayer,
+  type SentencePlayer,
+  type SessionOwnedSentencePlayer,
+} from '@/features/player/useReadAloudSession'
+import type { RemoteServicesAdapter } from '@/platform/contracts'
 
 import { createTtsCacheKey } from './cacheKey'
 import { createMimoTtsProvider } from './mimoAdapter'
@@ -6,11 +11,20 @@ import { createMemorySentenceAudioCache } from './sentenceAudioCache'
 import { getActiveTtsProvider, type TtsSettings } from './settings'
 import type { TtsSynthesisRequest } from './types'
 
-export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): SentencePlayer {
-  const browserPlayer = createBrowserSentencePlayer()
+export interface ConfiguredSentencePlayerOptions {
+  browserPlayer: SentencePlayer
+  remote: RemoteServicesAdapter
+}
+
+export function createConfiguredSentencePlayer(
+  getSettings: () => TtsSettings,
+  options: ConfiguredSentencePlayerOptions,
+): SessionOwnedSentencePlayer {
+  const browserPlayer = options.browserPlayer
   const audioCache = createMemorySentenceAudioCache()
   const mimoProvider = createMimoTtsProvider({
     cache: audioCache,
+    remote: options.remote,
     getCredentials: () => {
       const settings = getSettings()
       return {
@@ -21,6 +35,7 @@ export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): 
   })
 
   return {
+    [sessionOwnedSentencePlayer]: true,
     async playSentence(options) {
       const settings = getSettings()
       if (getActiveTtsProvider(settings) === 'webspeech') {
@@ -60,6 +75,15 @@ export function createConfiguredSentencePlayer(getSettings: () => TtsSettings): 
           language: 'en',
         }).catch(() => null),
       )).then(() => undefined)
+    },
+    cancelPending() {
+      mimoProvider.cancelPending()
+    },
+    clearCache() {
+      return mimoProvider.clearCache()
+    },
+    disposeOnSessionTeardown() {
+      return mimoProvider.clearCache()
     },
   }
 }

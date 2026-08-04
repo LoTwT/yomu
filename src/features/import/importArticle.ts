@@ -1,16 +1,13 @@
 import type { ArticleSentence, ArticleToken, DailyArticle, ImportedArticleMetadata } from '@/features/article/types'
 import { createTtsCacheKey } from '@/features/tts/cacheKey'
 import { defaultMimoTtsFormat, defaultMimoTtsModel, defaultMimoTtsVoice } from '@/features/tts/mimoPayload'
-
+import { RemoteServiceError, type RemoteServicesAdapter } from '@/platform/contracts'
 import { segmentEnglishSentences, type ImportedSentenceSegment } from './sentenceSegmenter'
 import {
   createImportFailure,
-  maxImportedTextChars,
-  maxUrlResponseBytes,
   parseSupportedHttpUrl,
   validatePlainTextLength,
   validateTextFile,
-  validateUrlResponseMetadata,
   type ImportFailure,
 } from './sourceGuards'
 import { cleanImportedText } from './textCleaning'
@@ -44,8 +41,7 @@ export interface ImportTextFileOptions {
 
 export interface ImportUrlOptions {
   url: string
-  fetchImpl?: typeof fetch
-  importEndpoint?: string
+  remote?: RemoteServicesAdapter
   now?: Date
   timeoutMs?: number
 }
@@ -85,55 +81,55 @@ export async function importArticleFromTextFile(options: ImportTextFileOptions):
 }
 
 export async function importArticleFromUrl(options: ImportUrlOptions): Promise<ImportArticleResult> {
-  if (!options.fetchImpl) {
-    return importArticleFromUrlEndpoint(options)
-  }
-
   const parsedUrl = parseSupportedHttpUrl(options.url)
   if (!(parsedUrl instanceof URL)) {
     return parsedUrl
   }
 
+  if (!options.remote) {
+    return createImportFailure(
+      'extract-failed',
+      'URL import is unavailable on this platform.',
+      'url.extractFailed',
+    )
+  }
+
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000)
-  const fetchImpl = options.fetchImpl ?? fetch
 
   try {
-    const response = await fetchImpl(parsedUrl, {
-      headers: { accept: 'text/html,text/plain,text/markdown,application/xhtml+xml;q=0.9,*/*;q=0.1' },
+    const payload = await options.remote.request<{
+      text?: unknown
+      contentType?: unknown
+      sourceUrl?: unknown
+    }>({
+      operation: 'url-import',
+      body: {
+        url: parsedUrl.toString(),
+        timeoutMs: options.timeoutMs,
+      },
       signal: controller.signal,
     })
 
-    if (!response.ok) {
-      return createImportFailure(
-        response.status === 404 ? 'url-http-error' : 'url-http-error',
-        `This URL returned HTTP ${response.status}.`,
-        response.status === 404 ? 'url.notFound' : 'url.extractFailed',
-      )
-    }
-
-    const metadataFailure = validateUrlResponseMetadata(response)
-    if (metadataFailure) {
-      return metadataFailure
-    }
-
-    const textResult = await readLimitedResponseText(response)
-    if (typeof textResult !== 'string') {
-      return textResult
+    if (typeof payload.text !== 'string') {
+      return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
     }
 
     return importArticleFromRawText({
-      rawText: textResult,
+      rawText: payload.text,
       sourceType: 'url',
-      sourceLabel: parsedUrl.toString(),
-      url: parsedUrl.toString(),
-      contentType: response.headers.get('content-type'),
+      sourceLabel: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
+      url: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
+      contentType: typeof payload.contentType === 'string' ? payload.contentType : 'text/plain',
       now: options.now,
     })
   }
   catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return createImportFailure('url-timeout', 'This URL took too long to respond.', 'url.timeout')
+    }
+    if (error instanceof RemoteServiceError) {
+      return toRemoteImportFailure(error)
     }
 
     return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
@@ -143,44 +139,21 @@ export async function importArticleFromUrl(options: ImportUrlOptions): Promise<I
   }
 }
 
-async function importArticleFromUrlEndpoint(options: ImportUrlOptions): Promise<ImportArticleResult> {
-  const parsedUrl = parseSupportedHttpUrl(options.url)
-  if (!(parsedUrl instanceof URL)) {
-    return parsedUrl
+function toRemoteImportFailure(error: RemoteServiceError): ImportFailure {
+  if (error.status === 403) {
+    return createImportFailure('private-url', error.message, 'url.scheme')
+  }
+  if (error.status === 404) {
+    return createImportFailure('url-http-error', error.message, 'url.notFound')
+  }
+  if (error.status === 413) {
+    return createImportFailure('url-too-large', error.message, 'url.extractFailed')
+  }
+  if (error.status === 504) {
+    return createImportFailure('url-timeout', error.message, 'url.timeout')
   }
 
-  const fetchImpl = fetch
-  const response = await fetchImpl(options.importEndpoint ?? '/api/import/url', {
-    method: 'POST',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ url: parsedUrl.toString(), timeoutMs: options.timeoutMs }),
-  })
-
-  if (!response.ok) {
-    const failure = await response.json().catch(() => null) as Partial<ImportFailure> | null
-    return createImportFailure(
-      failure?.code ?? 'extract-failed',
-      failure?.message ?? 'This URL could not be imported as readable text.',
-      failure?.variant,
-    )
-  }
-
-  const payload = await response.json() as { text?: unknown, contentType?: unknown, sourceUrl?: unknown }
-  if (typeof payload.text !== 'string') {
-    return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
-  }
-
-  return importArticleFromRawText({
-    rawText: payload.text,
-    sourceType: 'url',
-    sourceLabel: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
-    url: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
-    contentType: typeof payload.contentType === 'string' ? payload.contentType : 'text/plain',
-    now: options.now,
-  })
+  return createImportFailure('extract-failed', error.message, 'url.extractFailed')
 }
 
 async function importArticleFromRawText(options: {
@@ -334,15 +307,6 @@ function extractTitle(text: string): string {
 
 function truncateTitle(title: string): string {
   return title.length > 80 ? `${title.slice(0, 77).trimEnd()}...` : title
-}
-
-async function readLimitedResponseText(response: Response): Promise<string | ImportFailure> {
-  const text = await response.text()
-  if (text.length > maxUrlResponseBytes || text.length > maxImportedTextChars) {
-    return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.extractFailed')
-  }
-
-  return text
 }
 
 function validateSourceTextLength(text: string, sourceType: ImportSourceType): ImportFailure | null {

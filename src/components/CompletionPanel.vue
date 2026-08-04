@@ -8,7 +8,7 @@ import type { PracticeSessionRecord } from '@/features/storage/practiceStorage'
 
 import ReadExpansionPanel from './ReadExpansionPanel.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   article: DailyArticle
   session: PracticeSessionRecord | null
   readExpansionTerms: ReadExpansionTerm[]
@@ -16,9 +16,13 @@ const props = defineProps<{
   aiConfigured: boolean
   aiProviderLabel: string
   showAiConsentPrompt: boolean
-}>()
+  canRememberOnDevice?: boolean
+}>(), {
+  canRememberOnDevice: true,
+})
 
 const readExpansionSettings = defineModel<ReadExpansionSettings>('readExpansionSettings', { required: true })
+const rememberOpenAiKey = defineModel<boolean>('rememberOpenAiKey', { default: false })
 
 const emit = defineEmits<{
   requestAiExpansion: [term: ReadExpansionTerm]
@@ -38,11 +42,9 @@ function focusPanel() {
 
   title.scrollIntoView({
     block: 'start',
-    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    behavior: 'auto',
   })
-  window.requestAnimationFrame(() => {
-    title.focus({ preventScroll: true })
-  })
+  title.focus({ preventScroll: true })
 }
 
 defineExpose({ focusPanel })
@@ -88,11 +90,13 @@ defineExpose({ focusPanel })
     </section>
     <ReadExpansionPanel
       v-model:settings="readExpansionSettings"
+      v-model:remember-on-device="rememberOpenAiKey"
       :terms="readExpansionTerms"
       :ai-states="readExpansionAiStates"
       :ai-configured="aiConfigured"
       :provider-label="aiProviderLabel"
       :show-consent-prompt="showAiConsentPrompt"
+      :can-remember-on-device="canRememberOnDevice"
       @request-ai="emit('requestAiExpansion', $event)"
       @accept-ai="emit('acceptAiExpansion')"
       @decline-ai="emit('declineAiExpansion')"
