@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { shallowRef } from 'vue'
+import { computed } from 'vue'
 
 import { useImportFlow } from '@/features/import/useImportFlow'
 import { useUnsavedImportGuard } from '@/features/import/useUnsavedImportGuard'
 import ImportErrorSummary from './ImportErrorSummary.vue'
+import FileImportPanel from './FileImportPanel.vue'
 import ImportPreview from './ImportPreview.vue'
 import ImportSourceSwitcher, { type ImportSource } from './ImportSourceSwitcher.vue'
 import PasteImportPanel from './PasteImportPanel.vue'
@@ -13,13 +14,20 @@ const emit = defineEmits<{
   openArticle: [articleId: string]
 }>()
 
-const source = shallowRef<ImportSource>('paste')
 const {
   state,
+  inputSource,
   canPersist,
+  fileImportAvailable,
+  fileImportReason,
+  fileDropAvailable,
   isDirty,
+  setInputSource,
   setSourceText,
   parsePaste,
+  chooseFile,
+  importDroppedFiles,
+  parseSelectedFile,
   updateTitle,
   updateSourceLabel,
   updateBody,
@@ -27,6 +35,16 @@ const {
   cancelPreview,
   acceptDuplicate,
 } = useImportFlow()
+const source = computed<ImportSource>({
+  get: () => inputSource.value,
+  set: (value) => {
+    if (value === 'paste' || value === 'file') {
+      setInputSource(value)
+    }
+  },
+})
+const sourceLocked = computed(() =>
+  state.value.phase !== 'idle' && state.value.phase !== 'error')
 const {
   isConfirming,
   keepEditing,
@@ -50,7 +68,12 @@ function openDuplicate(): void {
 
 <template>
   <div class="import-composer">
-    <ImportSourceSwitcher v-model="source" />
+    <ImportSourceSwitcher
+      v-model="source"
+      :file-available="fileImportAvailable"
+      :file-unavailable-reason="fileImportReason"
+      :disabled="sourceLocked"
+    />
 
     <section
       v-if="state.phase === 'idle' || state.phase === 'parsing' || state.phase === 'error'"
@@ -59,10 +82,22 @@ function openDuplicate(): void {
     >
       <ImportErrorSummary v-if="state.phase === 'error'" :message="state.message" />
       <PasteImportPanel
+        v-if="state.source === 'paste'"
         :text="state.text"
         :busy="state.phase === 'parsing'"
         @update-text="setSourceText"
         @parse="parsePaste"
+      />
+      <FileImportPanel
+        v-else
+        :busy="state.phase === 'parsing'"
+        :available="fileImportAvailable"
+        :unavailable-reason="fileImportReason"
+        :drop-available="fileDropAvailable"
+        :file-name="state.fileName"
+        @choose-file="chooseFile"
+        @retry="parseSelectedFile"
+        @drop-files="importDroppedFiles"
       />
     </section>
 
@@ -73,6 +108,7 @@ function openDuplicate(): void {
       :body="state.body"
       :saving="state.phase === 'saving'"
       :can-persist="canPersist"
+      :cancel-label="state.draft.source.kind === 'file' ? '选择其他文件' : '重新输入'"
       :validation-message="state.phase === 'preview' ? state.validationMessage : ''"
       @update-title="updateTitle"
       @update-source="updateSourceLabel"

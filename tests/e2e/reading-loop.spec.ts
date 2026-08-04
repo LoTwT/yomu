@@ -97,6 +97,49 @@ test('same confirmed body opens the existing article instead of creating a dupli
   await expect(page.locator('[data-article-id]')).toHaveCount(1)
 })
 
+test('a duplicate file import returns to the edited preview', async ({ page }) => {
+  await page.goto('/import')
+  await page.getByRole('button', { name: 'TXT / Markdown' }).click()
+
+  const firstChooserPromise = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: '选择文件' }).click()
+  const firstChooser = await firstChooserPromise
+  await firstChooser.setFiles({
+    name: 'duplicate-reading.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(importedBody, 'utf8'),
+  })
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await page.getByLabel('标题').fill('Original file title')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+
+  await page.goto('/import')
+  await page.getByRole('button', { name: 'TXT / Markdown' }).click()
+  const duplicateChooserPromise = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: '选择文件' }).click()
+  const duplicateChooser = await duplicateChooserPromise
+  await duplicateChooser.setFiles({
+    name: 'duplicate-reading.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(importedBody, 'utf8'),
+  })
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await page.getByLabel('标题').fill('Edited duplicate title')
+  await page.getByRole('textbox', { name: '来源' }).fill('Edited duplicate source')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+  await expect(page.getByTestId('import-duplicate-state')).toBeVisible()
+
+  await page.getByRole('button', { name: '返回修改' }).click()
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await expect(page.getByLabel('标题')).toHaveValue('Edited duplicate title')
+  await expect(page.getByRole('textbox', { name: '来源' }))
+    .toHaveValue('Edited duplicate source')
+})
+
 test('import errors keep the draft and move focus to a recoverable summary', async ({ page }) => {
   await page.goto('/import')
   const bodyField = page.getByLabel('英文正文')
@@ -113,10 +156,84 @@ test('import errors keep the draft and move focus to a recoverable summary', asy
   await expect(page.getByTestId('import-preview')).toBeVisible()
 })
 
+test('file picker rejects non-UTF-8 text and imports Markdown through the platform adapter', async ({ page }) => {
+  await page.goto('/import')
+  await page.getByRole('button', { name: 'TXT / Markdown' }).click()
+
+  const utf16ChooserPromise = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: '选择文件' }).click()
+  const utf16Chooser = await utf16ChooserPromise
+  await utf16Chooser.setFiles({
+    name: 'utf16-without-bom.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from(importedBody, 'utf16le'),
+  })
+
+  const errorHeading = page.getByRole('heading', { name: '无法生成预览' })
+  await expect(errorHeading).toBeFocused()
+  await expect(page.getByText('无法按 UTF-8 读取这个文件，请转换编码后重试。')).toBeVisible()
+  await expect(page.getByText('utf16-without-bom.txt', { exact: true })).toBeVisible()
+
+  const invalidChooserPromise = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: '选择其他文件' }).click()
+  const invalidChooser = await invalidChooserPromise
+  await invalidChooser.setFiles({
+    name: 'broken.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from([0xc3, 0x28]),
+  })
+
+  await expect(errorHeading).toBeFocused()
+  await expect(page.getByText('无法按 UTF-8 读取这个文件，请转换编码后重试。')).toBeVisible()
+  await expect(page.getByText('broken.txt', { exact: true })).toBeVisible()
+
+  const validChooserPromise = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: '选择其他文件' }).click()
+  const validChooser = await validChooserPromise
+  await validChooser.setFiles({
+    name: 'local-reading.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(`# ${importedBody}\n`, 'utf8'),
+  })
+
+  const preview = page.getByTestId('import-preview')
+  await expect(preview).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '来源' })).toHaveValue('local-reading.md')
+  await expect(page.getByLabel('提取后的正文')).toHaveValue(importedBody)
+  await page.getByLabel('标题').fill('Imported from Markdown')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  await expect(page.getByRole('heading', { level: 2, name: 'Imported from Markdown' })).toBeVisible()
+})
+
+test('expanded file import accepts one dropped text file while keeping the picker visible', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1024 })
+  await page.goto('/import')
+  await page.getByRole('button', { name: 'TXT / Markdown' }).click()
+
+  await expect(page.getByRole('button', { name: '选择文件' })).toBeVisible()
+  await expect(page.getByText('或在宽屏桌面上把一个文件拖放到此处')).toBeVisible()
+
+  const dataTransfer = await page.evaluateHandle((body) => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([body], 'desktop-drop.txt', { type: 'text/plain' }))
+    return transfer
+  }, importedBody)
+  await page.getByTestId('file-drop-zone').dispatchEvent('drop', { dataTransfer })
+  await dataTransfer.dispose()
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '来源' })).toHaveValue('desktop-drop.txt')
+  await expect(page.getByLabel('提取后的正文')).toHaveValue(importedBody)
+})
+
 test('unsaved import drafts require an explicit SPA navigation decision', async ({ page }) => {
   await page.goto('/import')
   const bodyField = page.getByLabel('英文正文')
   await bodyField.fill(importedBody)
+  await page.getByRole('button', { name: 'TXT / Markdown' }).click()
+  await expect(page.getByTestId('file-drop-zone')).toBeVisible()
 
   await page.getByRole('link', { name: '设置', exact: true }).click({ noWaitAfter: true })
   const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
@@ -125,6 +242,7 @@ test('unsaved import drafts require an explicit SPA navigation decision', async 
   await expect(dialog.getByRole('button', { name: '继续编辑' })).toBeFocused()
   await dialog.getByRole('button', { name: '继续编辑' }).click()
   await expect(dialog).toHaveCount(0)
+  await page.getByRole('button', { name: '粘贴文本' }).click()
   await expect(bodyField).toHaveValue(importedBody)
 
   await page.getByRole('button', { name: '生成预览' }).click()

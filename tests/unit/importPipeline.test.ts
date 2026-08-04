@@ -38,6 +38,31 @@ describe('BYO import pipeline', () => {
     expect(JSON.stringify(result.draft)).not.toContain('cacheKey')
   })
 
+  it('imports Markdown files through the same canonical preview pipeline', async () => {
+    const markdown = [
+      `# ${readableEnglish.split(' ').slice(0, 12).join(' ')}.`,
+      '',
+      readableEnglish.split('. ').slice(1).join('. '),
+    ].join('\n')
+    const result = await importArticleFromTextFile({
+      file: {
+        name: 'reading-notes.md',
+        size: markdown.length,
+        type: 'text/markdown',
+        text: async () => markdown,
+      },
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+
+    expect(result.draft.source).toEqual({ kind: 'file', label: 'reading-notes.md' })
+    expect(result.draft.body).not.toContain('# ')
+    expect(result.draft.sentences.length).toBeGreaterThanOrEqual(2)
+  })
+
   it('rejects dangerous pasted script blocks instead of rendering or cleaning them silently', async () => {
     const result = await importArticleFromPaste({
       text: `<p>${readableEnglish}</p><script>alert("x")</script>`,
@@ -78,6 +103,22 @@ describe('BYO import pipeline', () => {
     })
     expect(pdf.ok ? null : pdf.code).toBe('unsupported-file-type')
     expect(pdf.ok ? null : pdf.variant).toBe('file.unsupported')
+
+    const tooLarge = await importArticleFromTextFile({
+      file: { name: 'large.txt', size: 256_001, text: async () => readableEnglish },
+    })
+    expect(tooLarge.ok ? null : tooLarge.code).toBe('file-too-large')
+    expect(tooLarge.ok ? null : tooLarge.variant).toBe('file.tooLarge')
+
+    const unreadable = await importArticleFromTextFile({
+      file: {
+        name: 'broken.txt',
+        size: 42,
+        text: async () => Promise.reject(new Error('invalid UTF-8')),
+      },
+    })
+    expect(unreadable.ok ? null : unreadable.code).toBe('file-read-failed')
+    expect(unreadable.ok ? null : unreadable.variant).toBe('file.encoding')
 
     const privateUrl = await importArticleFromUrl({ url: 'http://127.0.0.1/article' })
     expect(privateUrl.ok ? null : privateUrl.code).toBe('private-url')

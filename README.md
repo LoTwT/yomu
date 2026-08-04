@@ -10,12 +10,12 @@ The v2 implementation currently includes:
 
 - responsive Paper / Ink application shell built with `@ayingott/theme`;
 - IndexedDB-backed `ArticleRecord`, `ReadingAttempt`, and vocabulary repositories;
-- pasted-text parsing, editable preview, atomic save, body-hash deduplication, and a real local library;
+- pasted-text and UTF-8 TXT / Markdown file parsing, editable preview, atomic save, body-hash deduplication, and a real local library;
 - canonical reader routing with sentence position and active-time persistence;
 - Web/PWA, desktop-shell, and mobile-shell target builds behind `PlatformServices` boundaries;
 - explicit `/legacy` access to the Today compatibility reader while Reader v2 is developed.
 
-TXT / Markdown import and URL Beta are the next Stage 2 slices. Accounts, cloud sync, SRS, PDF / Word import, recorder / ASR, and pronunciation scoring are outside the v2 scope.
+URL Beta is the next Stage 2 slice. Accounts, cloud sync, SRS, PDF / Word import, recorder / ASR, and pronunciation scoring are outside the v2 scope.
 
 The library is isolated per browser profile or app installation. It does not automatically appear on another device.
 

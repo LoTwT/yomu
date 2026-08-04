@@ -210,16 +210,36 @@ export class FakeFileImportAdapter implements FileImportAdapter {
     return this.available
   }
 
+  supportsDrop(): boolean {
+    return this.available
+  }
+
   async pickTextFiles(options: FileImportOptions = {}): Promise<ImportedTextFile[]> {
     if (!this.available) {
       throw new PlatformCapabilityError('fileImport')
     }
     const values = options.multiple ? this.files : this.files.slice(0, 1)
-    return values.map(file => ({ ...file }))
+    return values.map(cloneImportedTextFile)
+  }
+
+  getDroppedTextFiles(_payload: unknown): ImportedTextFile[] {
+    if (!this.available) {
+      throw new PlatformCapabilityError('fileImport')
+    }
+    return this.files.map(cloneImportedTextFile)
   }
 
   setFiles(files: ImportedTextFile[]): void {
     this.files = files
+  }
+}
+
+function cloneImportedTextFile(file: ImportedTextFile): ImportedTextFile {
+  return {
+    name: file.name,
+    size: file.size,
+    mediaType: file.mediaType,
+    text: () => file.text(),
   }
 }
 

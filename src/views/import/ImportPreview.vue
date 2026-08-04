@@ -9,6 +9,7 @@ const props = defineProps<{
   body: string
   saving: boolean
   canPersist: boolean
+  cancelLabel?: string
   validationMessage?: string
 }>()
 
@@ -53,7 +54,7 @@ function handleSourceInput(event: Event): void {
           </h2>
         </div>
         <button class="import-preview__cancel" type="button" :disabled="props.saving" @click="emit('cancel')">
-          重新输入
+          {{ props.cancelLabel ?? '重新输入' }}
         </button>
       </div>
 

@@ -81,7 +81,9 @@ export interface FileImportOptions {
 
 export interface FileImportAdapter {
   isAvailable: () => boolean
+  supportsDrop: () => boolean
   pickTextFiles: (options?: FileImportOptions) => Promise<ImportedTextFile[]>
+  getDroppedTextFiles: (payload: unknown) => ImportedTextFile[]
 }
 
 export type AppLifecycleState = 'active' | 'background' | 'suspended'
