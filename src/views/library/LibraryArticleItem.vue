@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { PhCaretRight, PhFileText } from '@phosphor-icons/vue'
+import { onMounted, useTemplateRef } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import type { LibraryArticle } from './libraryFixtures'
+import type { LibraryArticleViewModel } from '@/features/library/libraryViewModel'
 
-defineProps<{
-  article: LibraryArticle
+const props = defineProps<{
+  article: LibraryArticleViewModel
+  restoreFocus?: boolean
 }>()
+
+const articleLink = useTemplateRef<HTMLAnchorElement>('articleLink')
+
+onMounted(() => {
+  if (props.restoreFocus) {
+    articleLink.value?.focus({ preventScroll: true })
+  }
+})
 </script>
 
 <template>
@@ -16,23 +26,22 @@ defineProps<{
       <div class="article-object__heading">
         <h3 class="article-object__title">
           <RouterLink
-            class="article-object__link"
-            :to="{
-              name: article.availability === 'legacy-today'
-                ? 'legacy-reader'
-                : 'article-unavailable',
-              params: { articleId: article.id },
-            }"
-            :aria-label="article.availability === 'unavailable'
-              ? `${article.title}，尚未接入`
-              : undefined"
-            :title="article.availability === 'unavailable' ? '尚未接入' : undefined"
+            v-slot="{ href, navigate }"
+            custom
+            :to="{ name: 'reader', params: { articleId: article.id } }"
           >
-            <span lang="en">{{ article.title }}</span>
-            <PhCaretRight class="article-object__caret" aria-hidden="true" :size="16" />
+            <a
+              ref="articleLink"
+              class="article-object__link"
+              :href="href"
+              @click="navigate"
+            >
+              <span lang="en">{{ article.title }}</span>
+              <PhCaretRight class="article-object__caret" aria-hidden="true" :size="16" />
+            </a>
           </RouterLink>
         </h3>
-        <span class="article-object__level">{{ article.level }}</span>
+        <span class="article-object__level">{{ article.levelLabel }}</span>
       </div>
 
       <p v-if="article.summary" class="article-object__summary" lang="en">
@@ -40,7 +49,7 @@ defineProps<{
       </p>
 
       <p class="article-object__meta">
-        <span lang="en">{{ article.source }}</span> · {{ article.level }} · {{ article.estimatedMinutes }} 分钟
+        <span>{{ article.sourceLabel }}</span> · {{ article.levelLabel }} · {{ article.estimatedMinutes }} 分钟 · {{ article.status }}
       </p>
 
       <div class="article-object__progress-wrap">
@@ -54,7 +63,7 @@ defineProps<{
       </div>
 
       <p class="article-object__activity">
-        {{ article.lastOpened }}
+        {{ article.lastOpenedLabel }}
       </p>
     </article>
   </li>

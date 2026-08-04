@@ -1,6 +1,8 @@
-import type { ArticleSentence, ArticleToken, DailyArticle, ImportedArticleMetadata } from '@/features/article/types'
-import { createTtsCacheKey } from '@/features/tts/cacheKey'
-import { defaultMimoTtsFormat, defaultMimoTtsModel, defaultMimoTtsVoice } from '@/features/tts/mimoPayload'
+import type {
+  ArticleRecord,
+  ArticleSentenceRecord,
+  ArticleTokenRecord,
+} from '@/data/entities'
 import { RemoteServiceError, type RemoteServicesAdapter } from '@/platform/contracts'
 import { segmentEnglishSentences, type ImportedSentenceSegment } from './sentenceSegmenter'
 import {
@@ -14,11 +16,23 @@ import { cleanImportedText } from './textCleaning'
 import { createStableTextHash } from './textHash'
 
 export type ImportSourceType = 'paste' | 'file' | 'url'
+export type ImportedArticleSource = Omit<ArticleRecord['source'], 'kind'> & {
+  kind: ImportSourceType
+}
+
+export interface ImportedArticleDraft {
+  source: ImportedArticleSource
+  title: string
+  body: string
+  contentHash: string
+  sentences: ArticleSentenceRecord[]
+  wordCount: number
+  estimatedReadTimeMinutes: number
+}
 
 export interface ImportedArticleSuccess {
   ok: true
-  article: DailyArticle
-  metadata: ImportedArticleMetadata
+  draft: ImportedArticleDraft
   warnings: string[]
 }
 
@@ -26,7 +40,6 @@ export type ImportArticleResult = ImportedArticleSuccess | ImportFailure
 
 export interface ImportPasteOptions {
   text: string
-  now?: Date
 }
 
 export interface ImportTextFileOptions {
@@ -36,13 +49,11 @@ export interface ImportTextFileOptions {
     type?: string
     text: () => Promise<string>
   }
-  now?: Date
 }
 
 export interface ImportUrlOptions {
   url: string
   remote?: RemoteServicesAdapter
-  now?: Date
   timeoutMs?: number
 }
 
@@ -50,9 +61,8 @@ export async function importArticleFromPaste(options: ImportPasteOptions): Promi
   return importArticleFromRawText({
     rawText: options.text,
     sourceType: 'paste',
-    sourceLabel: 'Pasted text',
+    sourceLabel: '粘贴文本',
     contentType: 'text/plain',
-    now: options.now,
   })
 }
 
@@ -74,9 +84,7 @@ export async function importArticleFromTextFile(options: ImportTextFileOptions):
     rawText: text,
     sourceType: 'file',
     sourceLabel: options.file.name,
-    fileName: options.file.name,
     contentType: options.file.type || 'text/plain',
-    now: options.now,
   })
 }
 
@@ -115,13 +123,16 @@ export async function importArticleFromUrl(options: ImportUrlOptions): Promise<I
       return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
     }
 
+    const sourceUrl = typeof payload.sourceUrl === 'string'
+      ? payload.sourceUrl
+      : parsedUrl.toString()
+
     return importArticleFromRawText({
       rawText: payload.text,
       sourceType: 'url',
-      sourceLabel: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
-      url: typeof payload.sourceUrl === 'string' ? payload.sourceUrl : parsedUrl.toString(),
+      sourceLabel: new URL(sourceUrl).hostname,
+      url: sourceUrl,
       contentType: typeof payload.contentType === 'string' ? payload.contentType : 'text/plain',
-      now: options.now,
     })
   }
   catch (error) {
@@ -137,6 +148,20 @@ export async function importArticleFromUrl(options: ImportUrlOptions): Promise<I
   finally {
     clearTimeout(timeout)
   }
+}
+
+export async function reparseImportedArticleDraft(
+  draft: ImportedArticleDraft,
+  body: string,
+): Promise<ImportArticleResult> {
+  return importArticleFromRawText({
+    rawText: body,
+    sourceType: draft.source.kind,
+    sourceLabel: draft.source.label,
+    url: draft.source.url,
+    contentType: 'text/plain',
+    title: draft.title,
+  })
 }
 
 function toRemoteImportFailure(error: RemoteServiceError): ImportFailure {
@@ -161,9 +186,8 @@ async function importArticleFromRawText(options: {
   sourceType: ImportSourceType
   sourceLabel: string
   contentType?: string | null
-  fileName?: string
   url?: string
-  now?: Date
+  title?: string
 }): Promise<ImportArticleResult> {
   const lengthFailure = validateSourceTextLength(options.rawText, options.sourceType)
   if (lengthFailure) {
@@ -188,115 +212,67 @@ async function importArticleFromRawText(options: {
     return segmentationResult
   }
 
-  const now = options.now ?? new Date()
-  const textHash = createStableTextHash(cleanResult.text)
-  const articleId = `import-${options.sourceType}-${textHash.slice(0, 12)}`
-  const title = extractTitle(cleanResult.text)
-  const metadata: ImportedArticleMetadata = {
-    articleId,
-    textHash,
-    importedAt: now.toISOString(),
-    sourceType: options.sourceType,
-    sourceRef: {
-      kind: options.sourceType,
-      label: options.sourceType === 'url' ? new URL(options.url ?? options.sourceLabel).hostname : options.sourceLabel,
-      url: options.url,
-      fileName: options.fileName,
-    },
-    title,
-  }
-
   return {
     ok: true,
-    article: buildImportedArticle(metadata, segmentationResult.sentences),
-    metadata,
+    draft: buildImportedArticleDraft({
+      body: cleanResult.text,
+      sourceType: options.sourceType,
+      sourceLabel: options.sourceLabel,
+      url: options.url,
+      title: options.title,
+      segments: segmentationResult.sentences,
+    }),
     warnings: cleanResult.removedDangerousBlocks ? ['removed-dangerous-html-blocks'] : [],
   }
 }
 
-function buildImportedArticle(
-  metadata: ImportedArticleMetadata,
-  segments: ImportedSentenceSegment[],
-): DailyArticle {
-  const wordCount = segments.reduce((sum, segment) => sum + tokenizeImportedSentence(segment.original).filter(token => token.kind === 'word').length, 0)
+function buildImportedArticleDraft(options: {
+  body: string
+  sourceType: ImportSourceType
+  sourceLabel: string
+  url?: string
+  title?: string
+  segments: ImportedSentenceSegment[]
+}): ImportedArticleDraft {
+  const sentences = options.segments.map(toArticleSentence)
+  const wordCount = sentences.reduce((sum, sentence) =>
+    sum + sentence.tokens.filter(token => token.kind === 'word').length, 0)
 
   return {
-    id: metadata.articleId,
-    contentVersion: `import-${metadata.importedAt.slice(0, 10)}`,
-    language: 'en',
-    level: 'B1',
-    topic: 'knowledge',
-    title: metadata.title,
-    deck: `${segments.length} sentences imported for sentence-by-sentence read-aloud practice.`,
+    source: {
+      kind: options.sourceType,
+      label: options.sourceLabel,
+      url: options.url,
+    },
+    title: truncateTitle(options.title?.trim() || extractTitle(options.body)),
+    body: options.body,
+    contentHash: createStableTextHash(options.body),
+    sentences,
+    wordCount,
     estimatedReadTimeMinutes: Math.max(1, Math.ceil(wordCount / 130)),
-    factSources: metadata.sourceRef.url
-      ? [{ title: metadata.sourceRef.label, url: metadata.sourceRef.url }]
-      : [],
-    rights: {
-      sourceType: 'user-import',
-      rightsStatus: 'owned',
-      licenseNote: 'User-imported text. The user is responsible for rights and permission to process it.',
-      ttsAllowed: true,
-      translationAllowed: false,
-      cacheAllowed: true,
-    },
-    model: {
-      provider: 'user-import',
-      name: 'byo-import-pipeline',
-      version: 'm1',
-      promptHash: 'none',
-    },
-    qaStatus: 'approved',
-    importMetadata: metadata,
-    sentences: segments.map(toArticleSentence),
   }
 }
 
-function toArticleSentence(segment: ImportedSentenceSegment): ArticleSentence {
-  const audioCacheKey = createTtsCacheKey({
-    provider: 'mimo',
-    model: defaultMimoTtsModel,
-    voice: defaultMimoTtsVoice,
-    format: defaultMimoTtsFormat,
-    textHash: segment.textHash,
-  })
-
+function toArticleSentence(segment: ImportedSentenceSegment): ArticleSentenceRecord {
   return {
     id: segment.id,
     order: segment.order,
     original: segment.original,
     paragraphIndex: segment.paragraphIndex,
     textHash: segment.textHash,
-    annotations: {},
-    bilingual: {},
-    translation: '',
     tokens: tokenizeImportedSentence(segment.original).map((token, index) => ({
       ...token,
       id: `${segment.id}-t${index + 1}`,
     })),
-    audioRef: {
-      id: `tts-${segment.textHash}`,
-      url: `missing://tts-consent-required/${segment.textHash}`,
-      durationMs: estimateSentenceDurationMs(segment.original),
-    },
-    audio: {
-      cacheKey: audioCacheKey,
-      status: 'idle',
-    },
   }
 }
 
-function tokenizeImportedSentence(sentence: string): Array<Omit<ArticleToken, 'id'>> {
+function tokenizeImportedSentence(sentence: string): Array<Omit<ArticleTokenRecord, 'id'>> {
   return sentence.match(/[A-Za-z]+(?:'[A-Za-z]+)?|[0-9]+(?:\.[0-9]+)?|[^\sA-Za-z0-9]/g)
     ?.map(token => ({
       text: token,
       kind: /[A-Za-z0-9]/.test(token) ? 'word' : 'punctuation',
     })) ?? []
-}
-
-function estimateSentenceDurationMs(sentence: string): number {
-  const words = sentence.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g)?.length ?? 1
-  return Math.max(900, Math.round((words / 155) * 60_000))
 }
 
 function extractTitle(text: string): string {

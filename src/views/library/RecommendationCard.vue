@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { PhCaretRight, PhFileText } from '@phosphor-icons/vue'
 import { RouterLink } from 'vue-router'
+import type { RouteLocationRaw } from 'vue-router'
 
-import type { LibraryArticle } from './libraryFixtures'
+import type { LibraryRecommendation } from './libraryRecommendations'
 
 defineProps<{
-  article: LibraryArticle
+  article: LibraryRecommendation
+  to: RouteLocationRaw
 }>()
 </script>
 
@@ -23,20 +25,12 @@ defineProps<{
       </p>
     </div>
     <p class="recommendation-card__meta">
-      {{ article.level }} · {{ article.estimatedMinutes }} 分钟 · {{ article.progress }}%
+      {{ article.sourceLabel }} · {{ article.levelLabel }} · {{ article.estimatedMinutes }} 分钟
     </p>
     <RouterLink
       class="recommendation-card__link"
-      :to="{
-        name: article.availability === 'legacy-today'
-          ? 'legacy-reader'
-          : 'article-unavailable',
-        params: { articleId: article.id },
-      }"
-      :aria-label="article.availability === 'unavailable'
-        ? `${article.title}，尚未接入`
-        : `加入并阅读 ${article.title}`"
-      :title="article.availability === 'unavailable' ? '尚未接入' : undefined"
+      :to="to"
+      :aria-label="`阅读样例 ${article.title}`"
     >
       <PhCaretRight aria-hidden="true" :size="18" />
     </RouterLink>

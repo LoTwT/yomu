@@ -16,12 +16,14 @@ const sentenceCount = 12
 
 async function openFreshApp(page: Page) {
   await page.goto('/legacy')
+  await page.locator('.legacy-route').waitFor()
   await page.evaluate(() => localStorage.clear())
   await page.reload()
 }
 
 async function openFreshAppWithStorage(page: Page, entries: Record<string, string>) {
   await page.goto('/legacy')
+  await page.locator('.legacy-route').waitFor()
   await page.evaluate((storageEntries) => {
     localStorage.clear()
     for (const [key, value] of Object.entries(storageEntries)) {

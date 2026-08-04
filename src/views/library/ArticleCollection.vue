@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import LibraryArticleItem from './LibraryArticleItem.vue'
-import type { LibraryArticle } from './libraryFixtures'
+import type { LibraryArticleViewModel } from '@/features/library/libraryViewModel'
 
 defineProps<{
-  articles: readonly LibraryArticle[]
+  articles: readonly LibraryArticleViewModel[]
+  restoreFocusArticleId?: string | null
 }>()
 </script>
 
 <template>
-  <ol class="article-collection" aria-label="我的文章列表">
+  <ol class="article-collection" data-testid="article-collection" aria-label="我的文章列表">
     <LibraryArticleItem
       v-for="article in articles"
       :key="article.id"
       :article="article"
+      :restore-focus="article.id === restoreFocusArticleId"
     />
   </ol>
 </template>

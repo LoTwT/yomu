@@ -6,7 +6,7 @@ import {
   type RouteRecordRaw,
 } from 'vue-router'
 
-import { LEGACY_TODAY_ARTICLE_ID } from '../views/library/libraryFixtures'
+import { LEGACY_TODAY_ARTICLE_ID } from '../views/library/libraryRecommendations'
 
 function resolveArticleId(value: string | string[]): string {
   return Array.isArray(value) ? (value[0] ?? '') : value
@@ -22,22 +22,10 @@ const readerRoutes: RouteRecordRaw[] = typeof __YOMU_TARGET__ === 'undefined' ||
       },
       {
         path: '/read/:articleId',
-        name: 'legacy-reader',
-        component: () => import('../views/LegacyReaderRouteView.vue'),
+        name: 'reader',
+        component: () => import('../views/ReaderView.vue'),
+        props: route => ({ articleId: resolveArticleId(route.params.articleId) }),
         meta: { immersive: true },
-        beforeEnter(to) {
-          const articleId = resolveArticleId(to.params.articleId)
-
-          if (articleId === LEGACY_TODAY_ARTICLE_ID) {
-            return true
-          }
-
-          return {
-            name: 'article-unavailable',
-            params: { articleId },
-            replace: true,
-          }
-        },
       },
     ]
   : [
@@ -49,7 +37,7 @@ const readerRoutes: RouteRecordRaw[] = typeof __YOMU_TARGET__ === 'undefined' ||
       },
       {
         path: '/read/:articleId',
-        name: 'legacy-reader',
+        name: 'reader',
         component: () => import('../views/library/UnavailableArticleView.vue'),
         props: route => ({ articleId: resolveArticleId(route.params.articleId) }),
       },

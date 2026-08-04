@@ -10,12 +10,13 @@ for (const viewport of responsiveViewports) {
     await page.setViewportSize(viewport)
     await page.goto('/')
     await expect(page.locator('.shell-actions')).toBeVisible()
+    await expect(page.getByTestId('library-empty-state')).toBeVisible()
 
     const metrics = await page.evaluate(() => {
       const actions = [...document.querySelectorAll<HTMLAnchorElement>('.shell-actions__link')]
       const touchTargets = [
         ...document.querySelectorAll<HTMLElement>(
-          '.brand-link, .primary-nav__link, .shell-actions__link, .continue-card__button, .article-object__link, .recommendation-card__link',
+          '.brand-link, .primary-nav__link, .shell-actions__link, [data-testid="library-empty-state"] a, .recommendation-card__link',
         ),
       ]
 
@@ -33,20 +34,11 @@ for (const viewport of responsiveViewports) {
   })
 }
 
-test('unavailable links and unknown article ids never display the Today body', async ({ page }) => {
-  await page.goto('/')
-  const unavailableArticle = page.locator('.article-object__link').first()
-  await expect(unavailableArticle).toHaveAttribute('aria-label', /尚未接入/)
-  await unavailableArticle.click()
-
-  await expect(page).toHaveURL(/\/unavailable\/power-of-small-habits$/)
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('这篇文章还不能打开')
-  await expect(page.getByText('Why the Brain Loves Sleep')).toHaveCount(0)
-
+test('unknown article ids never display the Today body', async ({ page }) => {
   await page.goto('/read/not-integrated')
 
-  await expect(page).toHaveURL(/\/unavailable\/not-integrated$/)
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('这篇文章还不能打开')
-  await expect(page.getByText('Yomu 不会用其他正文代替它')).toBeVisible()
+  await expect(page).toHaveURL(/\/read\/not-integrated$/)
+  await expect(page.getByRole('heading', { level: 2, name: '找不到这篇文章' })).toBeVisible()
+  await expect(page.getByText('Yomu 不会用 Today 或其他正文替代它')).toBeVisible()
   await expect(page.getByText('Why the Brain Loves Sleep')).toHaveCount(0)
 })
