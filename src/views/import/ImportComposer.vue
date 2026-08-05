@@ -9,6 +9,7 @@ import ImportPreview from './ImportPreview.vue'
 import ImportSourceSwitcher, { type ImportSource } from './ImportSourceSwitcher.vue'
 import PasteImportPanel from './PasteImportPanel.vue'
 import UnsavedImportDialog from './UnsavedImportDialog.vue'
+import UrlImportPanel from './UrlImportPanel.vue'
 
 const emit = defineEmits<{
   openArticle: [articleId: string]
@@ -21,13 +22,18 @@ const {
   fileImportAvailable,
   fileImportReason,
   fileDropAvailable,
+  urlImportAvailable,
+  urlImportReason,
   isDirty,
   setInputSource,
   setSourceText,
+  setSourceUrl,
   parsePaste,
   chooseFile,
   importDroppedFiles,
   parseSelectedFile,
+  parseUrl,
+  usePasteFallback,
   updateTitle,
   updateSourceLabel,
   updateBody,
@@ -38,9 +44,7 @@ const {
 const source = computed<ImportSource>({
   get: () => inputSource.value,
   set: (value) => {
-    if (value === 'paste' || value === 'file') {
-      setInputSource(value)
-    }
+    setInputSource(value)
   },
 })
 const sourceLocked = computed(() =>
@@ -72,6 +76,8 @@ function openDuplicate(): void {
       v-model="source"
       :file-available="fileImportAvailable"
       :file-unavailable-reason="fileImportReason"
+      :url-available="urlImportAvailable"
+      :url-unavailable-reason="urlImportReason"
       :disabled="sourceLocked"
     />
 
@@ -89,7 +95,7 @@ function openDuplicate(): void {
         @parse="parsePaste"
       />
       <FileImportPanel
-        v-else
+        v-else-if="state.source === 'file'"
         :busy="state.phase === 'parsing'"
         :available="fileImportAvailable"
         :unavailable-reason="fileImportReason"
@@ -98,6 +104,17 @@ function openDuplicate(): void {
         @choose-file="chooseFile"
         @retry="parseSelectedFile"
         @drop-files="importDroppedFiles"
+      />
+      <UrlImportPanel
+        v-else
+        :url="state.url"
+        :busy="state.phase === 'parsing'"
+        :available="urlImportAvailable"
+        :unavailable-reason="urlImportReason"
+        :show-fallback="state.phase === 'error'"
+        @update-url="setSourceUrl"
+        @parse="parseUrl"
+        @paste-fallback="usePasteFallback"
       />
     </section>
 
@@ -108,7 +125,11 @@ function openDuplicate(): void {
       :body="state.body"
       :saving="state.phase === 'saving'"
       :can-persist="canPersist"
-      :cancel-label="state.draft.source.kind === 'file' ? '选择其他文件' : '重新输入'"
+      :cancel-label="state.draft.source.kind === 'file'
+        ? '选择其他文件'
+        : state.draft.source.kind === 'url'
+          ? '修改网址'
+          : '重新输入'"
       :validation-message="state.phase === 'preview' ? state.validationMessage : ''"
       @update-title="updateTitle"
       @update-source="updateSourceLabel"

@@ -6,16 +6,8 @@ import {
   validateUrlResponseMetadata,
   type ImportFailure,
 } from './features/import/sourceGuards'
-import { cleanImportedText } from './features/import/textCleaning'
 import { buildMimoTtsPayload, defaultMimoTtsFormat, defaultMimoTtsModel, defaultMimoTtsVoice } from './features/tts/mimoPayload'
 import type { TtsAudioFormat, TtsEndpointResponse } from './features/tts/types'
-
-interface Env {
-  ASSETS: {
-    fetch: (request: Request) => Promise<Response>
-  }
-  MIMO_TTS_MODEL?: string
-}
 
 const mimoTtsPath = '/api/tts/mimo'
 const urlImportPath = '/api/import/url'
@@ -27,6 +19,8 @@ const allowedAiHosts = new Set(['api.openai.com'])
 const maxTtsSentenceChars = 1_200
 const maxAiContextChars = 360
 const maxAiTermChars = 80
+const maxUrlImportRedirects = 3
+const maxWorkerJsonBodyBytes = 16_384
 const ttsNoStoreHeaders = {
   'cache-control': 'no-store',
   pragma: 'no-cache',
@@ -42,6 +36,18 @@ export default {
       return handleAiExpansionRequest(request)
     }
     if (url.pathname === urlImportPath) {
+      if (request.method === 'POST') {
+        const { success } = await env.URL_IMPORT_RATE_LIMITER.limit({
+          key: getUrlImportRateLimitKey(request),
+        })
+        if (!success) {
+          return jsonImportFailure(createImportFailure(
+            'url-unavailable',
+            'URL import is busy. Please wait before trying again.',
+            'url.unavailable',
+          ), 429)
+        }
+      }
       return handleUrlImportRequest(request)
     }
 
@@ -49,14 +55,33 @@ export default {
   },
 }
 
-export async function handleUrlImportRequest(request: Request): Promise<Response> {
+export interface UrlImportDependencies {
+  fetchImpl?: typeof fetch
+}
+
+interface UrlImportFetchSuccess {
+  ok: true
+  response: Response
+  sourceUrl: URL
+}
+
+interface UrlImportFetchFailure {
+  ok: false
+  failure: ImportFailure
+  status: number
+}
+
+export async function handleUrlImportRequest(
+  request: Request,
+  dependencies: UrlImportDependencies = {},
+): Promise<Response> {
   if (request.method !== 'POST') {
-    return jsonError('Only POST is supported for URL import.', 405)
+    return privateJsonError('Only POST is supported for URL import.', 405)
   }
 
   const body = await readJsonBody(request)
   if (!body.ok) {
-    return jsonImportFailure(createImportFailure('extract-failed', body.message, 'url.extractFailed'), 400)
+    return jsonImportFailure(createImportFailure('extract-failed', body.message, 'url.extractFailed'), body.status)
   }
 
   const urlInput = typeof body.value.url === 'string' ? body.value.url : ''
@@ -67,25 +92,17 @@ export async function handleUrlImportRequest(request: Request): Promise<Response
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), getUrlImportTimeoutMs(body.value.timeoutMs))
+  const fetchImpl = dependencies.fetchImpl ?? fetch
 
   try {
-    const dnsFailure = await validateResolvedHostIsPublic(parsedUrl.hostname)
-    if (dnsFailure) {
-      return jsonImportFailure(dnsFailure, 403)
+    const fetched = await fetchUrlImport(parsedUrl, controller.signal, fetchImpl)
+    if (!fetched.ok) {
+      return jsonImportFailure(fetched.failure, fetched.status)
     }
-
-    const response = await fetch(parsedUrl, {
-      headers: { accept: 'text/html,text/plain,text/markdown,application/xhtml+xml;q=0.9,*/*;q=0.1' },
-      redirect: 'manual',
-      signal: controller.signal,
-    })
-
-    if (isRedirectStatus(response.status)) {
-      const failure = createRedirectImportFailure(response, parsedUrl)
-      return jsonImportFailure(failure, failure.code === 'private-url' ? 403 : 400)
-    }
+    const { response, sourceUrl } = fetched
 
     if (!response.ok) {
+      await cancelResponseBody(response)
       return jsonImportFailure(createImportFailure(
         'url-http-error',
         `This URL returned HTTP ${response.status}.`,
@@ -95,51 +112,123 @@ export async function handleUrlImportRequest(request: Request): Promise<Response
 
     const metadataFailure = validateUrlResponseMetadata(response)
     if (metadataFailure) {
-      return jsonImportFailure(metadataFailure, 400)
+      await cancelResponseBody(response)
+      const status = metadataFailure.code === 'url-too-large'
+        ? 413
+        : metadataFailure.code === 'unsupported-content-type'
+          ? 415
+          : 400
+      return jsonImportFailure(metadataFailure, status)
     }
 
-    const rawText = await readLimitedImportText(response)
-    if (typeof rawText !== 'string') {
-      return jsonImportFailure(rawText, 413)
+    const rawContent = await readLimitedImportText(response)
+    if (typeof rawContent !== 'string') {
+      return jsonImportFailure(rawContent, 413)
     }
 
-    const cleanResult = cleanImportedText(rawText, {
-      sourceKind: 'url',
-      contentType: response.headers.get('content-type'),
-    })
-
-    return json({
-      sourceUrl: parsedUrl.toString(),
-      contentType: 'text/plain',
-      text: cleanResult.text,
-      removedDangerousBlocks: cleanResult.removedDangerousBlocks,
+    return privateJson({
+      sourceUrl: sourceUrl.toString(),
+      contentType: response.headers.get('content-type') || 'text/html; charset=utf-8',
+      content: rawContent,
     })
   }
   catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (isAbortError(error)) {
       return jsonImportFailure(createImportFailure('url-timeout', 'This URL took too long to respond.', 'url.timeout'), 504)
     }
 
-    return jsonImportFailure(createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed'), 502)
+    return jsonImportFailure(createImportFailure('url-unavailable', 'This URL is temporarily unavailable.', 'url.unavailable'), 502)
   }
   finally {
     clearTimeout(timeout)
   }
 }
 
-async function validateResolvedHostIsPublic(hostname: string): Promise<ImportFailure | null> {
+async function fetchUrlImport(
+  initialUrl: URL,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch,
+): Promise<UrlImportFetchSuccess | UrlImportFetchFailure> {
+  let sourceUrl = initialUrl
+
+  for (let redirectCount = 0; redirectCount <= maxUrlImportRedirects; redirectCount += 1) {
+    // Workers cannot pin a hostname to the address checked here. Re-validating every
+    // hop narrows SSRF exposure, while the remaining DNS TOCTOU risk stays explicit.
+    const dnsFailure = await validateResolvedHostIsPublic(sourceUrl.hostname, signal, fetchImpl)
+    if (dnsFailure) {
+      return {
+        ok: false,
+        failure: dnsFailure,
+        status: dnsFailure.code === 'private-url' ? 403 : 502,
+      }
+    }
+
+    const response = await fetchImpl(sourceUrl, {
+      headers: { accept: 'text/html,text/plain,text/markdown,application/xhtml+xml;q=0.9,*/*;q=0.1' },
+      redirect: 'manual',
+      cache: 'no-store',
+      signal,
+    })
+
+    const contentLength = response.headers.get('content-length')
+    if (contentLength && Number(contentLength) > maxUrlResponseBytes) {
+      await cancelResponseBody(response)
+      return {
+        ok: false,
+        failure: createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.tooLarge'),
+        status: 413,
+      }
+    }
+
+    if (!isRedirectStatus(response.status)) {
+      return { ok: true, response, sourceUrl }
+    }
+
+    if (redirectCount === maxUrlImportRedirects) {
+      await cancelResponseBody(response)
+      return {
+        ok: false,
+        failure: createImportFailure('url-unavailable', 'This URL redirected too many times.', 'url.unavailable'),
+        status: 502,
+      }
+    }
+
+    const redirected = parseRedirectUrl(response, sourceUrl)
+    await cancelResponseBody(response)
+    if (!(redirected instanceof URL)) {
+      return {
+        ok: false,
+        failure: redirected,
+        status: redirected.code === 'private-url' ? 403 : 400,
+      }
+    }
+    sourceUrl = redirected
+  }
+
+  return {
+    ok: false,
+    failure: createImportFailure('url-unavailable', 'This URL could not be reached.', 'url.unavailable'),
+    status: 502,
+  }
+}
+
+async function validateResolvedHostIsPublic(
+  hostname: string,
+  signal: AbortSignal,
+  fetchImpl: typeof fetch,
+): Promise<ImportFailure | null> {
   if (isIpLiteral(hostname)) {
     return null
   }
 
   const answers = await Promise.all([
-    resolveDnsAnswers(hostname, 'A'),
-    resolveDnsAnswers(hostname, 'AAAA'),
+    resolveDnsAnswers(hostname, 'A', signal, fetchImpl),
+    resolveDnsAnswers(hostname, 'AAAA', signal, fetchImpl),
   ])
   const addresses = answers.flat()
 
   if (addresses.length === 0) {
-    return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
+    return createImportFailure('url-unavailable', 'This URL does not resolve to a public address.', 'url.unavailable')
   }
   if (addresses.some(isPrivateOrLocalHost)) {
     return createImportFailure('private-url', 'Local and private-network URLs cannot be imported.', 'url.scheme')
@@ -148,12 +237,19 @@ async function validateResolvedHostIsPublic(hostname: string): Promise<ImportFai
   return null
 }
 
-async function resolveDnsAnswers(hostname: string, type: 'A' | 'AAAA'): Promise<string[]> {
-  const response = await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`, {
+async function resolveDnsAnswers(
+  hostname: string,
+  type: 'A' | 'AAAA',
+  signal: AbortSignal,
+  fetchImpl: typeof fetch,
+): Promise<string[]> {
+  const response = await fetchImpl(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`, {
     headers: { accept: 'application/dns-json' },
+    cache: 'no-store',
+    signal,
   })
   if (!response.ok) {
-    return []
+    throw new Error(`DNS lookup failed with HTTP ${response.status}.`)
   }
 
   const payload = await response.json() as {
@@ -165,13 +261,16 @@ async function resolveDnsAnswers(hostname: string, type: 'A' | 'AAAA'): Promise<
     .map(answer => answer.data as string) ?? []
 }
 
-export async function handleMimoTtsRequest(request: Request, env: Env): Promise<Response> {
+export async function handleMimoTtsRequest(
+  request: Request,
+  env: Pick<Env, 'ASSETS'> & Partial<Pick<Env, 'MIMO_TTS_MODEL'>>,
+): Promise<Response> {
   if (request.method !== 'POST') {
     return ttsJsonError('Only POST is supported for sentence synthesis.', 405)
   }
   const body = await readJsonBody(request)
   if (!body.ok) {
-    return ttsJsonError(body.message, 400)
+    return ttsJsonError(body.message, body.status)
   }
 
   const apiKey = typeof body.value.apiKey === 'string' ? body.value.apiKey.trim() : ''
@@ -229,7 +328,7 @@ export async function handleAiExpansionRequest(request: Request): Promise<Respon
   }
   const body = await readJsonBody(request)
   if (!body.ok) {
-    return privateJsonError(body.message, 400)
+    return privateJsonError(body.message, body.status)
   }
 
   const provider = body.value.provider === 'openai' ? 'openai' : null
@@ -290,18 +389,56 @@ export async function handleAiExpansionRequest(request: Request): Promise<Respon
 
 async function readJsonBody(request: Request): Promise<
   | { ok: true, value: Record<string, unknown> }
-  | { ok: false, message: string }
+  | { ok: false, message: string, status: 400 | 413 }
 > {
+  const contentLength = request.headers.get('content-length')
+  if (
+    contentLength
+    && /^\d+$/.test(contentLength)
+    && Number(contentLength) > maxWorkerJsonBodyBytes
+  ) {
+    await request.body?.cancel().catch(() => {})
+    return { ok: false, message: 'JSON request body is too large.', status: 413 }
+  }
+
+  if (!request.body) {
+    return { ok: false, message: 'Invalid JSON body.', status: 400 }
+  }
+
+  const reader = request.body.getReader()
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  let bytesRead = 0
+  let text = ''
+
   try {
-    const value = await request.json()
-    if (typeof value !== 'object' || value === null) {
-      return { ok: false, message: 'A JSON object is required.' }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+
+      bytesRead += value.byteLength
+      if (bytesRead > maxWorkerJsonBodyBytes) {
+        await reader.cancel().catch(() => {})
+        return { ok: false, message: 'JSON request body is too large.', status: 413 }
+      }
+
+      text += decoder.decode(value, { stream: true })
+    }
+    text += decoder.decode()
+
+    const value: unknown = JSON.parse(text)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return { ok: false, message: 'A JSON object is required.', status: 400 }
     }
 
     return { ok: true, value: value as Record<string, unknown> }
   }
   catch {
-    return { ok: false, message: 'Invalid JSON body.' }
+    return { ok: false, message: 'Invalid JSON body.', status: 400 }
+  }
+  finally {
+    reader.releaseLock()
   }
 }
 
@@ -427,7 +564,7 @@ function privateJsonError(message: string, status: number): Response {
 }
 
 function jsonImportFailure(failure: ImportFailure, status: number): Response {
-  return json({
+  return privateJson({
     code: failure.code,
     variant: failure.variant,
     message: failure.message,
@@ -453,8 +590,8 @@ async function readLimitedImportText(response: Response): Promise<string | Impor
 
       bytesRead += value.byteLength
       if (bytesRead > maxUrlResponseBytes) {
-        await reader.cancel()
-        return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.extractFailed')
+        await reader.cancel().catch(() => {})
+        return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.tooLarge')
       }
 
       text += decoder.decode(value, { stream: true })
@@ -468,6 +605,10 @@ async function readLimitedImportText(response: Response): Promise<string | Impor
   }
 }
 
+async function cancelResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => {})
+}
+
 function getUrlImportTimeoutMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 10_000
@@ -476,30 +617,43 @@ function getUrlImportTimeoutMs(value: unknown): number {
   return Math.min(Math.max(1_000, value), 15_000)
 }
 
+function getUrlImportRateLimitKey(request: Request): string {
+  const clientAddress = request.headers.get('cf-connecting-ip')?.trim()
+  return `yomu:url-import:${clientAddress || 'anonymous'}`
+}
+
 function isIpLiteral(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   return normalized.includes(':') || /^\d+\.\d+\.\d+\.\d+$/.test(normalized)
 }
 
 function isRedirectStatus(status: number): boolean {
-  return status >= 300 && status < 400
+  return status === 301
+    || status === 302
+    || status === 303
+    || status === 307
+    || status === 308
 }
 
-function createRedirectImportFailure(response: Response, baseUrl: URL): ImportFailure {
+function parseRedirectUrl(response: Response, baseUrl: URL): URL | ImportFailure {
   const location = response.headers.get('location')
-  if (location) {
-    try {
-      const parsedRedirect = parseSupportedHttpUrl(new URL(location, baseUrl).toString())
-      if (!(parsedRedirect instanceof URL)) {
-        return parsedRedirect
-      }
-    }
-    catch {
-      return createImportFailure('unsupported-url', 'Redirecting URLs are not supported for URL import.', 'url.extractFailed')
-    }
+  if (!location) {
+    return createImportFailure('url-unavailable', 'This URL returned an invalid redirect.', 'url.unavailable')
   }
 
-  return createImportFailure('unsupported-url', 'Redirecting URLs are not supported for URL import. Please paste the final article URL.', 'url.extractFailed')
+  try {
+    return parseSupportedHttpUrl(new URL(location, baseUrl).toString())
+  }
+  catch {
+    return createImportFailure('url-unavailable', 'This URL returned an invalid redirect.', 'url.unavailable')
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'AbortError'
 }
 
 function encodeBase64(buffer: ArrayBuffer): string {

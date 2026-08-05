@@ -7,6 +7,7 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type ArticleContentExtractor,
   type BackNavigationAdapter,
   type BackNavigationEvent,
   type CapabilitySnapshot,
@@ -17,6 +18,8 @@ import {
   type NetworkStatusAdapter,
   type PlatformKind,
   type PlatformServices,
+  type ExtractedArticleContent,
+  type RemoteArticleContent,
   type RemoteServiceRequest,
   type RemoteServicesAdapter,
   type SharedImportPayload,
@@ -35,10 +38,12 @@ export interface FakePlatformOptions {
   online?: boolean
   speechAvailable?: boolean
   fileImportAvailable?: boolean
+  urlImportAvailable?: boolean
   serviceWorkerAvailable?: boolean
   voices?: SpeechVoice[]
   files?: ImportedTextFile[]
   remoteHandler?: <TResponse>(request: RemoteServiceRequest) => Promise<TResponse>
+  articleExtractionHandler?: (input: RemoteArticleContent) => ExtractedArticleContent | null
 }
 
 export interface FakePlatformHarness {
@@ -48,6 +53,7 @@ export interface FakePlatformHarness {
   speech: FakeSpeechAdapter
   files: FakeFileImportAdapter
   remote: FakeRemoteServicesAdapter
+  articleExtractor: FakeArticleContentExtractor
   externalNavigation: FakeExternalNavigationAdapter
   backNavigation: FakeBackNavigationAdapter
   shareInbox: FakeShareImportAdapter
@@ -64,6 +70,11 @@ export function createFakePlatformServices(
   const speech = new FakeSpeechAdapter(options.speechAvailable ?? true, options.voices ?? [])
   const files = new FakeFileImportAdapter(options.fileImportAvailable ?? true, options.files ?? [])
   const remote = new FakeRemoteServicesAdapter(options.remoteHandler)
+  const urlImportAvailable = options.urlImportAvailable ?? options.remoteHandler !== undefined
+  const articleExtractor = new FakeArticleContentExtractor(
+    urlImportAvailable,
+    options.articleExtractionHandler,
+  )
   const externalNavigation = new FakeExternalNavigationAdapter()
   const backNavigation = new FakeBackNavigationAdapter()
   const shareInbox = new FakeShareImportAdapter()
@@ -80,6 +91,9 @@ export function createFakePlatformServices(
     fileImport: files.isAvailable()
       ? availableCapability
       : unavailableCapability('Fake file import is disabled.'),
+    urlImport: articleExtractor.isAvailable()
+      ? availableCapability
+      : unavailableCapability('Fake URL import is disabled.'),
     shareImport: availableCapability,
     systemBack: availableCapability,
     serviceWorker: options.serviceWorkerAvailable
@@ -100,6 +114,7 @@ export function createFakePlatformServices(
       lifecycle,
       network,
       remote,
+      articleExtractor,
       externalNavigation,
       backNavigation,
       shareInbox,
@@ -109,6 +124,7 @@ export function createFakePlatformServices(
     speech,
     files,
     remote,
+    articleExtractor,
     externalNavigation,
     backNavigation,
     shareInbox,
@@ -255,6 +271,36 @@ export class FakeRemoteServicesAdapter implements RemoteServicesAdapter {
   async request<TResponse>(request: RemoteServiceRequest): Promise<TResponse> {
     this.requests.push({ ...request, body: { ...request.body } })
     return this.handler<TResponse>(request)
+  }
+}
+
+export class FakeArticleContentExtractor implements ArticleContentExtractor {
+  readonly inputs: RemoteArticleContent[] = []
+
+  constructor(
+    private available: boolean,
+    private readonly handler: (input: RemoteArticleContent) => ExtractedArticleContent | null = (input) => {
+      if (/text\/(?:plain|markdown)/.test(input.contentType.toLowerCase())) {
+        return { title: '', text: input.content }
+      }
+      return null
+    },
+  ) {}
+
+  isAvailable(): boolean {
+    return this.available
+  }
+
+  async extract(input: RemoteArticleContent): Promise<ExtractedArticleContent | null> {
+    if (!this.available) {
+      throw new PlatformCapabilityError('urlImport')
+    }
+    this.inputs.push({ ...input })
+    return this.handler(input)
+  }
+
+  setAvailable(available: boolean): void {
+    this.available = available
   }
 }
 

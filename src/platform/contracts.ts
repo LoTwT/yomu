@@ -14,6 +14,7 @@ export interface CapabilitySnapshot {
   persistentSecrets: CapabilityState
   localSpeech: CapabilityState
   fileImport: CapabilityState
+  urlImport: CapabilityState
   shareImport: CapabilityState
   systemBack: CapabilityState
   serviceWorker: CapabilityState
@@ -115,6 +116,22 @@ export interface RemoteServicesAdapter {
   request: <TResponse>(request: RemoteServiceRequest) => Promise<TResponse>
 }
 
+export interface RemoteArticleContent {
+  sourceUrl: string
+  contentType: string
+  content: string
+}
+
+export interface ExtractedArticleContent {
+  title: string
+  text: string
+}
+
+export interface ArticleContentExtractor {
+  isAvailable: () => boolean
+  extract: (input: RemoteArticleContent) => Promise<ExtractedArticleContent | null>
+}
+
 export interface ExternalNavigationAdapter {
   open: (url: string) => Promise<void>
 }
@@ -149,6 +166,7 @@ export interface PlatformServices {
   lifecycle: AppLifecycleAdapter
   network: NetworkStatusAdapter
   remote: RemoteServicesAdapter
+  articleExtractor: ArticleContentExtractor
   externalNavigation: ExternalNavigationAdapter
   backNavigation: BackNavigationAdapter
   shareInbox: ShareImportAdapter
@@ -169,6 +187,8 @@ export class RemoteServiceError extends Error {
     readonly operation: RemoteServiceOperation,
     readonly status: number,
     message: string,
+    readonly code?: string,
+    readonly variant?: string,
   ) {
     super(message)
     this.name = 'RemoteServiceError'

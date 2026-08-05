@@ -168,6 +168,9 @@ export async function createWebPlatformServices(
     fileImport: runtime.files.isAvailable()
       ? availableCapability
       : unavailableCapability('The browser file picker is unavailable.'),
+    urlImport: runtime.articleExtractor.isAvailable()
+      ? availableCapability
+      : unavailableCapability('Readable HTML extraction is unavailable in this browser.'),
     shareImport: unavailableCapability('Inbound system sharing is not enabled for the Web target.'),
     systemBack: availableCapability,
     serviceWorker: 'serviceWorker' in navigatorRef

@@ -9,7 +9,11 @@ import {
 import { saveImportedArticle } from '@/features/import/saveImportedArticle'
 import { segmentEnglishSentences } from '@/features/import/sentenceSegmenter'
 import { parseSupportedHttpUrl } from '@/features/import/sourceGuards'
-import type { RemoteServiceRequest, RemoteServicesAdapter } from '@/platform/contracts'
+import type {
+  ArticleContentExtractor,
+  RemoteServiceRequest,
+  RemoteServicesAdapter,
+} from '@/platform/contracts'
 
 const readableEnglish = [
   'A careful reader can bring their own article into Yomu.',
@@ -129,8 +133,9 @@ describe('BYO import pipeline', () => {
     expect(fragments.ok ? null : fragments.variant).toBe('content.lowEnglish')
   })
 
-  it('blocks IPv4-mapped IPv6 loopback and private URL forms before fetch', () => {
+  it('blocks local, private, reserved, translated, and documentation URL forms before fetch', () => {
     for (const url of [
+      'http://0.1.2.3/article',
       'http://[::ffff:127.0.0.1]/article',
       'http://[::ffff:7f00:1]/article',
       'http://[::ffff:0a00:1]/article',
@@ -140,11 +145,34 @@ describe('BYO import pipeline', () => {
       'http://0x7f000001/article',
       'http://0177.0.0.1/article',
       'http://0300.0250.0.1/article',
+      'http://169.254.1.2/article',
+      'http://192.0.2.1/article',
+      'http://192.88.99.1/article',
+      'http://198.18.0.1/article',
+      'http://198.51.100.1/article',
+      'http://203.0.113.1/article',
+      'http://224.0.0.1/article',
+      'http://255.255.255.255/article',
       'http://[::1]/article',
+      'http://[::7f00:1]/article',
+      'http://[::ffff:0:7f00:1]/article',
+      'http://[64:ff9b::7f00:1]/article',
+      'http://[64:ff9b:1::1]/article',
+      'http://[100::1]/article',
+      'http://[2001:db8::1]/article',
+      'http://[2002:7f00:1::]/article',
+      'http://[3fff::1]/article',
+      'http://[5f00::1]/article',
       'http://[fc00::1]/article',
       'http://[fd12::1]/article',
       'http://[fe80::1]/article',
       'http://[febf::1]/article',
+      'http://[fec0::1]/article',
+      'http://[ff02::1]/article',
+      'http://printer.local/article',
+      'http://service.lan/article',
+      'http://service.internal/article',
+      'http://router.home.arpa/article',
     ]) {
       const result = parseSupportedHttpUrl(url)
       expect(result).toMatchObject({
@@ -153,6 +181,20 @@ describe('BYO import pipeline', () => {
         variant: 'url.scheme',
       })
     }
+
+    expect(parseSupportedHttpUrl('https://[2606:4700:4700::1111]/article')).toBeInstanceOf(URL)
+  })
+
+  it('rejects embedded URL credentials and removes fragments before transport', () => {
+    expect(parseSupportedHttpUrl('https://reader:secret@example.com/story')).toMatchObject({
+      ok: false,
+      code: 'unsupported-url',
+      variant: 'url.scheme',
+    })
+
+    const parsed = parseSupportedHttpUrl('https://example.com/story#comments')
+    expect(parsed).toBeInstanceOf(URL)
+    expect(parsed instanceof URL ? parsed.toString() : '').toBe('https://example.com/story')
   })
 
   it('does not treat public hostnames that start with IPv6-looking letters as IP literals', () => {
@@ -162,13 +204,18 @@ describe('BYO import pipeline', () => {
 
   it('imports URL text through the remote service boundary without retaining fake source data', async () => {
     const remote = createRemoteRecorder(() => ({
-      text: `<main><h1>Imported web article</h1><p>${readableEnglish}</p></main>`,
+      content: `<main><h1>Imported web article</h1><p>${readableEnglish}</p></main>`,
       contentType: 'text/html; charset=utf-8',
       sourceUrl: 'https://example.com/story',
     }))
+    const extractor: ArticleContentExtractor = {
+      isAvailable: () => true,
+      extract: async () => ({ title: 'Imported web article', text: readableEnglish }),
+    }
     const result = await importArticleFromUrl({
       url: 'https://example.com/story',
       remote: remote.adapter,
+      extractor,
     })
 
     expect(result.ok).toBe(true)
@@ -181,10 +228,34 @@ describe('BYO import pipeline', () => {
       label: 'example.com',
       url: 'https://example.com/story',
     })
+    expect(result.draft.title).toBe('Imported web article')
     expect(remote.request).toHaveBeenCalledWith(expect.objectContaining({
       operation: 'url-import',
       body: expect.objectContaining({ url: 'https://example.com/story' }),
     }))
+  })
+
+  it('routes remote Markdown through the canonical markup cleaner after extraction', async () => {
+    const markdown = `# Remote reading notes\n\n${readableEnglish}`
+    const remote = createRemoteRecorder(() => ({
+      content: markdown,
+      contentType: 'text/markdown; charset=utf-8',
+      sourceUrl: 'https://example.com/notes.md',
+    }))
+    const extractor: ArticleContentExtractor = {
+      isAvailable: () => true,
+      extract: async input => ({ title: '', text: input.content }),
+    }
+
+    const result = await importArticleFromUrl({
+      url: 'https://example.com/notes.md',
+      remote: remote.adapter,
+      extractor,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.ok ? result.draft.body : '').not.toContain('# ')
+    expect(result.ok ? result.draft.body : '').toContain('Remote reading notes')
   })
 
   it('atomically saves ArticleRecord plus Attempt and deduplicates by body, not title', async () => {

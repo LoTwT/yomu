@@ -156,6 +156,102 @@ test('import errors keep the draft and move focus to a recoverable summary', asy
   await expect(page.getByTestId('import-preview')).toBeVisible()
 })
 
+test('web development serves the real URL import Worker boundary', async ({ request }) => {
+  const response = await request.post('/api/import/url', {
+    data: { url: 'http://localhost/private' },
+  })
+
+  expect(response.status()).toBe(403)
+  await expect(response.json()).resolves.toMatchObject({
+    code: 'private-url',
+    variant: 'url.scheme',
+  })
+
+  const oversizedResponse = await request.post('/api/import/url', {
+    data: {
+      url: 'http://localhost/private',
+      padding: 'x'.repeat(100_000),
+    },
+  })
+
+  expect(oversizedResponse.status()).toBe(413)
+  await expect(oversizedResponse.json()).resolves.toMatchObject({
+    code: 'extract-failed',
+    variant: 'url.extractFailed',
+  })
+})
+
+test('URL Beta extracts a remote article locally without exposing or executing page HTML', async ({ page }) => {
+  const directResourceRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('browser-resource-probe')) {
+      directResourceRequests.push(request.url())
+    }
+  })
+  const remoteHtml = [
+    '<!doctype html><html><head><title>Remote focus article</title></head><body>',
+    '<nav>REMOTE NAVIGATION MUST STAY HIDDEN</nav>',
+    '<img src="http://127.0.0.1:9/browser-resource-probe" alt="probe">',
+    '<link rel="stylesheet" href="http://127.0.0.1:9/browser-resource-probe.css">',
+    `<article><h1>Remote focus article</h1><p>${importedBody}</p></article>`,
+    '<script>window.__urlImportScriptRan = true</script>',
+    '</body></html>',
+  ].join('')
+  await page.route('**/api/import/url', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    headers: { 'cache-control': 'no-store' },
+    body: JSON.stringify({
+      content: remoteHtml,
+      contentType: 'text/html; charset=utf-8',
+      sourceUrl: 'https://example.com/final-article',
+    }),
+  }))
+  await page.goto('/import')
+
+  await page.getByRole('button', { name: 'URL Beta' }).click()
+  await page.getByLabel('文章网址').fill('https://example.com/original-article')
+  await page.getByRole('button', { name: '提取正文' }).click()
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await expect(page.getByLabel('标题')).toHaveValue('Remote focus article')
+  await expect(page.getByRole('textbox', { name: '来源' })).toHaveValue('example.com')
+  await expect(page.getByLabel('提取后的正文')).toHaveValue(importedBody)
+  await expect(page.getByText('REMOTE NAVIGATION MUST STAY HIDDEN')).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() =>
+    '__urlImportScriptRan' in window)).toBe(false)
+  expect(directResourceRequests).toEqual([])
+})
+
+test('URL Beta keeps the address and offers paste fallback after a recoverable failure', async ({ page }) => {
+  const originalUrl = 'https://example.com/unreadable'
+  await page.route('**/api/import/url', route => route.fulfill({
+    status: 502,
+    contentType: 'application/json',
+    headers: { 'cache-control': 'no-store' },
+    body: JSON.stringify({
+      code: 'url-unavailable',
+      variant: 'url.unavailable',
+      message: 'The remote page is temporarily unavailable.',
+    }),
+  }))
+  await page.goto('/import')
+
+  await page.getByRole('button', { name: 'URL Beta' }).click()
+  await page.getByLabel('文章网址').fill(originalUrl)
+  await page.getByRole('button', { name: '提取正文' }).click()
+
+  const errorHeading = page.getByRole('heading', { name: '无法生成预览' })
+  await expect(errorHeading).toBeFocused()
+  await expect(page.getByLabel('文章网址')).toHaveValue(originalUrl)
+  await expect(page.getByRole('button', { name: '改为粘贴正文' })).toBeVisible()
+  await page.getByRole('button', { name: '改为粘贴正文' }).click()
+  await expect(page.getByLabel('英文正文')).toBeVisible()
+
+  await page.getByRole('button', { name: 'URL Beta' }).click()
+  await expect(page.getByLabel('文章网址')).toHaveValue(originalUrl)
+})
+
 test('file picker rejects non-UTF-8 text and imports Markdown through the platform adapter', async ({ page }) => {
   await page.goto('/import')
   await page.getByRole('button', { name: 'TXT / Markdown' }).click()

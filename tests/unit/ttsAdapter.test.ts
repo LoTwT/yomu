@@ -708,7 +708,7 @@ describe('MiMo TTS adapter', () => {
     expect(response.status).toBe(413)
     expect(await response.json()).toMatchObject({
       code: 'url-too-large',
-      variant: 'url.extractFailed',
+      variant: 'url.tooLarge',
     })
     expect(canceled).toBe(true)
   })

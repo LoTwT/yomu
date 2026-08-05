@@ -7,7 +7,7 @@ import { build } from 'vite'
 const repositoryRoot = process.cwd()
 const sourceRoot = join(repositoryRoot, 'src')
 const targets = [
-  { mode: 'web-pwa', outputDirectory: join(repositoryRoot, 'dist'), web: true },
+  { mode: 'web-pwa', outputDirectory: join(repositoryRoot, 'dist/client'), web: true },
   { mode: 'desktop-shell', outputDirectory: join(repositoryRoot, 'dist-targets/desktop-shell'), web: false },
   { mode: 'mobile-shell', outputDirectory: join(repositoryRoot, 'dist-targets/mobile-shell'), web: false },
 ]

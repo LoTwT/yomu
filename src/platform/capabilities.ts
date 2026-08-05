@@ -29,6 +29,7 @@ export function createCapabilitySnapshot(
     persistentSecrets: unavailableCapability('Persistent secret storage is not configured.'),
     localSpeech: unavailableCapability('Local speech is not configured.'),
     fileImport: unavailableCapability('File import is not configured.'),
+    urlImport: unavailableCapability('URL import is not configured.'),
     shareImport: unavailableCapability('Share import is not configured.'),
     systemBack: unavailableCapability('System back navigation is not configured.'),
     serviceWorker: unavailableCapability('Service Worker is not enabled for this target.'),
