@@ -13,6 +13,7 @@ import {
   createFakePlatformServices,
   type FakePlatformOptions,
 } from '@/platform/fake/createFakePlatformServices'
+import { RemoteServiceError } from '@/platform/contracts'
 import type { ThemeController, ThemePreference, ThemeSnapshot } from '@/platform/themeController'
 
 const readableEnglish = [
@@ -200,6 +201,124 @@ describe('file import flow', () => {
     expect(fileSource.disabled).toBe(true)
     expect(fileSource.title).toContain('Fake file import is disabled')
     expect(findButton(host, '粘贴文本').disabled).toBe(false)
+  })
+})
+
+describe('URL import flow', () => {
+  it('creates a URL preview while keeping raw remote HTML behind platform adapters', async () => {
+    const rawHtml = '<nav>REMOTE NAV MUST STAY HIDDEN</nav><article><h1>Remote reading</h1></article>'
+    const { host, harness } = await mountImport({
+      remoteHandler: async <TResponse>() => ({
+        content: rawHtml,
+        contentType: 'text/html; charset=utf-8',
+        sourceUrl: 'https://example.com/final-story',
+      } as TResponse),
+      articleExtractionHandler: () => ({
+        title: 'Remote reading',
+        text: readableEnglish,
+      }),
+    })
+
+    clickButton(host, 'URL Beta')
+    await nextTick()
+    const url = readLabeledControl(host, '文章网址')
+    url.value = 'https://example.com/story'
+    url.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    clickButton(host, '提取正文')
+    await settleView()
+
+    expect(host.querySelector('[data-testid="import-preview"]')).not.toBeNull()
+    expect(readLabeledControl(host, '标题').value).toBe('Remote reading')
+    expect(readLabeledControl(host, '来源').value).toBe('example.com')
+    expect(host.textContent).not.toContain('REMOTE NAV MUST STAY HIDDEN')
+    expect(harness.remote.requests[0]).toMatchObject({
+      operation: 'url-import',
+      body: { url: 'https://example.com/story' },
+    })
+    expect(harness.articleExtractor.inputs[0]?.content).toBe(rawHtml)
+  })
+
+  it('preserves the original URL through extraction failure and paste fallback', async () => {
+    const originalUrl = 'https://example.com/unreadable'
+    const { host } = await mountImport({
+      remoteHandler: async () => {
+        throw new RemoteServiceError(
+          'url-import',
+          502,
+          'No readable article body could be extracted.',
+          'url-unavailable',
+          'url.unavailable',
+        )
+      },
+    })
+
+    clickButton(host, 'URL Beta')
+    await nextTick()
+    const url = readLabeledControl(host, '文章网址')
+    url.value = originalUrl
+    url.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    clickButton(host, '提取正文')
+    await settleView()
+
+    expect(readLabeledControl(host, '文章网址').value).toBe(originalUrl)
+    expect(host.textContent).toContain('暂时无法访问这个网址')
+    clickButton(host, '改为粘贴正文')
+    await nextTick()
+    expect(readLabeledControl(host, '英文正文').value).toBe('')
+
+    clickButton(host, 'URL Beta')
+    await nextTick()
+    expect(readLabeledControl(host, '文章网址').value).toBe(originalUrl)
+  })
+
+  it('disables URL import honestly while the platform is offline', async () => {
+    const { host } = await mountImport({ online: false })
+
+    const urlSource = findButton(host, 'URL Beta 当前不可用')
+    expect(urlSource.disabled).toBe(true)
+    expect(urlSource.title).toContain('离线')
+  })
+
+  it('aborts an active URL import and exposes recovery when the platform goes offline', async () => {
+    let finishRemote: ((value: unknown) => void) | null = null
+    const { host, harness } = await mountImport({
+      remoteHandler: <TResponse>() => new Promise<TResponse>((resolve) => {
+        finishRemote = value => resolve(value as TResponse)
+      }),
+    })
+
+    clickButton(host, 'URL Beta')
+    await nextTick()
+    const url = readLabeledControl(host, '文章网址')
+    url.value = 'https://example.com/slow-story'
+    url.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    clickButton(host, '提取正文')
+    await nextTick()
+
+    harness.network.setOnline(false)
+    await settleView()
+
+    expect(host.textContent).toContain('当前处于离线状态')
+    expect(findButton(host, '改为粘贴正文').disabled).toBe(false)
+
+    finishRemote?.({
+      content: readableEnglish,
+      contentType: 'text/plain',
+      sourceUrl: 'https://example.com/slow-story',
+    })
+    await settleView()
+    expect(host.querySelector('[data-testid="import-preview"]')).toBeNull()
+  })
+
+  it('disables URL import when the fake platform has no remote handler', async () => {
+    const { host } = await mountImport()
+
+    const urlSource = findButton(host, 'URL Beta 当前不可用')
+    expect(urlSource.disabled).toBe(true)
+    expect(urlSource.title).toContain('Fake URL import is disabled')
   })
 })
 

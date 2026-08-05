@@ -1,3 +1,5 @@
+import { getHttpMediaTypeEssence } from '../../httpMediaType'
+
 const blockTagPattern = /<\/?(article|section|main|header|footer|aside|nav|div|p|br|h[1-6]|ul|ol|li|blockquote|pre|tr|td|th)\b[^>]*>/gi
 const dangerousBlockPattern = /<(script|style|noscript|iframe|object|embed|svg|canvas)\b[\s\S]*?<\/\1>/gi
 const htmlTagPattern = /<[^>]+>/g
@@ -34,7 +36,8 @@ export function cleanImportedText(
 }
 
 export function looksLikeHtml(input: string, contentType?: string | null): boolean {
-  if (contentType?.toLowerCase().includes('html')) {
+  const mediaType = getHttpMediaTypeEssence(contentType)
+  if (mediaType === 'text/html' || mediaType === 'application/xhtml+xml') {
     return true
   }
 

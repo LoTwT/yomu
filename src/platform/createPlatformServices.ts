@@ -67,6 +67,7 @@ function createShellBuildFallback(target: Exclude<YomuBuildTarget, 'web-pwa'>): 
     persistentSecrets: unavailableCapability('The shell SecretStore has not been injected.'),
     localSpeech: unavailableCapability('The shell speech adapter has not been injected.'),
     fileImport: unavailableCapability('The shell file adapter has not been injected.'),
+    urlImport: unavailableCapability('The shell URL extraction adapter has not been injected.'),
     shareImport: unavailableCapability('The shell share adapter has not been injected.'),
     systemBack: unavailableCapability('The shell back adapter has not been injected.'),
     serviceWorker: unavailableCapability('Service Worker is intentionally disabled for shell targets.'),

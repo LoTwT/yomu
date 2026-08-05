@@ -4,6 +4,7 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type ArticleContentExtractor,
   type BackNavigationAdapter,
   type ExternalNavigationAdapter,
   type FileImportAdapter,
@@ -20,6 +21,7 @@ import {
   type SpeechRequest,
   type SpeechVoice,
 } from '../contracts'
+import { WebArticleContentExtractor } from './articleContentExtractor'
 
 const remotePaths: Record<RemoteServiceOperation, string> = {
   'url-import': '/api/import/url',
@@ -203,6 +205,8 @@ export class WebRemoteServicesAdapter implements RemoteServicesAdapter {
         request.operation,
         response.status,
         readErrorMessage(payload) ?? `Remote service returned HTTP ${response.status}.`,
+        readStringField(payload, 'code') ?? undefined,
+        readStringField(payload, 'variant') ?? undefined,
       )
     }
     return payload as TResponse
@@ -305,6 +309,14 @@ function readErrorMessage(value: unknown): string | null {
   return null
 }
 
+function readStringField(value: unknown, field: string): string | null {
+  if (typeof value !== 'object' || value === null || !(field in value)) {
+    return null
+  }
+  const fieldValue = (value as Record<string, unknown>)[field]
+  return typeof fieldValue === 'string' ? fieldValue : null
+}
+
 export function createDefaultWebRuntimeAdapters(options: {
   apiBaseUrl?: string
   documentRef?: Document
@@ -317,6 +329,7 @@ export function createDefaultWebRuntimeAdapters(options: {
   lifecycle: WebLifecycleAdapter
   network: WebNetworkStatusAdapter
   remote: WebRemoteServicesAdapter
+  articleExtractor: ArticleContentExtractor
   externalNavigation: WebExternalNavigationAdapter
   backNavigation: WebBackNavigationAdapter
   shareInbox: EmptyShareImportAdapter
@@ -331,6 +344,7 @@ export function createDefaultWebRuntimeAdapters(options: {
     lifecycle: new WebLifecycleAdapter(documentRef, windowRef),
     network: new WebNetworkStatusAdapter(navigatorRef, windowRef),
     remote: new WebRemoteServicesAdapter(options.apiBaseUrl ?? '', fetchImpl),
+    articleExtractor: new WebArticleContentExtractor(documentRef.defaultView?.DOMParser ?? null),
     externalNavigation: new WebExternalNavigationAdapter(windowRef),
     backNavigation: new WebBackNavigationAdapter(windowRef),
     shareInbox: new EmptyShareImportAdapter(),

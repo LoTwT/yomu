@@ -3,10 +3,16 @@ import type {
   ArticleSentenceRecord,
   ArticleTokenRecord,
 } from '@/data/entities'
-import { RemoteServiceError, type RemoteServicesAdapter } from '@/platform/contracts'
+import {
+  RemoteServiceError,
+  type ArticleContentExtractor,
+  type RemoteServicesAdapter,
+} from '@/platform/contracts'
+import { getHttpMediaTypeEssence } from '../../httpMediaType'
 import { segmentEnglishSentences, type ImportedSentenceSegment } from './sentenceSegmenter'
 import {
   createImportFailure,
+  maxUrlResponseBytes,
   parseSupportedHttpUrl,
   validatePlainTextLength,
   validateTextFile,
@@ -54,7 +60,9 @@ export interface ImportTextFileOptions {
 export interface ImportUrlOptions {
   url: string
   remote?: RemoteServicesAdapter
+  extractor?: ArticleContentExtractor
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 export async function importArticleFromPaste(options: ImportPasteOptions): Promise<ImportArticleResult> {
@@ -94,45 +102,76 @@ export async function importArticleFromUrl(options: ImportUrlOptions): Promise<I
     return parsedUrl
   }
 
-  if (!options.remote) {
+  if (!options.remote || !options.extractor?.isAvailable()) {
     return createImportFailure(
-      'extract-failed',
+      'url-unavailable',
       'URL import is unavailable on this platform.',
-      'url.extractFailed',
+      'url.unavailable',
     )
   }
 
+  const workerTimeoutMs = clampUrlTimeout(options.timeoutMs)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000)
+  const abortFromCaller = (): void => controller.abort()
+  if (options.signal?.aborted) {
+    controller.abort()
+  }
+  else {
+    options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  }
+  const timeout = setTimeout(() => controller.abort(), workerTimeoutMs + 2_000)
 
   try {
     const payload = await options.remote.request<{
-      text?: unknown
+      content?: unknown
       contentType?: unknown
       sourceUrl?: unknown
     }>({
       operation: 'url-import',
       body: {
         url: parsedUrl.toString(),
-        timeoutMs: options.timeoutMs,
+        timeoutMs: workerTimeoutMs,
       },
       signal: controller.signal,
     })
 
-    if (typeof payload.text !== 'string') {
+    if (
+      typeof payload.content !== 'string'
+      || typeof payload.contentType !== 'string'
+      || typeof payload.sourceUrl !== 'string'
+    ) {
       return createImportFailure('extract-failed', 'This URL could not be imported as readable text.', 'url.extractFailed')
     }
+    if (
+      payload.content.length > maxUrlResponseBytes
+      || new TextEncoder().encode(payload.content).byteLength > maxUrlResponseBytes
+    ) {
+      return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.tooLarge')
+    }
 
-    const sourceUrl = typeof payload.sourceUrl === 'string'
-      ? payload.sourceUrl
-      : parsedUrl.toString()
+    const sourceUrl = parseSupportedHttpUrl(payload.sourceUrl)
+    if (!(sourceUrl instanceof URL)) {
+      return createImportFailure('extract-failed', 'This URL returned an invalid source address.', 'url.extractFailed')
+    }
+
+    const extracted = await options.extractor.extract({
+      content: payload.content,
+      contentType: payload.contentType,
+      sourceUrl: sourceUrl.toString(),
+    })
+    if (!extracted?.text.trim()) {
+      return createImportFailure('extract-failed', 'No readable article body could be extracted from this URL.', 'url.extractFailed')
+    }
 
     return importArticleFromRawText({
-      rawText: payload.text,
+      rawText: extracted.text,
       sourceType: 'url',
-      sourceLabel: new URL(sourceUrl).hostname,
-      url: sourceUrl,
-      contentType: typeof payload.contentType === 'string' ? payload.contentType : 'text/plain',
+      sourceLabel: sourceUrl.hostname,
+      url: sourceUrl.toString(),
+      contentType: getHttpMediaTypeEssence(payload.contentType) === 'text/markdown'
+        ? 'text/markdown'
+        : 'text/plain',
+      title: extracted.title,
     })
   }
   catch (error) {
@@ -147,7 +186,15 @@ export async function importArticleFromUrl(options: ImportUrlOptions): Promise<I
   }
   finally {
     clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
   }
+}
+
+function clampUrlTimeout(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 10_000
+  }
+  return Math.min(Math.max(1_000, value), 15_000)
 }
 
 export async function reparseImportedArticleDraft(
@@ -165,6 +212,27 @@ export async function reparseImportedArticleDraft(
 }
 
 function toRemoteImportFailure(error: RemoteServiceError): ImportFailure {
+  if (error.code === 'unsupported-url') {
+    return createImportFailure('unsupported-url', error.message, 'url.scheme')
+  }
+  if (error.code === 'private-url') {
+    return createImportFailure('private-url', error.message, 'url.scheme')
+  }
+  if (error.code === 'url-timeout') {
+    return createImportFailure('url-timeout', error.message, 'url.timeout')
+  }
+  if (error.code === 'url-too-large') {
+    return createImportFailure('url-too-large', error.message, 'url.tooLarge')
+  }
+  if (error.code === 'unsupported-content-type') {
+    return createImportFailure('unsupported-content-type', error.message, 'url.unsupportedType')
+  }
+  if (error.code === 'url-http-error') {
+    return createImportFailure('url-http-error', error.message, error.status === 404 ? 'url.notFound' : 'url.unavailable')
+  }
+  if (error.code === 'url-unavailable') {
+    return createImportFailure('url-unavailable', error.message, 'url.unavailable')
+  }
   if (error.status === 403) {
     return createImportFailure('private-url', error.message, 'url.scheme')
   }
@@ -172,13 +240,16 @@ function toRemoteImportFailure(error: RemoteServiceError): ImportFailure {
     return createImportFailure('url-http-error', error.message, 'url.notFound')
   }
   if (error.status === 413) {
-    return createImportFailure('url-too-large', error.message, 'url.extractFailed')
+    return createImportFailure('url-too-large', error.message, 'url.tooLarge')
+  }
+  if (error.status === 415) {
+    return createImportFailure('unsupported-content-type', error.message, 'url.unsupportedType')
   }
   if (error.status === 504) {
     return createImportFailure('url-timeout', error.message, 'url.timeout')
   }
 
-  return createImportFailure('extract-failed', error.message, 'url.extractFailed')
+  return createImportFailure('url-unavailable', error.message, 'url.unavailable')
 }
 
 async function importArticleFromRawText(options: {
@@ -307,6 +378,12 @@ function validateSourceTextLength(text: string, sourceType: ImportSourceType): I
   }
 
   if (sourceType === 'url') {
+    if (failure.code === 'empty-input' || failure.code === 'too-short') {
+      return { ...failure, variant: 'url.insufficientBody' }
+    }
+    if (failure.code === 'too-long') {
+      return { ...failure, variant: 'url.tooLarge' }
+    }
     return { ...failure, variant: 'url.extractFailed' }
   }
 

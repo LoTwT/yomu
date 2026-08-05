@@ -2,9 +2,23 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yomu",
   "main": "./src/worker.ts",
-  "compatibility_date": "2026-05-25",
-  "build": {
-    "command": "pnpm run build"
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "MIMO_TTS_MODEL": "mimo-v2.5-tts"
+  },
+  "ratelimits": [
+    {
+      "name": "URL_IMPORT_RATE_LIMITER",
+      "namespace_id": "938471",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    }
+  ],
+  "observability": {
+    "enabled": true
   },
   "assets": {
     "directory": "./dist",

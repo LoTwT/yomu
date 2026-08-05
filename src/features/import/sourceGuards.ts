@@ -1,3 +1,5 @@
+import { isHttpMediaType } from '../../httpMediaType'
+
 export const maxImportedTextChars = 80_000
 export const minImportedTextChars = 120
 export const maxImportedFileBytes = 256_000
@@ -5,12 +7,12 @@ export const maxUrlResponseBytes = 512_000
 
 const allowedTextFileExtensions = new Set(['.txt', '.md'])
 const unsupportedDocumentExtensions = new Set(['.pdf', '.doc', '.docx', '.rtf'])
-const allowedContentTypes = [
+const allowedContentTypes = new Set([
   'text/plain',
   'text/markdown',
   'text/html',
   'application/xhtml+xml',
-]
+])
 
 export type ImportFailureCode =
   | 'empty-input'
@@ -22,6 +24,7 @@ export type ImportFailureCode =
   | 'file-read-failed'
   | 'unsupported-url'
   | 'private-url'
+  | 'url-unavailable'
   | 'url-timeout'
   | 'url-too-large'
   | 'url-http-error'
@@ -39,7 +42,11 @@ export type ImportErrorVariant =
   | 'paste.htmlDetected'
   | 'url.scheme'
   | 'url.notFound'
+  | 'url.unavailable'
   | 'url.timeout'
+  | 'url.tooLarge'
+  | 'url.unsupportedType'
+  | 'url.insufficientBody'
   | 'url.extractFailed'
   | 'file.unsupported'
   | 'file.empty'
@@ -105,22 +112,26 @@ export function parseSupportedHttpUrl(input: string): URL | ImportFailure {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return createImportFailure('unsupported-url', 'Only http and https URLs are supported.', 'url.scheme')
   }
+  if (url.username || url.password) {
+    return createImportFailure('unsupported-url', 'URLs containing embedded credentials cannot be imported.', 'url.scheme')
+  }
   if (isPrivateOrLocalHost(url.hostname)) {
     return createImportFailure('private-url', 'Local and private-network URLs cannot be imported.', 'url.scheme')
   }
 
+  url.hash = ''
   return url
 }
 
 export function validateUrlResponseMetadata(response: Response): ImportFailure | null {
   const contentLength = response.headers.get('content-length')
   if (contentLength && Number(contentLength) > maxUrlResponseBytes) {
-    return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.extractFailed')
+    return createImportFailure('url-too-large', 'This page is too large for one read-aloud session.', 'url.tooLarge')
   }
 
-  const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-  if (contentType && !allowedContentTypes.some(type => contentType.includes(type))) {
-    return createImportFailure('unsupported-content-type', 'This URL does not look like a readable text or HTML page.', 'url.extractFailed')
+  const contentType = response.headers.get('content-type')
+  if (contentType && !isHttpMediaType(contentType, allowedContentTypes)) {
+    return createImportFailure('unsupported-content-type', 'This URL does not look like a readable text or HTML page.', 'url.unsupportedType')
   }
 
   return null
@@ -132,13 +143,17 @@ export function getFileExtension(fileName: string): string {
 }
 
 export function isPrivateOrLocalHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
   if (
     normalized === 'localhost'
     || normalized.endsWith('.localhost')
-    || normalized === '0.0.0.0'
-    || normalized === '::1'
-    || normalized === '::'
+    || normalized.endsWith('.local')
+    || normalized === 'lan'
+    || normalized.endsWith('.lan')
+    || normalized === 'internal'
+    || normalized.endsWith('.internal')
+    || normalized === 'home.arpa'
+    || normalized.endsWith('.home.arpa')
   ) {
     return true
   }
@@ -156,13 +171,32 @@ export function isPrivateOrLocalHost(hostname: string): boolean {
 }
 
 function isPrivateOrLocalIpv6(hostname: string): boolean {
-  const firstHextet = Number.parseInt(hostname.split(':')[0] ?? '', 16)
-  if (!Number.isFinite(firstHextet)) {
-    return false
+  const hextets = parseIpv6Hextets(hostname)
+  if (!hextets) {
+    return true
   }
 
-  return (firstHextet >= 0xfc00 && firstHextet <= 0xfdff)
-    || (firstHextet >= 0xfe80 && firstHextet <= 0xfebf)
+  const [first = 0, second = 0] = hextets
+  const isUnspecified = hextets.every(value => value === 0)
+  const isLoopback = hextets.slice(0, 7).every(value => value === 0) && hextets[7] === 1
+  const isMappedIpv4 = hextets.slice(0, 5).every(value => value === 0) && hextets[5] === 0xffff
+  if (isMappedIpv4) {
+    return isPrivateOrLocalIpv4(`${thirdByte(hextets[6] ?? 0)}.${fourthByte(hextets[6] ?? 0)}.${thirdByte(hextets[7] ?? 0)}.${fourthByte(hextets[7] ?? 0)}`)
+  }
+
+  return isUnspecified
+    || isLoopback
+    || hextets.slice(0, 6).every(value => value === 0)
+    || (hextets.slice(0, 4).every(value => value === 0) && hextets[4] === 0xffff && hextets[5] === 0)
+    // IANA currently assigns globally routable unicast addresses only from
+    // 2000::/3. Treat every other range as non-public by default.
+    || (first & 0xe000) !== 0x2000
+    || (first === 0x2001 && second === 0)
+    || (first === 0x2001 && second === 0x0002)
+    || (first === 0x2001 && second >= 0x0010 && second <= 0x002f)
+    || (first === 0x2001 && second === 0x0db8)
+    || first === 0x2002
+    || (first === 0x3fff && (second & 0xf000) === 0)
 }
 
 function isPrivateOrLocalIpv4(hostname: string): boolean {
@@ -172,11 +206,65 @@ function isPrivateOrLocalIpv4(hostname: string): boolean {
   }
 
   const [first = 0, second = 0] = octets
-  return first === 10
+  return first === 0
+    || first === 10
     || first === 127
+    || (first === 169 && second === 254)
     || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 0)
+    || (first === 192 && second === 88 && octets[2] === 99)
     || (first === 192 && second === 168)
     || (first === 100 && second >= 64 && second <= 127)
+    || (first === 198 && (second === 18 || second === 19))
+    || (first === 198 && second === 51 && octets[2] === 100)
+    || (first === 203 && second === 0 && octets[2] === 113)
+    || first >= 224
+}
+
+function parseIpv6Hextets(hostname: string): number[] | null {
+  let value = hostname.split('%')[0] ?? ''
+  if (!value.includes(':')) {
+    return null
+  }
+
+  const ipv4Tail = /(?:^|:)(\d+\.\d+\.\d+\.\d+)$/.exec(value)?.[1]
+  if (ipv4Tail) {
+    const octets = ipv4Tail.split('.').map(Number)
+    if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return null
+    }
+    value = value.slice(0, -ipv4Tail.length)
+      + `${((octets[0] ?? 0) << 8 | (octets[1] ?? 0)).toString(16)}:${((octets[2] ?? 0) << 8 | (octets[3] ?? 0)).toString(16)}`
+  }
+
+  const compressedParts = value.split('::')
+  if (compressedParts.length > 2) {
+    return null
+  }
+  const left = compressedParts[0]?.split(':').filter(Boolean) ?? []
+  const right = compressedParts[1]?.split(':').filter(Boolean) ?? []
+  const missing = compressedParts.length === 2 ? 8 - left.length - right.length : 0
+  if (missing < 0 || (compressedParts.length === 1 && left.length !== 8)) {
+    return null
+  }
+
+  const parts = [...left, ...Array.from({ length: missing }, () => '0'), ...right]
+  if (parts.length !== 8) {
+    return null
+  }
+  const hextets = parts.map(part => Number.parseInt(part, 16))
+  if (hextets.some((part, index) => !/^[0-9a-f]{1,4}$/i.test(parts[index] ?? '') || !Number.isInteger(part))) {
+    return null
+  }
+  return hextets
+}
+
+function thirdByte(hextet: number): number {
+  return (hextet >> 8) & 0xff
+}
+
+function fourthByte(hextet: number): number {
+  return hextet & 0xff
 }
 
 function extractIpv4MappedIpv6(hostname: string): string | null {

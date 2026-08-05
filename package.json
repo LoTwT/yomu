@@ -11,22 +11,26 @@
     "build:web-pwa": "vue-tsc -b && vite build --mode web-pwa",
     "build:desktop-shell": "vue-tsc -b && vite build --mode desktop-shell",
     "build:mobile-shell": "vue-tsc -b && vite build --mode mobile-shell",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm build && wrangler deploy",
     "preview": "vite preview",
     "typecheck": "vue-tsc -b",
     "test": "vitest run",
+    "types:worker": "wrangler types src/worker-configuration.d.ts --include-runtime false",
+    "check:worker-types": "wrangler types src/worker-configuration.d.ts --include-runtime false --check",
     "check:boundaries": "node scripts/check-platform-boundaries.mjs",
     "check:build-targets": "vue-tsc -b && node scripts/check-build-targets.mjs",
     "test:e2e": "NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost playwright test",
-    "verify": "pnpm typecheck && pnpm test && pnpm check:boundaries && pnpm check:build-targets && pnpm test:e2e"
+    "verify": "pnpm typecheck && pnpm test && pnpm check:boundaries && pnpm check:build-targets && pnpm check:worker-types && pnpm test:e2e"
   },
   "dependencies": {
     "@ayingott/theme": "0.2.0",
+    "@mozilla/readability": "0.6.0",
     "@phosphor-icons/vue": "2.2.1",
     "vue": "^3.5.34",
     "vue-router": "4.6.4"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "1.50.0",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "^25.9.1",
@@ -41,7 +45,7 @@
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.6",
     "vue-tsc": "^3.1.8",
-    "wrangler": "4.93.0"
+    "wrangler": "4.118.0"
   },
   "pnpm": {
     "overrides": {

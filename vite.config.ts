@@ -1,8 +1,9 @@
 import { fileURLToPath, URL } from 'node:url'
 
+import { cloudflare } from '@cloudflare/vite-plugin'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
-import { defineConfig, type PluginOption } from 'vite'
+import { defineConfig, type PartialEnvironment, type Plugin, type PluginOption } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 const shellTargets = ['web-pwa', 'desktop-shell', 'mobile-shell'] as const
@@ -13,7 +14,7 @@ function resolveShellTarget(mode: string): ShellTarget {
   return shellTargets.includes(mode as ShellTarget) ? mode as ShellTarget : 'web-pwa'
 }
 
-function createPwaPlugin(): PluginOption {
+function createPwaPlugin(): Plugin[] {
   return VitePWA({
     injectRegister: 'script-defer',
     manifest: {
@@ -48,12 +49,27 @@ function createPwaPlugin(): PluginOption {
   })
 }
 
+function clientOnly(plugins: Plugin | Plugin[]): Plugin[] {
+  return (Array.isArray(plugins) ? plugins : [plugins]).map(plugin => ({
+    ...plugin,
+    applyToEnvironment: (environment: PartialEnvironment) => environment.name === 'client',
+  }))
+}
+
 export default defineConfig(({ mode }) => {
   const target = resolveShellTarget(mode)
-  const plugins: PluginOption[] = [tailwindcss(), vue()]
+  const plugins: PluginOption[] = []
 
   if (target === 'web-pwa') {
-    plugins.push(createPwaPlugin())
+    plugins.push(
+      clientOnly(tailwindcss()),
+      clientOnly(vue()),
+      clientOnly(createPwaPlugin()),
+      cloudflare(),
+    )
+  }
+  else {
+    plugins.push(tailwindcss(), vue())
   }
 
   return {

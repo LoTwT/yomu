@@ -1,10 +1,11 @@
-import { computed, shallowReadonly, shallowRef } from 'vue'
+import { computed, onScopeDispose, shallowReadonly, shallowRef } from 'vue'
 
 import { usePlatformServices } from '@/app/platformServices'
 import type { ImportedTextFile } from '@/platform/contracts'
 import {
   importArticleFromPaste,
   importArticleFromTextFile,
+  importArticleFromUrl,
   reparseImportedArticleDraft,
   type ImportedArticleDraft,
   type ImportArticleResult,
@@ -12,7 +13,9 @@ import {
 } from './importArticle'
 import { saveImportedArticle } from './saveImportedArticle'
 
-export type ImportInputSource = 'paste' | 'file'
+export type ImportInputSource = ImportSourceType
+
+const offlineUrlImportReason = '当前处于离线状态，联网后才能抓取文章网址。'
 
 type ImportFlowInputState =
   | {
@@ -20,18 +23,21 @@ type ImportFlowInputState =
       source: ImportInputSource
       text: string
       fileName: string
+      url: string
     }
   | {
       phase: 'parsing'
       source: ImportInputSource
       text: string
       fileName: string
+      url: string
     }
   | {
       phase: 'error'
       source: ImportInputSource
       text: string
       fileName: string
+      url: string
       message: string
     }
 
@@ -67,7 +73,9 @@ export type ImportSaveOutcome =
 export function useImportFlow() {
   const services = usePlatformServices()
   let pasteText = ''
+  let urlText = ''
   let selectedFile: ImportedTextFile | null = null
+  let activeUrlRequest: AbortController | null = null
   const state = shallowRef<ImportFlowState>(createInputState('idle', 'paste'))
   const resolved = shallowRef(false)
   let analysisVersion = 0
@@ -79,12 +87,35 @@ export function useImportFlow() {
   const fileImportReason = services.capabilities.fileImport.reason
     ?? '当前平台尚未接入文件选择。'
   const fileDropAvailable = fileImportAvailable && services.files.supportsDrop()
+  const online = shallowRef(services.network.isOnline())
+  const stopNetworkSubscription = services.network.subscribe((value) => {
+    online.value = value
+    if (!value && activeUrlRequest) {
+      const request = activeUrlRequest
+      activeUrlRequest = null
+      request.abort()
+      showInputError('url', offlineUrlImportReason)
+    }
+  })
+  onScopeDispose(stopNetworkSubscription)
+  onScopeDispose(() => activeUrlRequest?.abort())
+  const urlImportAvailable = computed(() =>
+    services.capabilities.urlImport.availability !== 'unavailable'
+    && services.articleExtractor.isAvailable()
+    && online.value)
+  const urlImportReason = computed(() => {
+    if (!online.value) {
+      return offlineUrlImportReason
+    }
+    return services.capabilities.urlImport.reason
+      ?? '当前平台尚未接入网页正文提取。'
+  })
   const inputSource = computed<ImportInputSource>(() => {
     const current = state.value
     if (isInputState(current)) {
       return current.source
     }
-    return current.draft.source.kind === 'file' ? 'file' : 'paste'
+    return current.draft.source.kind
   })
   const isDirty = computed(() => {
     if (resolved.value) {
@@ -92,7 +123,7 @@ export function useImportFlow() {
     }
     const current = state.value
     if (isInputState(current)) {
-      return pasteText.trim().length > 0 || selectedFile !== null
+      return pasteText.trim().length > 0 || urlText.trim().length > 0 || selectedFile !== null
     }
     return true
   })
@@ -106,6 +137,7 @@ export function useImportFlow() {
       source,
       text: pasteText,
       fileName: selectedFile?.name ?? '',
+      url: urlText,
     }
   }
 
@@ -118,6 +150,10 @@ export function useImportFlow() {
       showInputError('file', fileImportReason)
       return
     }
+    if (source === 'url' && !urlImportAvailable.value) {
+      showInputError('url', urlImportReason.value)
+      return
+    }
     resolved.value = false
     state.value = createInputState('idle', source)
   }
@@ -128,6 +164,15 @@ export function useImportFlow() {
     if (isInputState(current) && current.source === 'paste' && current.phase !== 'parsing') {
       resolved.value = false
       state.value = createInputState('idle', 'paste')
+    }
+  }
+
+  function setSourceUrl(url: string): void {
+    urlText = url
+    const current = state.value
+    if (isInputState(current) && current.source === 'url' && current.phase !== 'parsing') {
+      resolved.value = false
+      state.value = createInputState('idle', 'url')
     }
   }
 
@@ -219,6 +264,39 @@ export function useImportFlow() {
     presentImportResult(result, 'file')
   }
 
+  async function parseUrl(): Promise<void> {
+    if (!urlImportAvailable.value) {
+      showInputError('url', urlImportReason.value)
+      return
+    }
+
+    state.value = createInputState('parsing', 'url')
+    resolved.value = false
+    activeUrlRequest?.abort()
+    const request = new AbortController()
+    activeUrlRequest = request
+    const result = await importArticleFromUrl({
+      url: urlText,
+      remote: services.remote,
+      extractor: services.articleExtractor,
+      signal: request.signal,
+    })
+    if (activeUrlRequest !== request || request.signal.aborted) {
+      return
+    }
+    activeUrlRequest = null
+    presentImportResult(result, 'url')
+  }
+
+  function usePasteFallback(): void {
+    const current = state.value
+    if (!isInputState(current) || current.source !== 'url' || current.phase === 'parsing') {
+      return
+    }
+    resolved.value = false
+    state.value = createInputState('idle', 'paste')
+  }
+
   function presentImportResult(
     result: ImportArticleResult,
     source: ImportInputSource,
@@ -242,6 +320,7 @@ export function useImportFlow() {
       source,
       text: pasteText,
       fileName: selectedFile?.name ?? '',
+      url: urlText,
       message,
     }
   }
@@ -392,9 +471,12 @@ export function useImportFlow() {
     if (current.phase === 'preview' || current.phase === 'saving') {
       analysisVersion += 1
       resolved.value = false
-      const source = current.draft.source.kind === 'file' ? 'file' : 'paste'
+      const source = current.draft.source.kind
       if (source === 'paste') {
         pasteText = current.body
+      }
+      if (source === 'url' && current.draft.source.url) {
+        urlText = current.draft.source.url
       }
       state.value = createInputState('idle', source)
     }
@@ -415,13 +497,18 @@ export function useImportFlow() {
     fileImportAvailable,
     fileImportReason,
     fileDropAvailable,
+    urlImportAvailable,
+    urlImportReason,
     isDirty,
     setInputSource,
     setSourceText,
+    setSourceUrl,
     parsePaste,
     chooseFile,
     importDroppedFiles,
     parseSelectedFile,
+    parseUrl,
+    usePasteFallback,
     updateTitle,
     updateSourceLabel,
     updateBody,
@@ -445,6 +532,29 @@ function toImportMessage(code: string, source: ImportSourceType): string {
     }
     if (fileMessages[code]) {
       return fileMessages[code]
+    }
+  }
+
+  if (source === 'url') {
+    const urlMessages: Record<string, string> = {
+      'empty-input': '请输入文章网址。',
+      'unsupported-url': '请输入有效的 http 或 https 文章网址，且不要包含账号密码。',
+      'private-url': '不能导入本机、内网或保留地址中的内容。',
+      'url-unavailable': '暂时无法访问这个网址，请稍后重试或改为粘贴正文。',
+      'url-timeout': '网页响应超时，请稍后重试或改为粘贴正文。',
+      'url-too-large': '网页内容过大，无法安全提取；请改为粘贴正文。',
+      'url-http-error': '网页当前不可用，请检查网址后重试。',
+      'unsupported-content-type': '这个网址返回的不是可读取的 HTML 或纯文本。',
+      'extract-failed': '没有从网页中识别出足够的正文，请改为粘贴正文。',
+      'too-short': '网页中的可读正文不足，请改为粘贴正文。',
+      'too-long': '提取出的正文过长，请改为粘贴需要阅读的部分。',
+      'not-english': '提取出的正文不像英文文章，请检查网址或改为粘贴正文。',
+      'not-enough-sentences': '网页中的可读英文句子不足，请改为粘贴正文。',
+      'overlong-sentence': '网页正文包含无法可靠分割的超长句子，请改为粘贴正文。',
+      'fragment-sentences': '网页正文中的短碎片过多，请改为粘贴正文。',
+    }
+    if (urlMessages[code]) {
+      return urlMessages[code]
     }
   }
 

@@ -6,9 +6,12 @@ export type ImportSource = 'paste' | 'file' | 'url'
 const props = withDefaults(defineProps<{
   fileAvailable: boolean
   fileUnavailableReason?: string
+  urlAvailable: boolean
+  urlUnavailableReason?: string
   disabled?: boolean
 }>(), {
   fileUnavailableReason: '当前平台尚未接入文件选择。',
+  urlUnavailableReason: '当前平台尚未接入网页正文提取。',
   disabled: false,
 })
 
@@ -22,7 +25,12 @@ const options = computed(() => [
     available: props.fileAvailable,
     status: props.fileAvailable ? '' : '当前平台不可用',
   },
-  { value: 'url', label: 'URL Beta', available: false, status: '即将支持' },
+  {
+    value: 'url',
+    label: 'URL Beta',
+    available: props.urlAvailable,
+    status: props.urlAvailable ? '' : '当前不可用',
+  },
 ] as const)
 
 function optionTitle(option: (typeof options.value)[number]): string | undefined {
@@ -31,6 +39,9 @@ function optionTitle(option: (typeof options.value)[number]): string | undefined
   }
   if (option.value === 'file' && !option.available) {
     return props.fileUnavailableReason
+  }
+  if (option.value === 'url' && !option.available) {
+    return props.urlUnavailableReason
   }
   if (!option.available) {
     return '将在后续版本开放'
