@@ -223,6 +223,59 @@ test('URL Beta extracts a remote article locally without exposing or executing p
   expect(directResourceRequests).toEqual([])
 })
 
+test('URL Beta saves into the reading loop and deduplicates the confirmed body', async ({ page }) => {
+  const remoteHtml = [
+    '<!doctype html><html><head><title>Remote library article</title></head><body>',
+    `<article><h1>Remote library article</h1><p>${importedBody}</p></article>`,
+    '</body></html>',
+  ].join('')
+  await page.route('**/api/import/url', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    headers: { 'cache-control': 'no-store' },
+    body: JSON.stringify({
+      content: remoteHtml,
+      contentType: 'text/html; charset=utf-8',
+      sourceUrl: 'https://example.com/final-library-article',
+    }),
+  }))
+
+  await page.goto('/import')
+  await page.getByRole('button', { name: 'URL Beta' }).click()
+  await page.getByLabel('文章网址').fill('https://example.com/first-library-article')
+  await page.getByRole('button', { name: '提取正文' }).click()
+
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await page.getByLabel('标题').fill('Saved URL article')
+  await page.getByRole('textbox', { name: '来源' }).fill('Edited web source')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  const savedArticleUrl = page.url()
+  await expect(page.getByRole('heading', { level: 2, name: 'Saved URL article' })).toBeVisible()
+  await expect(page.getByText('Edited web source · 未评估')).toBeVisible()
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await expect(page.getByRole('link', { name: 'Saved URL article' })).toBeVisible()
+  await expect(page.locator('[data-article-id]')).toHaveCount(1)
+
+  await page.getByRole('link', { name: '导入内容', exact: true }).click()
+  await page.getByRole('button', { name: 'URL Beta' }).click()
+  await page.getByLabel('文章网址').fill('https://example.com/duplicate-library-article')
+  await page.getByRole('button', { name: '提取正文' }).click()
+  await expect(page.getByTestId('import-preview')).toBeVisible()
+  await page.getByLabel('标题').fill('A different URL title')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+
+  await expect(page.getByTestId('import-duplicate-state')).toBeVisible()
+  await expect(page.getByText('Saved URL article', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '打开已有文章' }).click()
+  await expect(page).toHaveURL(savedArticleUrl)
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await expect(page.locator('[data-article-id]')).toHaveCount(1)
+})
+
 test('URL Beta keeps the address and offers paste fallback after a recoverable failure', async ({ page }) => {
   const originalUrl = 'https://example.com/unreadable'
   await page.route('**/api/import/url', route => route.fulfill({
@@ -250,6 +303,14 @@ test('URL Beta keeps the address and offers paste fallback after a recoverable f
 
   await page.getByRole('button', { name: 'URL Beta' }).click()
   await expect(page.getByLabel('文章网址')).toHaveValue(originalUrl)
+
+  await page.getByRole('link', { name: '我的阅读', exact: true }).click({ noWaitAfter: true })
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '放弃并离开' }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByTestId('library-empty-state')).toBeVisible()
+  await expect(page.locator('[data-article-id]')).toHaveCount(0)
 })
 
 test('file picker rejects non-UTF-8 text and imports Markdown through the platform adapter', async ({ page }) => {
@@ -349,6 +410,8 @@ test('unsaved import drafts require an explicit SPA navigation decision', async 
   await expect(page).toHaveURL(/\/import$/)
   await dialog.getByRole('button', { name: '放弃并离开' }).click()
   await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByTestId('library-empty-state')).toBeVisible()
+  await expect(page.locator('[data-article-id]')).toHaveCount(0)
 })
 
 test('library keeps one semantic list across the 1199 and 1200 pixel layout boundary', async ({ page }) => {
