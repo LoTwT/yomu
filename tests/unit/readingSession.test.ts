@@ -7,6 +7,7 @@ import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
 import type { LocalRepositories } from '@/data/repositories'
 import { flushReadingPosition } from '@/features/reader/attemptCommands'
 import {
+  clearReadingProgressJournal,
   readReadingProgressJournal,
   writeReadingProgressJournal,
 } from '@/features/reader/progressJournal'
@@ -342,6 +343,129 @@ describe('useReadingSession', () => {
       .toMatchObject({ activeDurationSec: 4 })
   })
 
+  it('compacts an older retired writer slot after durable progress settles', async () => {
+    const article = createArticle('article-a')
+    const preferences = new MemoryPreferencesStore()
+    const retired = await writeReadingProgressJournal(preferences, {
+      articleId: article.id,
+      attemptId: `${article.id}:attempt`,
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 1,
+    }, { writerId: 'retired-writer', sequence: 1 })
+    await clearReadingProgressJournal(preferences, retired)
+
+    const { session } = mountReadingSession({
+      articles: [article],
+      attempts: [createAttempt(article)],
+      preferences,
+    })
+    await expectReady(session)
+    session.selectSentence('article-a:s2')
+    await session.suspend()
+
+    await vi.waitFor(async () => expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:retired-writer:1',
+    )).toBeNull())
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:retired-writer',
+    )).not.toBeNull()
+  })
+
+  it('does not block durable suspension and retries after stalled compaction', async () => {
+    const article = createArticle('article-a')
+    const { session, harness, repositories } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+    const originalListByPrefix = harness.preferences.listByPrefix
+      .bind(harness.preferences)
+    let compactionCalls = 0
+    let stallCompaction = true
+    harness.preferences.listByPrefix = <T>(prefix: string) => {
+      if (prefix === 'reader-progress-journal:v4:article-a:') {
+        compactionCalls += 1
+        if (stallCompaction) {
+          return new Promise<Array<{ key: string, value: T }>>(() => {})
+        }
+      }
+      return originalListByPrefix<T>(prefix)
+    }
+
+    session.selectSentence('article-a:s2')
+    await expect(session.suspend()).resolves.toBeUndefined()
+    expect(await repositories.attempts.getActiveByArticle(article.id))
+      .toMatchObject({ currentSentenceId: 'article-a:s2' })
+    await vi.waitFor(() => expect(compactionCalls).toBe(1))
+
+    stallCompaction = false
+    session.selectSentence('article-a:s3')
+    await expect(session.suspend()).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(compactionCalls).toBeGreaterThanOrEqual(2))
+    expect(await repositories.attempts.getActiveByArticle(article.id))
+      .toMatchObject({ currentSentenceId: 'article-a:s3' })
+  })
+
+  it('does not block durable suspension when superseded-writer pruning stalls', async () => {
+    const article = createArticle('article-a')
+    const { session, harness, repositories } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+    const articleOperationPrefix = 'reader-progress-journal:v4:article-a:'
+
+    session.selectSentence('article-a:s2')
+    await vi.waitFor(async () => expect(
+      await harness.preferences.listByPrefix(articleOperationPrefix),
+    ).toHaveLength(1))
+
+    const originalCompareAndRemove = harness.preferences.compareAndRemove
+      .bind(harness.preferences)
+    harness.preferences.compareAndRemove = <T>(key: string, expected: T) =>
+      key.startsWith(articleOperationPrefix) && key.endsWith(':1')
+        ? new Promise<boolean>(() => {})
+        : originalCompareAndRemove(key, expected)
+
+    session.selectSentence('article-a:s3')
+    await expect(session.suspend()).resolves.toBeUndefined()
+    expect(await repositories.attempts.getActiveByArticle(article.id))
+      .toMatchObject({ currentSentenceId: 'article-a:s3' })
+  })
+
+  it('reruns compaction requested while an earlier pass is active', async () => {
+    const article = createArticle('article-a')
+    const { session, harness } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+    const originalListByPrefix = harness.preferences.listByPrefix
+      .bind(harness.preferences)
+    let compactionCalls = 0
+    let markCompactionStarted!: () => void
+    let releaseCompaction!: () => void
+    const compactionStarted = new Promise<void>((resolve) => {
+      markCompactionStarted = resolve
+    })
+    const compactionGate = new Promise<void>((resolve) => {
+      releaseCompaction = resolve
+    })
+    harness.preferences.listByPrefix = async <T>(prefix: string) => {
+      if (prefix === 'reader-progress-journal:v4:article-a:') {
+        compactionCalls += 1
+        if (compactionCalls === 1) {
+          markCompactionStarted()
+          await compactionGate
+        }
+      }
+      return originalListByPrefix<T>(prefix)
+    }
+
+    session.selectSentence('article-a:s2')
+    await session.suspend()
+    await compactionStarted
+    session.selectSentence('article-a:s3')
+    await session.suspend()
+    releaseCompaction()
+
+    await vi.waitFor(() => expect(compactionCalls).toBeGreaterThanOrEqual(2))
+  })
+
   it.each([
     ['pagehide', 'pagehide'],
     ['system suspension', 'system'],
@@ -358,6 +482,53 @@ describe('useReadingSession', () => {
 
     expect(immediateUpdate).toHaveBeenCalledTimes(1)
     expect(session.isPlaying.value).toBe(false)
+  })
+
+  it('bounds absorbed slots across repeated immediate and queued checkpoints', async () => {
+    const article = createArticle('article-a')
+    const attempt = createAttempt(article)
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: article.id,
+      attemptId: attempt.id,
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'recovered-writer', sequence: 1 })
+    const repositories = createMemoryLocalRepositories({
+      articles: [article],
+      attempts: [attempt],
+    })
+    let transactionCount = 0
+    const originalTransaction = repositories.transaction.bind(repositories)
+    repositories.transaction = async (stores, mode, operation) => {
+      transactionCount += 1
+      if (transactionCount > 1) {
+        throw new Error('IndexedDB is temporarily unavailable.')
+      }
+      return originalTransaction(stores, mode, operation)
+    }
+    const { session, harness } = mountReadingSession({
+      articles: [article],
+      repositories,
+      preferences,
+    })
+    await expectReady(session)
+    await vi.waitFor(async () => expect(await harness.preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).not.toHaveLength(0))
+
+    for (let index = 0; index < 40; index += 1) {
+      const transition = session.beginRouteTransition()
+      await transition.ready
+      session.resumeAfterFailedRouteTransition(transition.token)
+    }
+
+    await vi.waitFor(async () => expect((await harness.preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).length).toBeLessThanOrEqual(2))
   })
 
   it('still writes a terminal checkpoint when speech cleanup throws', async () => {
@@ -768,6 +939,38 @@ describe('useReadingSession', () => {
       attempt.id,
       1,
     )).toBeNull()
+  })
+
+  it('blocks interaction while a journal lineage scan is unavailable', async () => {
+    const article = createArticle('article-a')
+    const attempt = createAttempt(article)
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: article.id,
+      attemptId: attempt.id,
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 9,
+    }, { writerId: 'recovery-writer', sequence: 1 })
+    const originalListByPrefix = preferences.listByPrefix.bind(preferences)
+    preferences.listByPrefix = <T>(prefix: string) =>
+      prefix === 'reader-progress-journal:v3:article-a:'
+        ? Promise.reject(new Error('Legacy journal scan is unavailable.'))
+        : originalListByPrefix<T>(prefix)
+
+    const { session } = mountReadingSession({
+      articles: [article],
+      attempts: [attempt],
+      preferences,
+    })
+    await vi.waitFor(() => expect(session.status.value).toBe('error'))
+
+    expect(session.article.value).toBeNull()
+    expect(session.attempt.value).toBeNull()
+    expect(session.currentSentenceId.value).toBe('')
+    expect(session.errorMessage.value).toContain('暂时无法打开')
   })
 
   it('blocks interaction with an unverified future-revision journal until storage recovers', async () => {

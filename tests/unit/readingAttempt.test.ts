@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ArticleRecord, ReadingAttempt } from '@/data/entities'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
@@ -10,9 +10,11 @@ import {
 import {
   adoptReadingProgressJournal,
   clearReadingProgressJournal,
+  compactReadingProgressJournalSlots,
   createReadingProgressJournal,
   readReadingProgressJournal,
   readingProgressJournalOperationId,
+  storeReadingProgressJournal,
   storeReadingProgressJournalImmediately,
   writeReadingProgressJournal,
 } from '@/features/reader/progressJournal'
@@ -319,6 +321,1021 @@ describe('reading attempt commands', () => {
     expect(newer).toMatchObject({ sequence: 3, currentSentenceId: 'article-a:s3' })
   })
 
+  it('keeps reusable v3 slots as migration inputs while newer writes use v4 operations', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await preferences.set('reader-progress-journal:v3:article-a:writer-a', {
+      schemaVersion: 3,
+      epochId: 'legacy-writer-epoch',
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      writerId: 'writer-a',
+      sequence: 1,
+      generation: 1,
+      journal: {
+        writerId: 'writer-a',
+        sequence: 1,
+        writtenAt: '2026-08-04T08:00:01.000Z',
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 4,
+      },
+    })
+    const legacy = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )
+    expect(legacy).toMatchObject({
+      writerId: 'writer-a',
+      sequence: 1,
+      currentSentenceId: 'article-a:s2',
+    })
+    await clearReadingProgressJournal(preferences, legacy!)
+
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(0)
+    expect(await preferences.get(
+      'reader-progress-journal:v3:article-a:writer-a',
+    )).not.toBeNull()
+
+    const newer = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 1,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-a', sequence: 2 })
+    expect(newer.sources?.[0]).toMatchObject({
+      slotVersion: 4,
+      key: 'reader-progress-journal:v4:article-a:writer-a:2',
+    })
+    const duplicate = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 1,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 9,
+    }, { writerId: 'writer-a', sequence: 2 })
+    expect(duplicate).toEqual(newer)
+  })
+
+  it('prunes a known predecessor without enumerating storage during writes', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    const listByPrefix = vi.spyOn(preferences, 'listByPrefix')
+
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-a', sequence: 2 })
+    storeReadingProgressJournalImmediately(preferences, createReadingProgressJournal({
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 9,
+    }, { writerId: 'writer-a', sequence: 3 }))
+
+    expect(listByPrefix).not.toHaveBeenCalled()
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+    )).toBeNull()
+  })
+
+  it('fails closed when any journal lineage scan is unavailable', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-a', sequence: 1 })
+    const originalListByPrefix = preferences.listByPrefix.bind(preferences)
+    preferences.listByPrefix = <T>(prefix: string) =>
+      prefix === 'reader-progress-journal:v3:article-a:'
+        ? Promise.reject(new Error('Legacy journal scan is unavailable.'))
+        : originalListByPrefix<T>(prefix)
+
+    await expect(readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )).rejects.toThrow('Legacy journal scan is unavailable.')
+  })
+
+  it('compacts retired writer slots in deterministic bounded batches', async () => {
+    const preferences = new MemoryPreferencesStore()
+    for (const [writerId, writtenAt] of [
+      ['writer-c', '2000-01-01T00:00:00.000Z'],
+      ['writer-a', '2099-01-01T00:00:00.000Z'],
+      ['writer-b', '2026-08-04T08:00:00.000Z'],
+    ] as const) {
+      const journal = await writeReadingProgressJournal(preferences, {
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 4,
+      }, { writerId, sequence: 1, writtenAt })
+      await clearReadingProgressJournal(preferences, journal)
+    }
+    const otherArticle = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-b',
+      attemptId: 'attempt-b',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-b:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    await clearReadingProgressJournal(preferences, otherArticle)
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-live', sequence: 1 })
+
+    const listByPrefix = vi.spyOn(preferences, 'listByPrefix')
+    await expect(compactReadingProgressJournalSlots(
+      preferences,
+      'article-a',
+      { maxRemovals: 2 },
+    )).resolves.toBe(2)
+    expect(listByPrefix).toHaveBeenCalledOnce()
+    expect(listByPrefix).toHaveBeenCalledWith(
+      'reader-progress-journal:v4:article-a:',
+    )
+    listByPrefix.mockRestore()
+
+    expect((await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).map(({ key }) => key)).toEqual([
+      'reader-progress-journal:v4:article-a:writer-c:1',
+      'reader-progress-journal:v4:article-a:writer-live:1',
+    ])
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal-tombstone:v3:article-a:',
+    )).toHaveLength(3)
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-b:',
+    )).toHaveLength(1)
+
+    await expect(compactReadingProgressJournalSlots(
+      preferences,
+      'article-a',
+      { maxRemovals: 2 },
+    )).resolves.toBe(1)
+    await expect(compactReadingProgressJournalSlots(
+      preferences,
+      'article-a',
+      { maxRemovals: 2 },
+    )).resolves.toBe(0)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({ writerId: 'writer-live', sequence: 1 })
+  })
+
+  it('compacts tombstoned causal slots behind a live writer', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const first = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 2,
+    }, { writerId: 'writer-a', sequence: 1 })
+    await clearReadingProgressJournal(preferences, first)
+
+    const second = await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 4,
+      }, { writerId: 'writer-b', sequence: 1 }),
+      supersedes: first.sources,
+    })
+    await clearReadingProgressJournal(preferences, second)
+
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 6,
+      }, { writerId: 'writer-c', sequence: 1 }),
+      supersedes: second.sources?.filter(source => source.writerId === 'writer-b'),
+    })
+    const unrelated = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-d', sequence: 1 })
+    await clearReadingProgressJournal(preferences, unrelated)
+
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(3)
+    expect((await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).map(({ key }) => key)).toEqual([
+      'reader-progress-journal:v4:article-a:writer-c:1',
+    ])
+  })
+
+  it('keeps a causal anchor across a same-writer sequence gap', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const recovered = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 2,
+    }, { writerId: 'writer-z', sequence: 1 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 6,
+      }, { writerId: 'writer-a', sequence: 1 }),
+      supersedes: recovered.sources,
+    })
+
+    // Sequence 2 represents a failed write, so sequence 3 has no predecessor.
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-a', sequence: 3 })
+    const latest = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-a', sequence: 4 })
+    expect(latest.writerSequenceHasGap).toBe(true)
+
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(0)
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+    )).not.toBeNull()
+    const merged = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )
+    expect(merged).toMatchObject({
+      writerId: 'writer-a',
+      sequence: 4,
+      writerSequenceHasGap: true,
+      currentSentenceId: 'article-a:s3',
+    })
+
+    await clearReadingProgressJournal(preferences, latest)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toBeNull()
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(3)
+  })
+
+  it('carries every writer gap lineage through a multi-writer adoption', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const recovered = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 2,
+    }, { writerId: 'writer-z', sequence: 1 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 4,
+      }, { writerId: 'writer-a', sequence: 1 }),
+      supersedes: recovered.sources,
+    })
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 6,
+    }, { writerId: 'writer-a', sequence: 3 })
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-zz', sequence: 1 })
+
+    const merged = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )
+    expect(merged).toMatchObject({
+      writerId: 'writer-zz',
+      writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
+    })
+    if (!merged || merged.schemaVersion !== 2) {
+      throw new Error('Expected a merged current progress journal.')
+    }
+
+    const adopted = await adoptReadingProgressJournal(preferences, merged, {
+      writerId: 'writer-current',
+      sequence: 1,
+    })
+    expect(adopted).toMatchObject({
+      sourcesSettled: true,
+      journal: {
+        writerId: 'writer-current',
+        writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
+      },
+    })
+    await clearReadingProgressJournal(preferences, adopted.journal)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toBeNull()
+  })
+
+  it('settles nested writer gap lineages before retiring their carrier', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const oldest = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 1,
+    }, { writerId: 'writer-z', sequence: 1 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 2,
+      }, { writerId: 'writer-b', sequence: 1 }),
+      supersedes: oldest.sources,
+    })
+    const writerBGap = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 3,
+    }, { writerId: 'writer-b', sequence: 3 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 4,
+      }, { writerId: 'writer-a', sequence: 1 }),
+      writerGapLineages: [{ writerId: 'writer-b', sequence: 3 }],
+      supersedes: writerBGap.sources,
+    })
+    const writerAGap = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 5,
+    }, { writerId: 'writer-a', sequence: 3 })
+    const carrier = await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 6,
+      }, { writerId: 'writer-current', sequence: 1 }),
+      writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
+      supersedes: writerAGap.sources,
+    })
+
+    const originalUpdate = preferences.update.bind(preferences)
+    let rejectOldestTombstone = true
+    preferences.update = async <T>(key: string, updater: (
+      current: unknown | null,
+    ) => T | null) => {
+      if (rejectOldestTombstone
+        && key === 'reader-progress-journal-tombstone:v3:article-a:writer-z') {
+        throw new Error('Oldest causal source is temporarily unavailable.')
+      }
+      return originalUpdate(key, updater)
+    }
+    await expect(clearReadingProgressJournal(preferences, carrier))
+      .rejects.toThrow('sources could not all be retired')
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-a',
+    )).not.toHaveProperty('causalClosureSequence')
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-b',
+    )).not.toHaveProperty('causalClosureSequence')
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(2)
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+    )).not.toBeNull()
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-b:1',
+    )).not.toBeNull()
+
+    const retry = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )
+    expect(retry).toMatchObject({
+      writerId: 'writer-current',
+      currentSentenceId: 'article-a:s3',
+      writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
+    })
+    if (!retry || retry.schemaVersion !== 2) {
+      throw new Error('Expected a current progress journal retry.')
+    }
+    rejectOldestTombstone = false
+    await clearReadingProgressJournal(preferences, retry)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toBeNull()
+  })
+
+  it('keeps repeated cross-writer adoption storage bounded', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-0', sequence: 1 })
+
+    for (let index = 1; index <= 100; index += 1) {
+      const recovered = await readReadingProgressJournal(
+        preferences,
+        'article-a',
+        'attempt-a',
+      )
+      if (!recovered || recovered.schemaVersion !== 2) {
+        throw new Error('Expected a current progress journal.')
+      }
+      const adopted = await adoptReadingProgressJournal(preferences, recovered, {
+        writerId: `writer-${index}`,
+        sequence: 1,
+      })
+      expect(adopted.sourcesSettled).toBe(true)
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+  })
+
+  it('compacts an old operation without touching a newer concurrent sequence', async () => {
+    const preferences = new NonLinearizableCompactionPreferencesStore()
+    const first = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    await clearReadingProgressJournal(preferences, first)
+
+    const interleaving = preferences.pauseNextCompareAndRemove()
+    const compacting = compactReadingProgressJournalSlots(preferences, 'article-a')
+    await interleaving.started
+    const immediate = storeReadingProgressJournalImmediately(
+      preferences,
+      createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 1,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 8,
+      }, { writerId: 'writer-a', sequence: 2 }),
+    )
+    interleaving.release()
+
+    await expect(compacting).resolves.toBe(1)
+    expect(immediate).toMatchObject({ sequence: 2, generation: 2 })
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'writer-a',
+        sequence: 2,
+        currentSentenceId: 'article-a:s3',
+      })
+  })
+
+  it('keeps unresolved same-writer storage bounded through a prolonged outage', async () => {
+    const preferences = new MemoryPreferencesStore()
+    for (let sequence = 1; sequence <= 1_100; sequence += 1) {
+      await writeReadingProgressJournal(preferences, {
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: sequence % 2 === 0 ? 'article-a:s2' : 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: sequence,
+      }, {
+        writerId: 'outage-writer',
+        sequence,
+        writtenAt: '2026-08-04T08:00:00.000Z',
+      })
+    }
+
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:outage-writer:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal-tombstone:v3:article-a:',
+    )).toHaveLength(0)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'outage-writer',
+        sequence: 1_100,
+        writerSequenceHighWater: 1_099,
+        currentSentenceId: 'article-a:s2',
+        activeDurationSec: 1_100,
+      })
+  })
+
+  it('keeps same-writer storage bounded across repeated sequence gaps', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const write = (sequence: number) => writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: sequence % 2 === 0 ? 'article-a:s2' : 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: sequence,
+    }, {
+      writerId: 'intermittent-writer',
+      sequence,
+      writtenAt: '2026-08-04T08:00:00.000Z',
+    })
+
+    await write(1)
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      // Each skipped sequence models one failed write followed by two successes.
+      await write(cycle * 3)
+      await write(cycle * 3 + 1)
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:intermittent-writer:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'intermittent-writer',
+        sequence: 301,
+        writerSequenceHasGap: true,
+        currentSentenceId: 'article-a:s3',
+      })
+  })
+
+  it('keeps isolated same-writer successes bounded and fences delayed history', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const write = (sequence: number) => writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: sequence === 1 ? 'article-a:s1' : 'article-a:s3',
+      furthestSentenceOrdinal: sequence === 1 ? 0 : 2,
+      activeDurationSec: sequence,
+    }, {
+      writerId: 'isolated-writer',
+      sequence,
+      writtenAt: '2026-08-04T08:00:00.000Z',
+    })
+
+    await write(1)
+    const delayed = await preferences.get(
+      'reader-progress-journal:v4:article-a:isolated-writer:1',
+    )
+    for (let sequence = 3; sequence <= 201; sequence += 2) {
+      await write(sequence)
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:isolated-writer:',
+    )).toHaveLength(1)
+    await preferences.set(
+      'reader-progress-journal:v4:article-a:isolated-writer:1',
+      delayed,
+    )
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'isolated-writer',
+        sequence: 201,
+        writerSequenceHighWater: 200,
+        writerSequenceHasGap: true,
+        currentSentenceId: 'article-a:s3',
+      })
+    await expect(compactReadingProgressJournalSlots(preferences, 'article-a'))
+      .resolves.toBe(1)
+  })
+
+  it('keeps only the newest provider of duplicate external gap debt', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const external = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 1,
+    }, { writerId: 'external-writer', sequence: 1 })
+    const writeWithExternalDebt = (sequence: number) =>
+      storeReadingProgressJournal(preferences, {
+        ...createReadingProgressJournal({
+          articleId: 'article-a',
+          attemptId: 'attempt-a',
+          baseAttemptRevision: 0,
+          cursorMutation: true,
+          currentSentenceId: 'article-a:s3',
+          furthestSentenceOrdinal: 2,
+          activeDurationSec: sequence,
+        }, {
+          writerId: 'gap-writer',
+          sequence,
+          writtenAt: '2026-08-04T08:00:00.000Z',
+        }),
+        supersedes: external.sources,
+      })
+
+    await writeWithExternalDebt(1)
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      await writeWithExternalDebt(cycle * 3)
+      await writeWithExternalDebt(cycle * 3 + 1)
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:gap-writer:',
+    )).toHaveLength(1)
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).toHaveLength(2)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'gap-writer',
+        sequence: 301,
+        currentSentenceId: 'article-a:s3',
+      })
+  })
+
+  it('discards unique external gap debt after every source is settled', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const snapshot = (activeDurationSec: number) => ({
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec,
+    })
+    await writeReadingProgressJournal(
+      preferences,
+      snapshot(1),
+      { writerId: 'gap-writer', sequence: 1 },
+    )
+
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      const external = await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 - 1),
+        { writerId: `external-writer-${cycle}`, sequence: 1 },
+      )
+      const adopted = await adoptReadingProgressJournal(preferences, external, {
+        writerId: 'gap-writer',
+        sequence: cycle * 3,
+        writtenAt: '2026-08-04T08:00:00.000Z',
+      })
+      expect(adopted).toMatchObject({
+        sourcesSettled: true,
+        journal: { sequence: cycle * 3 },
+      })
+      await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 + 1),
+        { writerId: 'gap-writer', sequence: cycle * 3 + 1 },
+      )
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    const gapOperations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:gap-writer:',
+    )
+    expect(gapOperations).toHaveLength(1)
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
+      .toMatchObject({
+        writerId: 'gap-writer',
+        sequence: 301,
+        currentSentenceId: 'article-a:s3',
+      })
+  })
+
+  it('discards external gap lineages only after carrier closure is proven', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const snapshot = (activeDurationSec: number) => ({
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec,
+    })
+    await writeReadingProgressJournal(
+      preferences,
+      snapshot(1),
+      { writerId: 'gap-writer', sequence: 1 },
+    )
+
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      const externalWriterId = `external-gap-writer-${cycle}`
+      const external = await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 - 1),
+        { writerId: externalWriterId, sequence: 3 },
+      )
+      expect(external.writerSequenceHasGap).toBe(true)
+      const adopted = await adoptReadingProgressJournal(preferences, external, {
+        writerId: 'gap-writer',
+        sequence: cycle * 3,
+        writtenAt: '2026-08-04T08:00:00.000Z',
+      })
+      expect(adopted.sourcesSettled).toBe(true)
+      expect(await preferences.get(
+        `reader-progress-journal-tombstone:v3:article-a:${externalWriterId}`,
+      )).toMatchObject({
+        sequence: 3,
+        causalClosureSequence: 3,
+      })
+      await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 + 1),
+        { writerId: 'gap-writer', sequence: cycle * 3 + 1 },
+      )
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+    const recovered = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+    )
+    expect(recovered).toMatchObject({
+      writerId: 'gap-writer',
+      sequence: 301,
+      writerGapLineages: [{ writerId: 'gap-writer', sequence: 301 }],
+      currentSentenceId: 'article-a:s3',
+    })
+  })
+
+  it('proves inherited gap lineages after a later carrier settles them', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const snapshot = (activeDurationSec: number) => ({
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec,
+    })
+    await writeReadingProgressJournal(
+      preferences,
+      snapshot(1),
+      { writerId: 'gap-writer', sequence: 1 },
+    )
+    const originalUpdate = preferences.update.bind(preferences)
+    let blockedTombstoneKey: string | null = null
+    preferences.update = async <T>(key: string, updater: (
+      current: unknown | null,
+    ) => T | null) => {
+      if (key === blockedTombstoneKey) {
+        blockedTombstoneKey = null
+        throw new Error('Initial lineage settlement was interrupted.')
+      }
+      return originalUpdate(key, updater)
+    }
+
+    for (let cycle = 1; cycle <= 50; cycle += 1) {
+      const externalWriterId = `inherited-gap-writer-${cycle}`
+      const external = await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 - 1),
+        { writerId: externalWriterId, sequence: 3 },
+      )
+      blockedTombstoneKey
+        = `reader-progress-journal-tombstone:v3:article-a:${externalWriterId}`
+      const interrupted = await adoptReadingProgressJournal(preferences, external, {
+        writerId: `intermediate-carrier-${cycle}`,
+        sequence: 1,
+      })
+      expect(interrupted.sourcesSettled).toBe(false)
+
+      const settled = await adoptReadingProgressJournal(
+        preferences,
+        interrupted.journal,
+        { writerId: 'gap-writer', sequence: cycle * 3 },
+      )
+      expect(settled.sourcesSettled).toBe(true)
+      expect(await preferences.get(
+        `reader-progress-journal-tombstone:v3:article-a:${externalWriterId}`,
+      )).toMatchObject({
+        sequence: 3,
+        causalClosureSequence: 3,
+      })
+      await writeReadingProgressJournal(
+        preferences,
+        snapshot(cycle * 3 + 1),
+        { writerId: 'gap-writer', sequence: cycle * 3 + 1 },
+      )
+      let removed = 0
+      do {
+        removed = await compactReadingProgressJournalSlots(preferences, 'article-a')
+      } while (removed > 0)
+    }
+
+    const operations = await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )
+    expect(operations).toHaveLength(1)
+    expect(JSON.stringify(operations).length).toBeLessThan(5_000)
+  })
+
+  it('keeps a delayed absorbed operation from reviving an older cursor', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    const delayed = await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+    )
+    const latest = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 1,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s3',
+      furthestSentenceOrdinal: 2,
+      activeDurationSec: 8,
+    }, { writerId: 'writer-a', sequence: 2 })
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+    )).toBeNull()
+
+    await preferences.set(
+      'reader-progress-journal:v4:article-a:writer-a:1',
+      delayed,
+    )
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a', 1))
+      .toMatchObject({
+        writerId: 'writer-a',
+        sequence: 2,
+        writerSequenceHighWater: 1,
+        cursorMutation: false,
+        currentSentenceId: latest.currentSentenceId,
+      })
+  })
+
   it('migrates a v2 aggregate journal into its writer slot exactly once', async () => {
     const preferences = new MemoryPreferencesStore()
     await preferences.set('reader-progress-journal:v2:article-a', {
@@ -352,7 +1369,7 @@ describe('reading attempt commands', () => {
       writerId: 'aggregate-writer',
       sequence: 3,
     })
-    expect(await preferences.listByPrefix('reader-progress-journal:v3:article-a:'))
+    expect(await preferences.listByPrefix('reader-progress-journal:v4:article-a:'))
       .toHaveLength(1)
     expect(await preferences.get<{ journal: unknown | null }>(
       'reader-progress-journal:v2:article-a',
@@ -1654,5 +2671,41 @@ class InterleavedMemoryPreferencesStore extends MemoryPreferencesStore {
     this.resolveStarted?.()
     await this.resumeUpdate
     return super.update(key, () => next)
+  }
+}
+
+class NonLinearizableCompactionPreferencesStore extends MemoryPreferencesStore {
+  private pauseCompareAndRemove = false
+  private resolveStarted: (() => void) | null = null
+  private resumeCompareAndRemove: Promise<void> = Promise.resolve()
+  private resolveResume: (() => void) | null = null
+
+  pauseNextCompareAndRemove(): { started: Promise<void>, release: () => void } {
+    this.pauseCompareAndRemove = true
+    const started = new Promise<void>((resolve) => {
+      this.resolveStarted = resolve
+    })
+    this.resumeCompareAndRemove = new Promise<void>((resolve) => {
+      this.resolveResume = resolve
+    })
+    return {
+      started,
+      release: () => this.resolveResume?.(),
+    }
+  }
+
+  override async compareAndRemove<T>(key: string, expected: T): Promise<boolean> {
+    if (!this.pauseCompareAndRemove) {
+      return super.compareAndRemove(key, expected)
+    }
+    this.pauseCompareAndRemove = false
+    const matched = JSON.stringify(this.getImmediately(key)) === JSON.stringify(expected)
+    this.resolveStarted?.()
+    await this.resumeCompareAndRemove
+    if (!matched) {
+      return false
+    }
+    await this.remove(key)
+    return true
   }
 }

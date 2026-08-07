@@ -21,6 +21,7 @@ import {
   adoptReadingProgressJournal,
   clearReadingProgressJournal,
   clearSelectedReadingProgressJournal,
+  compactReadingProgressJournalSlots,
   createReadingProgressJournal,
   createReadingProgressJournalWriterId,
   readReadingProgressJournal,
@@ -45,6 +46,7 @@ const idlePlaybackState: ReadingPlaybackState = {
 }
 
 const routeTransitionSaveDeadlineMs = 750
+const progressJournalCompactionDeadlineMs = 250
 const terminalSpeechStartSignals = new WeakSet<AbortSignal>()
 
 interface ReadingJournalWriteOutcome {
@@ -141,6 +143,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   let pendingJournalWrite: PendingReadingJournalWrite | null = null
   let journalWriter: Promise<void> | null = null
   let journalStorageQueue: Promise<void> = Promise.resolve()
+  const compactingJournalArticles = new Set<string>()
+  const pendingJournalCompactions = new Set<string>()
   let journalWriteSequence = 0
   let cursorDirty = false
   let routeTransitionVersion = 0
@@ -673,22 +677,12 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   ): Promise<ReplayedProgress> {
     let recoveryBase = openedAttempt
     while (true) {
-      let journal: ReadingProgressJournal | null
-      try {
-        journal = await readReadingProgressJournal(
-          services.preferences,
-          currentArticle.id,
-          recoveryBase.id,
-          recoveryBase.progressRevision ?? 0,
-        )
-      }
-      catch {
-        return {
-          attempt: recoveryBase,
-          warning: '',
-          cursorPending: false,
-        }
-      }
+      const journal = await readReadingProgressJournal(
+        services.preferences,
+        currentArticle.id,
+        recoveryBase.id,
+        recoveryBase.progressRevision ?? 0,
+      )
       if (!journal) {
         return { attempt: recoveryBase, warning: '', cursorPending: false }
       }
@@ -698,7 +692,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         .findIndex(sentence => sentence.id === journal.currentSentenceId)
       if (journal.attemptId !== recoveryBase.id || sentenceIndex < 0) {
         try {
-          await clearSelectedReadingProgressJournal(services.preferences, journal)
+          await retireSelectedProgressJournal(journal)
         }
         catch {
           return { attempt: recoveryBase, warning: '', cursorPending: false }
@@ -707,7 +701,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
       }
       if (isJournalCoveredByAttempt(journal, recoveryBase)) {
         try {
-          await clearSelectedReadingProgressJournal(services.preferences, journal)
+          await retireSelectedProgressJournal(journal)
         }
         catch {
           return { attempt: recoveryBase, warning: '', cursorPending: false }
@@ -741,7 +735,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
           }
         }
         try {
-          await clearSelectedReadingProgressJournal(services.preferences, journal)
+          await retireSelectedProgressJournal(journal)
         }
         catch {
           return { attempt: recoveryBase, warning: '', cursorPending: false }
@@ -788,6 +782,9 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
               journalWriteSequence,
               adopted.journal.sequence,
             )
+            if (adopted.sourcesSettled) {
+              scheduleProgressJournalCompaction(currentArticle.id)
+            }
           }
           catch {}
         }
@@ -834,7 +831,11 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
       { writerId: journalWriterId, sequence },
     )
     try {
-      storeReadingProgressJournalImmediately(services.preferences, journal)
+      const stored = storeReadingProgressJournalImmediately(
+        services.preferences,
+        journal,
+      )
+      scheduleProgressJournalCompaction(stored.articleId)
     }
     catch {
       reportJournalFailure(snapshot)
@@ -909,6 +910,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
               intendedJournal,
             )
           })
+          scheduleProgressJournalCompaction(journal.articleId)
           pending.deferred.resolve({
             snapshot: pending.snapshot,
             intendedJournal,
@@ -939,9 +941,50 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     if (!outcome.journal) {
       return
     }
-    await runJournalStorageOperation(() =>
+    const retired = await runJournalStorageOperation(() =>
       clearReadingProgressJournal(services.preferences, outcome.journal!))
-      .catch(() => {})
+      .then(() => true, () => false)
+    if (retired) {
+      scheduleProgressJournalCompaction(outcome.journal.articleId)
+    }
+  }
+
+  function retireSelectedProgressJournal(
+    journal: ReadingProgressJournal,
+  ): Promise<void> {
+    return runJournalStorageOperation(() =>
+      clearSelectedReadingProgressJournal(services.preferences, journal)
+    ).then(() => {
+      scheduleProgressJournalCompaction(journal.articleId)
+    })
+  }
+
+  function scheduleProgressJournalCompaction(articleId: string): void {
+    if (compactingJournalArticles.has(articleId)) {
+      pendingJournalCompactions.add(articleId)
+      return
+    }
+    compactingJournalArticles.add(articleId)
+    setTimeout(() => runProgressJournalCompaction(articleId), 0)
+  }
+
+  function runProgressJournalCompaction(articleId: string): void {
+    const compaction = compactReadingProgressJournalSlots(
+      services.preferences,
+      articleId,
+    )
+    void compaction.then((removed) => {
+      if (removed > 0) {
+        scheduleProgressJournalCompaction(articleId)
+      }
+    }).catch(() => {})
+    void settleWithin(compaction, progressJournalCompactionDeadlineMs)
+      .finally(() => {
+        compactingJournalArticles.delete(articleId)
+        if (pendingJournalCompactions.delete(articleId)) {
+          scheduleProgressJournalCompaction(articleId)
+        }
+      })
   }
 
   function runJournalStorageOperation<T>(operation: () => Promise<T>): Promise<T> {
