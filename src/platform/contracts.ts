@@ -22,7 +22,18 @@ export interface CapabilitySnapshot {
 
 export interface PreferencesStore {
   get: <T>(key: string) => Promise<T | null>
+  getImmediately: <T>(key: string) => T | null
+  listByPrefix: <T>(prefix: string) => Promise<Array<{ key: string, value: T }>>
   set: <T>(key: string, value: T) => Promise<void>
+  update: <T>(
+    key: string,
+    updater: (current: unknown | null) => T | null,
+  ) => Promise<T | null>
+  updateImmediately: <T>(
+    key: string,
+    updater: (current: unknown | null) => T | null,
+  ) => T | null
+  compareAndRemove: <T>(key: string, expected: T) => Promise<boolean>
   remove: (key: string) => Promise<void>
   clear: () => Promise<void>
 }
@@ -50,6 +61,7 @@ export interface SpeechRequest {
   language: string
   rate: number
   voiceId?: string
+  signal?: AbortSignal
   onStart?: () => void
   onEnd?: () => void
   onError?: (error: Error) => void
@@ -91,7 +103,7 @@ export type AppLifecycleState = 'active' | 'background' | 'suspended'
 
 export interface AppLifecycleEvent {
   state: AppLifecycleState
-  reason: 'visibility' | 'pagehide' | 'system' | 'window-close' | 'test'
+  reason: 'visibility' | 'pagehide' | 'pageshow' | 'system' | 'window-close' | 'test'
 }
 
 export interface AppLifecycleAdapter {

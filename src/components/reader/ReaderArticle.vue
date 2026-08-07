@@ -6,6 +6,7 @@ import type { ArticleRecord, ArticleSentenceRecord } from '@/data/entities'
 const props = defineProps<{
   article: ArticleRecord
   currentSentenceId: string
+  playingSentenceId: string | null
 }>()
 
 const emit = defineEmits<{
@@ -113,9 +114,13 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
           v-for="sentence in paragraph.sentences"
           :key="sentence.id"
           class="reader-article__sentence"
-          :class="{ 'reader-article__sentence--current': sentence.id === props.currentSentenceId }"
+          :class="{
+            'reader-article__sentence--current': sentence.id === props.currentSentenceId,
+            'reader-article__sentence--playing': sentence.id === props.playingSentenceId,
+          }"
           type="button"
           :data-sentence-id="sentence.id"
+          :data-playing="sentence.id === props.playingSentenceId ? 'true' : undefined"
           :tabindex="sentence.id === props.currentSentenceId ? 0 : -1"
           :aria-current="sentence.id === props.currentSentenceId ? 'true' : undefined"
           @click="handleSentenceClick(sentence.id, $event)"
@@ -193,6 +198,10 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   box-shadow: inset 0 -0.12em 0 var(--accent-primary-active);
 }
 
+.reader-article__sentence--playing {
+  box-shadow: inset 0 -0.18em 0 var(--accent-primary-active);
+}
+
 .reader-article__sentence:focus-visible {
   outline: 3px solid var(--focus-ring-color);
   outline-offset: 3px;
@@ -211,7 +220,8 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
 }
 
 @media (forced-colors: active) {
-  .reader-article__sentence--current {
+  .reader-article__sentence--current,
+  .reader-article__sentence--playing {
     outline: 2px solid Highlight;
   }
 }

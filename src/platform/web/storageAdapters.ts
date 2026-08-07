@@ -11,9 +11,16 @@ const preferencePrefix = 'yomu:v2:preference:'
 const secretPrefix = 'yomu:v2:secret:'
 
 export class WebPreferencesStore implements PreferencesStore {
-  constructor(private readonly storage: Storage) {}
+  constructor(
+    private readonly storage: Storage,
+    private readonly locks: LockManager | null = readLockManager(),
+  ) {}
 
   async get<T>(key: string): Promise<T | null> {
+    return this.getImmediately<T>(key)
+  }
+
+  getImmediately<T>(key: string): T | null {
     const raw = this.storage.getItem(`${preferencePrefix}${key}`)
     if (raw === null) {
       return null
@@ -26,17 +33,113 @@ export class WebPreferencesStore implements PreferencesStore {
     }
   }
 
+  async listByPrefix<T>(prefix: string): Promise<Array<{ key: string, value: T }>> {
+    const storagePrefix = `${preferencePrefix}${prefix}`
+    const entries: Array<{ key: string, value: T }> = []
+    for (let index = 0; index < this.storage.length; index += 1) {
+      const storageKey = this.storage.key(index)
+      if (!storageKey?.startsWith(storagePrefix)) {
+        continue
+      }
+      const raw = this.storage.getItem(storageKey)
+      if (raw === null) {
+        continue
+      }
+      try {
+        entries.push({
+          key: storageKey.slice(preferencePrefix.length),
+          value: JSON.parse(raw) as T,
+        })
+      }
+      catch {}
+    }
+    return entries.sort((left, right) => left.key.localeCompare(right.key))
+  }
+
   async set<T>(key: string, value: T): Promise<void> {
-    this.storage.setItem(`${preferencePrefix}${key}`, JSON.stringify(value))
+    await this.withKeyLock(key, () => {
+      this.storage.setItem(`${preferencePrefix}${key}`, JSON.stringify(value))
+    })
+  }
+
+  async update<T>(
+    key: string,
+    updater: (current: unknown | null) => T | null,
+  ): Promise<T | null> {
+    return this.withKeyLock(key, () => {
+      const storageKey = `${preferencePrefix}${key}`
+      const raw = this.storage.getItem(storageKey)
+      let current: unknown | null = null
+      if (raw !== null) {
+        try {
+          current = JSON.parse(raw) as unknown
+        }
+        catch {}
+      }
+      const next = updater(current)
+      if (next === null) {
+        this.storage.removeItem(storageKey)
+        return null
+      }
+      this.storage.setItem(storageKey, JSON.stringify(next))
+      return JSON.parse(JSON.stringify(next)) as T
+    })
+  }
+
+  updateImmediately<T>(
+    key: string,
+    updater: (current: unknown | null) => T | null,
+  ): T | null {
+    const storageKey = `${preferencePrefix}${key}`
+    const raw = this.storage.getItem(storageKey)
+    let current: unknown | null = null
+    if (raw !== null) {
+      try {
+        current = JSON.parse(raw) as unknown
+      }
+      catch {}
+    }
+    const next = updater(current)
+    if (next === null) {
+      this.storage.removeItem(storageKey)
+      return null
+    }
+    this.storage.setItem(storageKey, JSON.stringify(next))
+    return JSON.parse(JSON.stringify(next)) as T
+  }
+
+  async compareAndRemove<T>(key: string, expected: T): Promise<boolean> {
+    return this.withKeyLock(key, () => {
+      const storageKey = `${preferencePrefix}${key}`
+      const raw = this.storage.getItem(storageKey)
+      if (raw === null || raw !== JSON.stringify(expected)) {
+        return false
+      }
+      this.storage.removeItem(storageKey)
+      return true
+    })
   }
 
   async remove(key: string): Promise<void> {
-    this.storage.removeItem(`${preferencePrefix}${key}`)
+    await this.withKeyLock(key, () => {
+      this.storage.removeItem(`${preferencePrefix}${key}`)
+    })
   }
 
   async clear(): Promise<void> {
     removeNamespacedKeys(this.storage, preferencePrefix)
   }
+
+  private withKeyLock<T>(key: string, operation: () => T | Promise<T>): Promise<T> {
+    if (!this.locks) {
+      return Promise.resolve(operation())
+    }
+    return this.locks.request(`${preferencePrefix}${key}`, operation)
+  }
+}
+
+function readLockManager(): LockManager | null {
+  return typeof navigator === 'undefined' ? null : navigator.locks ?? null
 }
 
 export class WebSecretStore implements SecretStore {

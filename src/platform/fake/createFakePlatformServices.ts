@@ -146,9 +146,12 @@ export class FakeLifecycleAdapter implements AppLifecycleAdapter {
     return () => this.listeners.delete(listener)
   }
 
-  emit(state: AppLifecycleState): void {
+  emit(
+    state: AppLifecycleState,
+    reason: AppLifecycleEvent['reason'] = 'test',
+  ): void {
     this.state = state
-    const event: AppLifecycleEvent = { state, reason: 'test' }
+    const event: AppLifecycleEvent = { state, reason }
     this.listeners.forEach(listener => listener(event))
   }
 }
@@ -175,7 +178,14 @@ export class FakeNetworkAdapter implements NetworkStatusAdapter {
 
 export class FakeSpeechAdapter implements SpeechAdapter {
   readonly spoken: SpeechRequest[] = []
+  cancelCount = 0
   stopCount = 0
+
+  private activePlayback: {
+    request: SpeechRequest
+    cancelled: boolean
+    removeAbortListener: () => void
+  } | null = null
 
   constructor(
     private available: boolean,
@@ -194,17 +204,68 @@ export class FakeSpeechAdapter implements SpeechAdapter {
     if (!this.available) {
       throw new PlatformCapabilityError('localSpeech')
     }
-    this.spoken.push({ ...request })
-    request.onStart?.()
+    if (request.signal?.aborted) {
+      throw new Error('Fake speech playback was cancelled before it started.')
+    }
+    const recordedRequest = { ...request }
+    const playback = {
+      request: recordedRequest,
+      cancelled: false,
+      removeAbortListener: () => {},
+    }
+    this.spoken.push(recordedRequest)
+    this.activePlayback = playback
+    const abortPlayback = (): void => {
+      if (!playback.cancelled) {
+        playback.cancelled = true
+        this.cancelCount += 1
+      }
+      if (this.activePlayback === playback) {
+        this.activePlayback = null
+      }
+    }
+    playback.removeAbortListener = () => {
+      request.signal?.removeEventListener('abort', abortPlayback)
+    }
+    request.signal?.addEventListener('abort', abortPlayback, { once: true })
+    recordedRequest.onStart?.()
     return {
       pause: () => {},
       resume: () => {},
-      cancel: () => {},
+      cancel: () => {
+        playback.removeAbortListener()
+        abortPlayback()
+      },
     }
   }
 
   stop(): void {
     this.stopCount += 1
+    if (this.activePlayback) {
+      this.activePlayback.removeAbortListener()
+      this.activePlayback.cancelled = true
+      this.activePlayback = null
+    }
+  }
+
+  finishActive(): void {
+    const playback = this.activePlayback
+    if (!playback || playback.cancelled) {
+      return
+    }
+    playback.removeAbortListener()
+    this.activePlayback = null
+    playback.request.onEnd?.()
+  }
+
+  failActive(error = new Error('Fake speech playback failed.')): void {
+    const playback = this.activePlayback
+    if (!playback || playback.cancelled) {
+      return
+    }
+    playback.removeAbortListener()
+    this.activePlayback = null
+    playback.request.onError?.(error)
   }
 
   setAvailable(available: boolean): void {

@@ -221,10 +221,18 @@ function cloneDatabaseState(database: MemoryDatabaseState): MemoryDatabaseState 
 
 function createState(seed: MemoryRepositorySeed): MemoryState {
   return {
-    articles: toMap(seed.articles ?? []),
-    attempts: toMap(seed.attempts ?? []),
-    vocabularyTerms: toMap(seed.vocabularyTerms ?? []),
-    vocabularyContexts: toMap(seed.vocabularyContexts ?? []),
+    articles: toMap('articles', seed.articles ?? [], isArticleRecord),
+    attempts: toMap('attempts', seed.attempts ?? [], isReadingAttempt),
+    vocabularyTerms: toMap(
+      'vocabularyTerms',
+      seed.vocabularyTerms ?? [],
+      isVocabularyTerm,
+    ),
+    vocabularyContexts: toMap(
+      'vocabularyContexts',
+      seed.vocabularyContexts ?? [],
+      isVocabularyContext,
+    ),
   }
 }
 
@@ -418,8 +426,18 @@ function createEntityRepository<T extends { id: string }>(
   }
 }
 
-function toMap<T extends { id: string }>(values: T[]): Map<string, T> {
-  return new Map(values.map(value => [value.id, clone(value)]))
+function toMap<T extends { id: string }>(
+  store: DataStoreName,
+  values: T[],
+  validate: (value: unknown) => value is T,
+): Map<string, T> {
+  return new Map(values.map((value) => {
+    const recordId = value.id
+    if (!validate(value as unknown)) {
+      throw new DataValidationError(store, recordId)
+    }
+    return [recordId, clone(value)]
+  }))
 }
 
 function cloneMap<T extends { id: string }>(values: Map<string, T>): Map<string, T> {

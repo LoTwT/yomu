@@ -6,7 +6,10 @@ import { hasCapability } from '@/platform/capabilities'
 import { getYomuBuildTarget } from '@/platform/createPlatformServices'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import { platformInitializationPreferenceKeys } from '@/platform/initialization'
-import { WebRemoteServicesAdapter } from '@/platform/web/runtimeAdapters'
+import {
+  WebLifecycleAdapter,
+  WebRemoteServicesAdapter,
+} from '@/platform/web/runtimeAdapters'
 import { WebPreferencesStore, WebSecretStore } from '@/platform/web/storageAdapters'
 import { createWebPlatformServices } from '@/platform/web/createWebPlatformServices'
 
@@ -39,6 +42,39 @@ describe('platform services', () => {
     expect(await harness.services.secrets.get('mimo')).toBe('session-key')
   })
 
+  it('restores the Web lifecycle after a page returns from the back-forward cache', () => {
+    const documentTarget = new EventTarget()
+    const windowTarget = new EventTarget()
+    let visibilityState: DocumentVisibilityState = 'visible'
+    Object.defineProperty(documentTarget, 'visibilityState', {
+      get: () => visibilityState,
+    })
+    const lifecycle = new WebLifecycleAdapter(
+      documentTarget as Document,
+      windowTarget as Window,
+    )
+    const events: Array<{ state: string, reason: string }> = []
+    const unsubscribe = lifecycle.subscribe(event => events.push(event))
+
+    visibilityState = 'hidden'
+    documentTarget.dispatchEvent(new Event('visibilitychange'))
+    windowTarget.dispatchEvent(new Event('pagehide'))
+    visibilityState = 'visible'
+    windowTarget.dispatchEvent(new Event('pageshow'))
+
+    expect(events).toEqual([
+      { state: 'background', reason: 'visibility' },
+      { state: 'suspended', reason: 'pagehide' },
+      { state: 'active', reason: 'pageshow' },
+    ])
+
+    unsubscribe()
+    documentTarget.dispatchEvent(new Event('visibilitychange'))
+    windowTarget.dispatchEvent(new Event('pagehide'))
+    windowTarget.dispatchEvent(new Event('pageshow'))
+    expect(events).toHaveLength(3)
+  })
+
   it('keeps browser preferences and remembered secrets in separate namespaces', async () => {
     window.localStorage.clear()
     window.localStorage.setItem('unrelated', 'keep')
@@ -52,11 +88,33 @@ describe('platform services', () => {
     const preferences = new WebPreferencesStore(window.localStorage)
     const secrets = new WebSecretStore(window.localStorage)
 
+    window.localStorage.setItem('yomu:v2:preference:damaged', '{truncated')
+    expect(await preferences.get('damaged')).toBeNull()
+    expect(await preferences.update('damaged', () => ({ revision: 1 })))
+      .toEqual({ revision: 1 })
+    expect(preferences.updateImmediately('damaged', current => ({
+      revision: (current as { revision: number }).revision + 1,
+    }))).toEqual({ revision: 2 })
     await preferences.set('theme', 'dark')
+    await preferences.set('conditional', { revision: 2 })
+    await preferences.set('reader-slot:b', { sequence: 2 })
+    await preferences.set('reader-slot:a', { sequence: 1 })
+    window.localStorage.setItem('yomu:v2:preference:reader-slot:damaged', '{truncated')
+    expect(await preferences.update('conditional', current => ({
+      revision: (current as { revision: number }).revision + 1,
+    }))).toEqual({ revision: 3 })
     await secrets.set('mimo', 'temporary')
     await secrets.set('openai', 'remembered', 'device')
 
     expect(await preferences.get('theme')).toBe('dark')
+    expect(await preferences.listByPrefix('reader-slot:')).toEqual([
+      { key: 'reader-slot:a', value: { sequence: 1 } },
+      { key: 'reader-slot:b', value: { sequence: 2 } },
+    ])
+    expect(await preferences.compareAndRemove('conditional', { revision: 2 })).toBe(false)
+    expect(await preferences.get('conditional')).toEqual({ revision: 3 })
+    expect(await preferences.compareAndRemove('conditional', { revision: 3 })).toBe(true)
+    expect(await preferences.get('conditional')).toBeNull()
     expect(await secrets.get('mimo')).toBe('temporary')
     expect(await secrets.get('openai')).toBe('remembered')
 

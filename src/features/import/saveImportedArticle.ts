@@ -82,6 +82,7 @@ export async function saveImportedArticle(
       currentSentenceId: sentences[0]?.id,
       furthestSentenceOrdinal: 0,
       activeDurationSec: 0,
+      progressRevision: 0,
       status: 'active',
       startedAt: timestamp,
       lastOpenedAt: timestamp,

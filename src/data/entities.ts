@@ -64,6 +64,10 @@ export interface ReadingAttempt {
   currentSentenceId?: string
   furthestSentenceOrdinal: number
   activeDurationSec: number
+  progressRevision?: number
+  progressJournalId?: string
+  progressJournalEpochId?: string
+  progressJournalGeneration?: number
   status: 'active' | 'completed'
   startedAt: string
   lastOpenedAt: string
@@ -135,6 +139,7 @@ export function isArticleRecord(value: unknown): value is ArticleRecord {
     && Array.isArray(value.sentences)
     && value.sentences.length > 0
     && value.sentences.every(isArticleSentenceRecord)
+    && hasUniqueRecordIds(value.sentences)
     && Array.isArray(value.factSources)
     && value.factSources.every(isFactSource)
     && isNonNegativeFiniteNumber(value.wordCount)
@@ -153,6 +158,10 @@ export function isReadingAttempt(value: unknown): value is ReadingAttempt {
     && (value.currentSentenceId === undefined || isNonEmptyString(value.currentSentenceId))
     && isNonNegativeFiniteNumber(value.furthestSentenceOrdinal)
     && isNonNegativeFiniteNumber(value.activeDurationSec)
+    && (value.progressRevision === undefined
+      || isNonNegativeSafeInteger(value.progressRevision))
+    && (value.progressJournalId === undefined || isNonEmptyString(value.progressJournalId))
+    && hasValidProgressJournalGeneration(value)
     && (value.status === 'active' || value.status === 'completed')
     && isIsoDate(value.startedAt)
     && isIsoDate(value.lastOpenedAt)
@@ -270,8 +279,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+function hasUniqueRecordIds(values: unknown[]): boolean {
+  const ids = values.map(value => isRecord(value) ? value.id : undefined)
+  return ids.every(id => typeof id === 'string')
+    && new Set(ids).size === ids.length
+}
+
+function hasValidProgressJournalGeneration(value: Record<string, unknown>): boolean {
+  if (value.progressJournalEpochId === undefined
+    && value.progressJournalGeneration === undefined) {
+    return true
+  }
+  return isNonEmptyString(value.progressJournalEpochId)
+    && isNonNegativeSafeInteger(value.progressJournalGeneration)
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
 }
 
 function optionalString(value: unknown): boolean {
