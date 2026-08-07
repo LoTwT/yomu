@@ -8,7 +8,7 @@ import type {
 } from '@/data/entities'
 import { defaultExportPreferences } from '@/data/entities'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
-import { DataConstraintError } from '@/data/repositories'
+import { DataConstraintError, DataValidationError } from '@/data/repositories'
 
 const now = '2026-08-01T00:00:00.000Z'
 
@@ -61,6 +61,22 @@ describe('local repositories', () => {
     await repositories.vocabularyTerms.put(createTerm('term-a'))
     await expect(repositories.vocabularyTerms.put(createTerm('term-b')))
       .rejects.toBeInstanceOf(DataConstraintError)
+  })
+
+  it('rejects article records with duplicate sentence identifiers', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const article = createArticle('article-with-duplicate-sentences')
+    article.sentences.push({
+      ...article.sentences[0]!,
+      order: 1,
+      textHash: 'duplicate-sentence-hash',
+      tokens: [],
+    })
+
+    await expect(repositories.articles.put(article))
+      .rejects.toBeInstanceOf(DataValidationError)
+    expect(() => createMemoryLocalRepositories({ articles: [article] }))
+      .toThrow(DataValidationError)
   })
 
   it('diagnoses orphaned records and emits a deterministic platform-neutral export', async () => {

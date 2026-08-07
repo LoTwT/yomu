@@ -1,10 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const importedBody = [
+const importedSentences = [
   'A quiet reading habit gives the mind enough space to notice how an argument develops.',
   'When each sentence is considered on its own, unfamiliar words feel less overwhelming and context remains clear.',
   'Returning to the exact sentence later makes a local reading library useful across several short sessions.',
-].join(' ')
+] as const
+
+const importedBody = importedSentences.join(' ')
 
 const secondImportedBody = [
   'Small improvements become easier to notice when a reader returns to a familiar subject with fresh attention.',
@@ -71,6 +73,77 @@ test('empty library becomes a persistent reading session and resumes the selecte
     'My local focus article 阅读进度 99%',
   )
   await expect(page.locator('[data-article-id]')).toHaveCount(1)
+})
+
+test('continuous speech follows the reading sentence and stays paused after background recovery', async ({ page }) => {
+  await installReaderSpeechProbe(page)
+  await page.goto('/import')
+  await page.getByLabel('英文正文').fill(importedBody)
+  await page.getByRole('button', { name: '生成预览' }).click()
+  await page.getByLabel('标题').fill('Continuous local reading')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  const articleId = page.url().split('/').at(-1) ?? ''
+  const sentences = page.locator('[data-sentence-id]')
+  const firstSentence = sentences.nth(0)
+  const secondSentence = sentences.nth(1)
+  const secondSentenceId = await secondSentence.getAttribute('data-sentence-id')
+
+  await page.getByRole('button', { name: '朗读当前句' }).click()
+
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toBeVisible()
+  await expect(firstSentence).toHaveAttribute('aria-current', 'true')
+  await expect(firstSentence).toHaveAttribute('data-playing', 'true')
+  await expect.poll(() => readSpeechProbe(page, 'spokenTexts')).toEqual([
+    importedSentences[0],
+  ])
+
+  await page.evaluate(() => {
+    const probe = (window as unknown as {
+      __readerSpeechProbe: { finish: () => void }
+    }).__readerSpeechProbe
+    probe.finish()
+  })
+
+  await expect(secondSentence).toHaveAttribute('aria-current', 'true')
+  await expect(secondSentence).toHaveAttribute('data-playing', 'true')
+  await expect(firstSentence).not.toHaveAttribute('data-playing', 'true')
+  await expect.poll(() => readSpeechProbe(page, 'spokenTexts')).toHaveLength(2)
+  const cancelCountBeforeBackground = await readSpeechProbe(page, 'cancelCount')
+
+  await page.evaluate(() => {
+    const probe = (window as unknown as {
+      __readerSpeechProbe: { setVisibility: (state: 'visible' | 'hidden') => void }
+    }).__readerSpeechProbe
+    probe.setVisibility('hidden')
+  })
+
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+  await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
+  await expect.poll(() => readSpeechProbe(page, 'cancelCount'))
+    .toBeGreaterThan(cancelCountBeforeBackground)
+  await expect.poll(() => readActiveSentenceId(page, articleId)).toBe(secondSentenceId)
+
+  await page.evaluate(() => {
+    const probe = (window as unknown as {
+      __readerSpeechProbe: { setVisibility: (state: 'visible' | 'hidden') => void }
+    }).__readerSpeechProbe
+    probe.setVisibility('visible')
+  })
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+  await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
+
+  await page.evaluate(() => {
+    const sentence = document.querySelectorAll<HTMLElement>('[data-sentence-id]')[2]
+    sentence?.click()
+    window.location.reload()
+  })
+  await page.waitForLoadState('domcontentloaded')
+  await expect(sentences.nth(2)).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+  await expect.poll(() => readSpeechProbe(page, 'spokenTexts')).toEqual([])
 })
 
 test('same confirmed body opens the existing article instead of creating a duplicate', async ({ page }) => {
@@ -454,6 +527,88 @@ async function importAndReturnToLibrary(
   await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
   await page.getByRole('link', { name: '我的阅读' }).click()
   await expect(page).toHaveURL(/\/$/)
+}
+
+async function installReaderSpeechProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const spokenTexts: string[] = []
+    let cancelCount = 0
+    let visibilityState: DocumentVisibilityState = 'visible'
+
+    class TestSpeechSynthesisUtterance extends EventTarget {
+      lang = ''
+      rate = 1
+      text: string
+      voice: SpeechSynthesisVoice | null = null
+      onstart: (() => void) | null = null
+      onend: (() => void) | null = null
+      onerror: (() => void) | null = null
+
+      constructor(text = '') {
+        super()
+        this.text = text
+      }
+    }
+    let activeUtterance: TestSpeechSynthesisUtterance | null = null
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibilityState,
+    })
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: TestSpeechSynthesisUtterance,
+    })
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: {
+        cancel() {
+          cancelCount += 1
+          activeUtterance = null
+        },
+        getVoices: () => [],
+        pause() {},
+        resume() {},
+        speak(utterance: TestSpeechSynthesisUtterance) {
+          activeUtterance = utterance
+          spokenTexts.push(utterance.text)
+          utterance.onstart?.()
+        },
+      },
+    })
+    Object.defineProperty(window, '__readerSpeechProbe', {
+      configurable: true,
+      value: {
+        get cancelCount() {
+          return cancelCount
+        },
+        spokenTexts,
+        finish() {
+          const utterance = activeUtterance
+          activeUtterance = null
+          utterance?.onend?.()
+        },
+        setVisibility(state: DocumentVisibilityState) {
+          visibilityState = state
+          document.dispatchEvent(new Event('visibilitychange'))
+        },
+      },
+    })
+  })
+}
+
+function readSpeechProbe(page: Page, key: 'spokenTexts'): Promise<string[]>
+function readSpeechProbe(page: Page, key: 'cancelCount'): Promise<number>
+async function readSpeechProbe(
+  page: Page,
+  key: 'spokenTexts' | 'cancelCount',
+): Promise<string[] | number> {
+  return page.evaluate((probeKey) => {
+    const probe = (window as unknown as {
+      __readerSpeechProbe: { spokenTexts: string[], cancelCount: number }
+    }).__readerSpeechProbe
+    return probe[probeKey]
+  }, key)
 }
 
 async function readActiveSentenceId(page: Page, articleId: string): Promise<string | null> {

@@ -59,6 +59,9 @@ export class WebSpeechAdapter implements SpeechAdapter {
     if (!synthesis || !Utterance) {
       throw new PlatformCapabilityError('localSpeech')
     }
+    if (request.signal?.aborted) {
+      throw new Error('Local speech playback was cancelled before it started.')
+    }
 
     const utterance = new Utterance(request.text)
     utterance.lang = request.language
@@ -66,15 +69,29 @@ export class WebSpeechAdapter implements SpeechAdapter {
     if (request.voiceId) {
       utterance.voice = synthesis.getVoices().find(voice => voice.voiceURI === request.voiceId) ?? null
     }
+    const abortPlayback = (): void => synthesis.cancel()
+    const removeAbortListener = (): void => {
+      request.signal?.removeEventListener('abort', abortPlayback)
+    }
+    request.signal?.addEventListener('abort', abortPlayback, { once: true })
     utterance.onstart = () => request.onStart?.()
-    utterance.onend = () => request.onEnd?.()
-    utterance.onerror = event => request.onError?.(new Error(event.error || 'Local speech failed.'))
+    utterance.onend = () => {
+      removeAbortListener()
+      request.onEnd?.()
+    }
+    utterance.onerror = (event) => {
+      removeAbortListener()
+      request.onError?.(new Error(event.error || 'Local speech failed.'))
+    }
     synthesis.speak(utterance)
 
     return {
       pause: () => synthesis.pause(),
       resume: () => synthesis.resume(),
-      cancel: () => synthesis.cancel(),
+      cancel: () => {
+        removeAbortListener()
+        synthesis.cancel()
+      },
     }
   }
 
@@ -147,11 +164,17 @@ export class WebLifecycleAdapter implements AppLifecycleAdapter {
       state: 'suspended',
       reason: 'pagehide',
     })
+    const onPageShow = (): void => listener({
+      state: this.currentState(),
+      reason: 'pageshow',
+    })
     this.documentRef.addEventListener('visibilitychange', onVisibility)
     this.windowRef.addEventListener('pagehide', onPageHide)
+    this.windowRef.addEventListener('pageshow', onPageShow)
     return () => {
       this.documentRef.removeEventListener('visibilitychange', onVisibility)
       this.windowRef.removeEventListener('pagehide', onPageHide)
+      this.windowRef.removeEventListener('pageshow', onPageShow)
     }
   }
 }

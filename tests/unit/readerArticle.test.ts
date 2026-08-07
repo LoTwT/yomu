@@ -86,6 +86,7 @@ function mountArticle(article: ArticleRecord, initialSentenceId: string) {
       return () => h(ReaderArticle, {
         article,
         currentSentenceId: currentSentenceId.value,
+        playingSentenceId: null,
         onSelectSentence: (sentenceId: string) => {
           selectedSentenceIds.push(sentenceId)
           currentSentenceId.value = sentenceId

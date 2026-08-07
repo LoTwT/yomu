@@ -25,6 +25,12 @@ export interface OpenArticleResult {
   attempt: ReadingAttempt
 }
 
+export interface FlushReadingPositionResult {
+  attempt: ReadingAttempt
+  cursorApplied: boolean
+  journalSettled: boolean
+}
+
 export async function openOrCreateActiveAttempt(
   repositories: LocalRepositories,
   articleId: string,
@@ -54,6 +60,7 @@ export async function openOrCreateActiveAttempt(
           currentSentenceId,
           furthestSentenceOrdinal: 0,
           activeDurationSec: 0,
+          progressRevision: 0,
           status: 'active',
           startedAt: timestamp,
           lastOpenedAt: timestamp,
@@ -69,11 +76,17 @@ export async function flushReadingPosition(
   options: {
     articleId: string
     attemptId: string
+    baseAttemptRevision: number
+    cursorMutation: boolean
     currentSentenceId: string
+    furthestSentenceOrdinal: number
     activeDurationSec: number
+    journalOperationId?: string
+    journalEpochId?: string
+    journalGeneration?: number
     now?: () => Date
   },
-): Promise<ReadingAttempt> {
+): Promise<FlushReadingPositionResult> {
   const now = options.now ?? (() => new Date())
 
   return repositories.transaction(['articles', 'attempts'], 'readwrite', async (scope) => {
@@ -92,22 +105,86 @@ export async function flushReadingPosition(
 
     const currentSentenceId = resolveCurrentSentenceId(article, options.currentSentenceId)
     const currentOrdinal = resolveSentenceOrdinal(article, currentSentenceId)
+    const requestedFurthestSentenceOrdinal = Number.isSafeInteger(
+      options.furthestSentenceOrdinal,
+    )
+      ? Math.max(0, options.furthestSentenceOrdinal, currentOrdinal)
+      : currentOrdinal
     const activeDurationSec = Number.isFinite(options.activeDurationSec)
       ? Math.max(0, Math.floor(options.activeDurationSec))
       : 0
+    const latestRevision = latestAttempt.progressRevision ?? 0
+    const hasJournalGeneration = typeof options.journalEpochId === 'string'
+      && Number.isSafeInteger(options.journalGeneration)
+      && (options.journalGeneration ?? -1) >= 0
+    const sameJournalEpoch = hasJournalGeneration
+      && latestAttempt.progressJournalEpochId === options.journalEpochId
+    const journalIsNewer = hasJournalGeneration && (
+      (sameJournalEpoch
+        && (options.journalGeneration ?? 0)
+          > (latestAttempt.progressJournalGeneration ?? -1))
+      || (!sameJournalEpoch && options.baseAttemptRevision === latestRevision)
+    )
+    const journalAlreadyCovered = hasJournalGeneration
+      && sameJournalEpoch
+      && (latestAttempt.progressJournalGeneration ?? -1)
+        >= (options.journalGeneration ?? 0)
+    const journalRejectedAsStale = hasJournalGeneration
+      && !sameJournalEpoch
+      && options.baseAttemptRevision !== latestRevision
+    const cursorApplied = options.cursorMutation && (
+      journalIsNewer
+      || (!hasJournalGeneration && options.baseAttemptRevision === latestRevision)
+    )
+    const cursorChanged = cursorApplied
+      && currentSentenceId !== latestAttempt.currentSentenceId
+    const furthestSentenceOrdinal = Math.max(
+      latestAttempt.furthestSentenceOrdinal,
+      requestedFurthestSentenceOrdinal,
+    )
+    const mergedActiveDurationSec = Math.max(
+      latestAttempt.activeDurationSec,
+      activeDurationSec,
+    )
+    const metricsChanged = furthestSentenceOrdinal !== latestAttempt.furthestSentenceOrdinal
+      || mergedActiveDurationSec !== latestAttempt.activeDurationSec
+    if (!cursorApplied && !journalIsNewer && !metricsChanged) {
+      return {
+        attempt: latestAttempt,
+        cursorApplied: false,
+        journalSettled: journalAlreadyCovered || journalRejectedAsStale,
+      }
+    }
+    const timestamp = now().toISOString()
     const nextAttempt: ReadingAttempt = {
       ...latestAttempt,
-      currentSentenceId,
-      furthestSentenceOrdinal: Math.max(
-        latestAttempt.furthestSentenceOrdinal,
-        currentOrdinal,
-      ),
-      activeDurationSec: Math.max(latestAttempt.activeDurationSec, activeDurationSec),
-      lastOpenedAt: now().toISOString(),
+      currentSentenceId: cursorApplied
+        ? currentSentenceId
+        : latestAttempt.currentSentenceId,
+      furthestSentenceOrdinal,
+      activeDurationSec: mergedActiveDurationSec,
+      progressRevision: latestRevision + (cursorChanged ? 1 : 0),
+      ...(options.journalOperationId && (cursorApplied || journalIsNewer)
+        ? { progressJournalId: options.journalOperationId }
+        : {}),
+      ...(journalIsNewer
+        ? {
+            progressJournalEpochId: options.journalEpochId,
+            progressJournalGeneration: options.journalGeneration,
+          }
+        : {}),
+      lastOpenedAt: timestamp,
     }
 
     await scope.attempts.put(nextAttempt)
-    return nextAttempt
+    return {
+      attempt: nextAttempt,
+      cursorApplied,
+      journalSettled: journalIsNewer
+        || journalAlreadyCovered
+        || journalRejectedAsStale
+        || (!hasJournalGeneration && cursorApplied),
+    }
   })
 }
 

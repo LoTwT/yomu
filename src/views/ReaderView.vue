@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { PhArrowLeft } from '@phosphor-icons/vue'
-import { computed } from 'vue'
-import { onBeforeRouteLeave, RouterLink } from 'vue-router'
+import { computed, onUnmounted } from 'vue'
+import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router'
 
 import ReaderArticle from '@/components/reader/ReaderArticle.vue'
 import ReaderPlaybackControls from '@/components/reader/ReaderPlaybackControls.vue'
@@ -13,6 +13,12 @@ const props = defineProps<{
   articleId: string
 }>()
 
+const router = useRouter()
+const pendingRouteTransitions: Array<{
+  token: number
+  from: string
+  to: string
+}> = []
 const currentArticleId = computed(() => props.articleId)
 const {
   status,
@@ -21,6 +27,7 @@ const {
   currentSentenceId,
   currentSentenceIndex,
   progress,
+  playingSentenceId,
   isPlaying,
   errorMessage,
   speechAvailable,
@@ -29,18 +36,67 @@ const {
   previousSentence,
   nextSentence,
   togglePlayback,
-  suspend,
+  beginRouteTransition,
+  resumeAfterFailedRouteTransition,
 } = useReadingSession(currentArticleId)
 
-onBeforeRouteLeave(async (to) => {
+function takePendingRouteTransition(to: string, from: string) {
+  const transitionIndex = pendingRouteTransitions.findIndex(transition =>
+    transition.from === from && transition.to === to)
+  if (transitionIndex < 0) {
+    return undefined
+  }
+  return pendingRouteTransitions.splice(transitionIndex, 1)[0]
+}
+
+function settleFailedRouteTransition(to: string, from: string): void {
+  const transition = takePendingRouteTransition(to, from)
+  if (transition && pendingRouteTransitions.length === 0) {
+    resumeAfterFailedRouteTransition(transition.token)
+  }
+}
+
+const removeAfterEach = router.afterEach((to, from, failure) => {
+  const transition = takePendingRouteTransition(to.fullPath, from.fullPath)
+  if (!transition) {
+    return
+  }
+  if (failure) {
+    if (pendingRouteTransitions.length === 0) {
+      resumeAfterFailedRouteTransition(transition.token)
+    }
+    return
+  }
   if (to.name === 'library') {
     requestLibraryArticleFocus(props.articleId)
   }
-  await suspend()
+})
+
+const removeNavigationError = router.onError((_error, to, from) => {
+  settleFailedRouteTransition(to.fullPath, from.fullPath)
+})
+
+onUnmounted(() => {
+  removeAfterEach()
+  removeNavigationError()
+})
+
+onBeforeRouteLeave(async (to, from) => {
+  const transition = beginRouteTransition()
+  pendingRouteTransitions.push({
+    token: transition.token,
+    from: from.fullPath,
+    to: to.fullPath,
+  })
+  await transition.ready
   return true
 })
 
 usePageHeadingFocus()
+
+function handleTogglePlayback(): void {
+  void togglePlayback()
+}
 </script>
 
 <template>
@@ -89,6 +145,7 @@ usePageHeadingFocus()
         <ReaderArticle
           :article="article"
           :current-sentence-id="currentSentenceId"
+          :playing-sentence-id="playingSentenceId"
           @select-sentence="selectSentence"
         />
       </template>
@@ -101,7 +158,7 @@ usePageHeadingFocus()
         :is-playing="isPlaying"
         :speech-available="speechAvailable"
         @previous="previousSentence"
-        @toggle-playback="togglePlayback"
+        @toggle-playback="handleTogglePlayback"
         @next="nextSentence"
       />
     </footer>
