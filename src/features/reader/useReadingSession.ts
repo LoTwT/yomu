@@ -772,21 +772,18 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         const cursorMutation = recoverableJournal.schemaVersion === 1
           || recoverableJournal.cursorMutation
         if (recoverableJournal.schemaVersion === 2) {
-          try {
-            const adopted = await runJournalStorageOperation(() =>
-              adoptReadingProgressJournal(services.preferences, recoverableJournal, {
-                writerId: journalWriterId,
-                sequence: journalWriteSequence + 1,
-              }))
-            journalWriteSequence = Math.max(
-              journalWriteSequence,
-              adopted.journal.sequence,
-            )
-            if (adopted.sourcesSettled) {
-              scheduleProgressJournalCompaction(currentArticle.id)
-            }
+          const adopted = await runJournalStorageOperation(() =>
+            adoptReadingProgressJournal(services.preferences, recoverableJournal, {
+              writerId: journalWriterId,
+              sequence: journalWriteSequence + 1,
+            }))
+          journalWriteSequence = Math.max(
+            journalWriteSequence,
+            adopted.journal.sequence,
+          )
+          if (adopted.sourcesSettled) {
+            scheduleProgressJournalCompaction(currentArticle.id)
           }
-          catch {}
         }
         return {
           attempt: {

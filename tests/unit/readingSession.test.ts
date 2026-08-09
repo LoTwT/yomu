@@ -8,7 +8,9 @@ import type { LocalRepositories } from '@/data/repositories'
 import { flushReadingPosition } from '@/features/reader/attemptCommands'
 import {
   clearReadingProgressJournal,
+  createReadingProgressJournal,
   readReadingProgressJournal,
+  storeReadingProgressJournal,
   writeReadingProgressJournal,
 } from '@/features/reader/progressJournal'
 import { useReadingSession } from '@/features/reader/useReadingSession'
@@ -971,6 +973,82 @@ describe('useReadingSession', () => {
     expect(session.attempt.value).toBeNull()
     expect(session.currentSentenceId.value).toBe('')
     expect(session.errorMessage.value).toContain('暂时无法打开')
+  })
+
+  it('blocks interaction when a recovered causal frontier cannot be adopted', async () => {
+    const article = createArticle('article-a')
+    const attempt = createAttempt(article)
+    const preferences = new MemoryPreferencesStore()
+    const repositories = createMemoryLocalRepositories({
+      articles: [article],
+      attempts: [attempt],
+    })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: article.id,
+        attemptId: attempt.id,
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s2',
+        furthestSentenceOrdinal: 1,
+        activeDurationSec: 4,
+      }, { writerId: 'writer-a', sequence: 1 }),
+      writerGapLineages: Array.from({ length: 1_024 }, (_, index) => ({
+        writerId: `gap-writer-${index + 1}`,
+        sequence: 1,
+      })),
+    })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: article.id,
+        attemptId: attempt.id,
+        baseAttemptRevision: 0,
+        cursorMutation: false,
+        currentSentenceId: 'article-a:s1',
+        furthestSentenceOrdinal: 0,
+        activeDurationSec: 2,
+      }, { writerId: 'writer-b', sequence: 1 }),
+      writerGapLineages: [{ writerId: 'gap-writer-extra', sequence: 1 }],
+    })
+
+    let rejectReplay = true
+    let transactionCount = 0
+    const originalTransaction = repositories.transaction.bind(repositories)
+    repositories.transaction = async (stores, mode, operation) => {
+      transactionCount += 1
+      if (rejectReplay && transactionCount > 1) {
+        throw new Error('IndexedDB is temporarily unavailable.')
+      }
+      return originalTransaction(stores, mode, operation)
+    }
+
+    const { session } = mountReadingSession({
+      articles: [article],
+      attempts: [attempt],
+      repositories,
+      preferences,
+    })
+    await vi.waitFor(() => expect(session.status.value).toBe('error'))
+
+    expect(session.article.value).toBeNull()
+    expect(session.attempt.value).toBeNull()
+    expect(session.currentSentenceId.value).toBe('')
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal:v4:article-a:',
+    )).toHaveLength(2)
+    expect(await preferences.listByPrefix(
+      'reader-progress-journal-tombstone:v3:article-a:',
+    )).toHaveLength(0)
+
+    rejectReplay = false
+    await session.load()
+    await expectReady(session)
+    expect(session.currentSentenceId.value).toBe('article-a:s2')
+    expect(await repositories.attempts.getActiveByArticle(article.id)).toMatchObject({
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    })
   })
 
   it('blocks interaction with an unverified future-revision journal until storage recovers', async () => {
