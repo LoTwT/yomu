@@ -5,7 +5,11 @@ const journalSlotSchemaVersion = 3 as const
 const journalOperationSlotSchemaVersion = 4 as const
 const aggregateSlotSchemaVersion = 2 as const
 const legacyJournalSchemaVersion = 1 as const
-const maxSupersededSources = 1_024
+const maxStoredSupersededSources = 1_024
+const maxStoredWriterGapLineages = 1_024
+const maxRuntimeCausalClosureLineages = maxStoredSupersededSources
+  + maxStoredWriterGapLineages
+const maxExpandedJournalSources = maxStoredSupersededSources + 1
 const maxCompactedWriterSlotsPerRun = 16
 const supersededWriterPruneDeadlineMs = 25
 const journalKeyPrefix = 'reader-progress-journal:v3:'
@@ -121,6 +125,18 @@ interface AggregateReadingProgressJournalSlot {
 interface ReadingProgressJournalSettlementOverrides {
   sources: readonly ReadingProgressJournalSource[]
   causalClosureLineages: readonly ReadingProgressJournalWriterGapLineage[]
+}
+
+interface WriterGapCausalReadIndex {
+  operationJournalsByWriter: ReadonlyMap<
+    string,
+    readonly StoredReadingProgressJournal[]
+  >
+  legacyJournalsByWriter: ReadonlyMap<
+    string,
+    readonly StoredReadingProgressJournal[]
+  >
+  tombstonesByWriter: ReadonlyMap<string, WriterReadingProgressJournalTombstone>
 }
 
 export interface ReadingProgressJournalMetadata {
@@ -324,7 +340,7 @@ export async function adoptReadingProgressJournal(
     ...(recovered.supersedes ?? []),
     ...recoveredSources,
   ])
-  if (supersedes.length > maxSupersededSources) {
+  if (supersedes.length > maxStoredSupersededSources) {
     throw new Error('Reading progress journal supersession history is too large.')
   }
   const sequence = nextSequenceAfter(Math.max(
@@ -426,13 +442,20 @@ export async function readReadingProgressJournal(
     }
   }
 
-  const writerJournals = await readWriterJournals(preferences, articleId, attemptId)
+  const {
+    journals: writerJournals,
+    causalIndex,
+  } = await readWriterJournals(preferences, articleId, attemptId)
   if (migratedAggregate) {
     writerJournals.push(migratedAggregate)
   }
 
   const journals = await Promise.all(deduplicateJournals(writerJournals)
-    .map(journal => expandWriterGapCausalHistory(preferences, journal)))
+    .map(journal => expandWriterGapCausalHistory(
+      preferences,
+      journal,
+      causalIndex,
+    )))
   if (journals.length > 0) {
     return mergeWriterJournals(journals)
   }
@@ -817,21 +840,23 @@ async function readWriterJournals(
   preferences: PreferencesStore,
   articleId: string,
   attemptId: string,
-): Promise<CurrentReadingProgressJournal[]> {
+): Promise<{
+  journals: CurrentReadingProgressJournal[]
+  causalIndex: WriterGapCausalReadIndex
+}> {
   const [legacyEntries, operationEntries, tombstoneEntries] = await Promise.all([
     preferences.listByPrefix<unknown>(journalPrefix(articleId)),
     preferences.listByPrefix<unknown>(journalOperationPrefix(articleId)),
     preferences.listByPrefix<unknown>(writerTombstonePrefix(articleId)),
   ])
-  const tombstones = new Map<string, WriterReadingProgressJournalTombstone>()
-  for (const { key, value } of tombstoneEntries) {
-    if (isWriterJournalTombstone(value)
-      && value.articleId === articleId
-      && value.attemptId === attemptId
-      && key === writerTombstoneKey(articleId, value.writerId)) {
-      tombstones.set(value.writerId, value)
-    }
-  }
+  const causalIndex = createWriterGapCausalReadIndex(
+    articleId,
+    attemptId,
+    legacyEntries,
+    operationEntries,
+    tombstoneEntries,
+  )
+  const tombstones = causalIndex.tombstonesByWriter
   const legacyJournals = legacyEntries.flatMap(({ key, value }) => {
     if (!isWriterJournalSlot(value)
       || value.articleId !== articleId
@@ -861,12 +886,75 @@ async function readWriterJournals(
       removeSettledWriterCausalHistory(value.journal, tombstones),
     )]
   })
-  return [...legacyJournals, ...operationJournals]
+  return {
+    journals: [...legacyJournals, ...operationJournals],
+    causalIndex,
+  }
+}
+
+function createWriterGapCausalReadIndex(
+  articleId: string,
+  attemptId: string,
+  legacyEntries: readonly { key: string, value: unknown }[],
+  operationEntries: readonly { key: string, value: unknown }[],
+  tombstoneEntries: readonly { key: string, value: unknown }[],
+): WriterGapCausalReadIndex {
+  const operationJournalsByWriter = new Map<
+    string,
+    StoredReadingProgressJournal[]
+  >()
+  for (const { key, value } of operationEntries) {
+    if (!isWriterJournalOperationSlot(value)
+      || value.articleId !== articleId
+      || value.attemptId !== attemptId
+      || key !== journalOperationKey(articleId, value.writerId, value.sequence)) {
+      continue
+    }
+    const journals = operationJournalsByWriter.get(value.writerId) ?? []
+    journals.push(value.journal)
+    operationJournalsByWriter.set(value.writerId, journals)
+  }
+
+  const legacyJournalsByWriter = new Map<
+    string,
+    StoredReadingProgressJournal[]
+  >()
+  for (const { key, value } of legacyEntries) {
+    if (!isWriterJournalSlot(value)
+      || value.articleId !== articleId
+      || value.attemptId !== attemptId
+      || key !== journalKey(articleId, value.writerId)
+      || !value.journal) {
+      continue
+    }
+    const journals = legacyJournalsByWriter.get(value.writerId) ?? []
+    journals.push(value.journal)
+    legacyJournalsByWriter.set(value.writerId, journals)
+  }
+
+  const tombstonesByWriter = new Map<
+    string,
+    WriterReadingProgressJournalTombstone
+  >()
+  for (const { key, value } of tombstoneEntries) {
+    if (isWriterJournalTombstone(value)
+      && value.articleId === articleId
+      && value.attemptId === attemptId
+      && key === writerTombstoneKey(articleId, value.writerId)) {
+      tombstonesByWriter.set(value.writerId, value)
+    }
+  }
+  return {
+    operationJournalsByWriter,
+    legacyJournalsByWriter,
+    tombstonesByWriter,
+  }
 }
 
 async function expandWriterGapCausalHistory(
   preferences: PreferencesStore,
   journal: CurrentReadingProgressJournal,
+  causalIndex: WriterGapCausalReadIndex,
 ): Promise<CurrentReadingProgressJournal> {
   const gapLineages = journalCausalClosureLineages(journal)
   if (gapLineages.length === 0) {
@@ -876,6 +964,7 @@ async function expandWriterGapCausalHistory(
     preferences,
     journal,
     gapLineages,
+    causalIndex,
   )
   const supersedes = deduplicateSources([
     ...(journal.supersedes ?? []),
@@ -885,8 +974,8 @@ async function expandWriterGapCausalHistory(
     ...(journal.sources ?? fallbackSources(journal)),
     ...hiddenSources.sources,
   ])
-  if (supersedes.length > maxSupersededSources
-    || sources.length > maxSupersededSources) {
+  if (supersedes.length > maxStoredSupersededSources
+    || sources.length > maxExpandedJournalSources) {
     throw new Error('Reading progress journal gap closure is too large.')
   }
   return {
@@ -961,10 +1050,11 @@ function mergeWriterJournals(
   const selected = selectJournalCandidate(journals)
   const sources = deduplicateSources(journals.flatMap(journal => journal.sources ?? []))
   const writerGapLineages = deduplicateWriterGapLineages(
-    journals.flatMap(journal => journalWriterGapLineages(journal)),
+    writerGapLineagesForJournals(journals),
+    maxRuntimeCausalClosureLineages,
   )
   const selectedCausalClosureLineages = journalCausalClosureLineages(selected)
-  return {
+  const merged: CurrentReadingProgressJournal = {
     schemaVersion: journalSchemaVersion,
     epochId: selected.epochId,
     generation: selected.generation,
@@ -988,6 +1078,9 @@ function mergeWriterJournals(
     ...(selected.supersedes?.length ? { supersedes: selected.supersedes } : {}),
     sources,
   }
+  // Synthetic gaps and the selected supersession history share one runtime budget.
+  journalCausalClosureLineages(merged)
+  return merged
 }
 
 function selectJournalCandidate(
@@ -1036,28 +1129,30 @@ function journalSupersedes(
 
 function journalWriterGapLineages(
   journal: ReadingProgressJournalDraft,
+  maximum = maxStoredWriterGapLineages,
 ): ReadingProgressJournalWriterGapLineage[] {
   return deduplicateWriterGapLineages([
     ...(journal.writerGapLineages ?? []),
     ...(journal.writerSequenceHasGap
       ? [{ writerId: journal.writerId, sequence: journal.sequence }]
       : []),
-  ])
+  ], maximum)
 }
 
 function journalCausalClosureLineages(
   journal: ReadingProgressJournalDraft,
 ): ReadingProgressJournalWriterGapLineage[] {
   return deduplicateWriterGapLineages([
-    ...journalWriterGapLineages(journal),
+    ...journalWriterGapLineages(journal, maxRuntimeCausalClosureLineages),
     ...(journal.supersedes ?? []).flatMap(source => isWriterJournalSource(source)
       ? [{ writerId: source.writerId, sequence: source.sequence }]
       : []),
-  ])
+  ], maxRuntimeCausalClosureLineages)
 }
 
 function deduplicateWriterGapLineages(
-  lineages: readonly ReadingProgressJournalWriterGapLineage[],
+  lineages: Iterable<ReadingProgressJournalWriterGapLineage>,
+  maximum = maxStoredWriterGapLineages,
 ): ReadingProgressJournalWriterGapLineage[] {
   const byWriter = new Map<string, number>()
   for (const lineage of lineages) {
@@ -1065,9 +1160,9 @@ function deduplicateWriterGapLineages(
       byWriter.get(lineage.writerId) ?? 0,
       lineage.sequence,
     ))
-  }
-  if (byWriter.size > maxSupersededSources) {
-    throw new Error('Reading progress journal gap lineage history is too large.')
+    if (byWriter.size > maximum) {
+      throw new Error('Reading progress journal gap lineage history is too large.')
+    }
   }
   return [...byWriter]
     .map(([writerId, sequence]) => ({ writerId, sequence }))
@@ -1075,13 +1170,25 @@ function deduplicateWriterGapLineages(
 }
 
 function deduplicateSources(
-  sources: readonly ReadingProgressJournalSource[],
+  sources: Iterable<ReadingProgressJournalSource>,
+  maximum?: number,
 ): ReadingProgressJournalSource[] {
   const unique = new Map<string, ReadingProgressJournalSource>()
   for (const source of sources) {
-    unique.set(sourceIdentity(source), source)
+    addDeduplicatedSource(unique, source, maximum)
   }
   return [...unique.values()].sort((left, right) => left.key.localeCompare(right.key))
+}
+
+function addDeduplicatedSource(
+  unique: Map<string, ReadingProgressJournalSource>,
+  source: ReadingProgressJournalSource,
+  maximum?: number,
+): void {
+  unique.set(sourceIdentity(source), source)
+  if (maximum !== undefined && unique.size > maximum) {
+    throw new Error('Reading progress journal gap closure is too large.')
+  }
 }
 
 function sourceIdentity(source: ReadingProgressJournalSource): string {
@@ -1096,7 +1203,6 @@ function sourceIdentity(source: ReadingProgressJournalSource): string {
     source.sequence,
   ])
 }
-
 
 async function clearJournalSources(
   preferences: PreferencesStore,
@@ -1120,7 +1226,7 @@ async function settleJournalSources(
     ? await readWriterGapCausalClosure(preferences, expected, gapLineages)
     : { sources: [], lineages: [] }
   const sources = deduplicateSources([...directSources, ...gapClosure.sources])
-  if (sources.length > maxSupersededSources) {
+  if (sources.length > maxExpandedJournalSources) {
     throw new Error('Reading progress journal gap closure is too large.')
   }
   const carrier = sources.find(source =>
@@ -1181,30 +1287,48 @@ async function readWriterGapCausalClosure(
   preferences: PreferencesStore,
   expected: CurrentReadingProgressJournal,
   initialLineages: readonly ReadingProgressJournalWriterGapLineage[],
+  existingIndex?: WriterGapCausalReadIndex,
 ): Promise<{
   sources: ReadingProgressJournalSource[]
   lineages: ReadingProgressJournalWriterGapLineage[]
 }> {
-  const requestedHighWater = new Map(initialLineages.map(lineage => [
+  const normalizedLineages = deduplicateWriterGapLineages(
+    initialLineages,
+    maxRuntimeCausalClosureLineages,
+  )
+  const requestedHighWater = new Map(normalizedLineages.map(lineage => [
     lineage.writerId,
     lineage.sequence,
   ] as const))
   const scannedHighWater = new Map<string, number>()
-  const pending = [...initialLineages]
-  const sources: ReadingProgressJournalSource[] = []
+  const pending = [...normalizedLineages]
+  const sources = new Map<string, ReadingProgressJournalSource>()
+  const tombstones = new Map<
+    string,
+    WriterReadingProgressJournalTombstone | null
+  >()
   for (let index = 0; index < pending.length; index += 1) {
     const writerId = pending[index]!.writerId
     const sequence = requestedHighWater.get(writerId) ?? 0
     if ((scannedHighWater.get(writerId) ?? 0) >= sequence) {
       continue
     }
-    const result = await readWriterGapCausalLayer(
-      preferences,
-      expected,
-      { writerId, sequence },
-    )
+    const result = existingIndex
+      ? readWriterGapCausalLayerFromIndex(
+          existingIndex,
+          expected,
+          { writerId, sequence },
+        )
+      : await readWriterGapCausalLayerFromStore(
+          preferences,
+          expected,
+          { writerId, sequence },
+          tombstones,
+        )
     scannedHighWater.set(writerId, sequence)
-    sources.push(...result.sources)
+    for (const source of result.sources) {
+      addDeduplicatedSource(sources, source, maxExpandedJournalSources)
+    }
     for (const lineage of result.lineages) {
       const current = requestedHighWater.get(lineage.writerId) ?? 0
       if (lineage.sequence <= current) {
@@ -1212,22 +1336,54 @@ async function readWriterGapCausalClosure(
       }
       requestedHighWater.set(lineage.writerId, lineage.sequence)
       pending.push(lineage)
-      if (requestedHighWater.size > maxSupersededSources) {
+      if (requestedHighWater.size > maxRuntimeCausalClosureLineages) {
         throw new Error('Reading progress journal gap closure is too large.')
       }
     }
   }
   return {
-    sources,
+    sources: [...sources.values()]
+      .sort((left, right) => left.key.localeCompare(right.key)),
     lineages: [...requestedHighWater]
       .map(([writerId, sequence]) => ({ writerId, sequence })),
   }
 }
 
-async function readWriterGapCausalLayer(
+function readWriterGapCausalLayerFromIndex(
+  causalIndex: WriterGapCausalReadIndex,
+  expected: CurrentReadingProgressJournal,
+  lineage: ReadingProgressJournalWriterGapLineage,
+): {
+  sources: ReadingProgressJournalSource[]
+  lineages: ReadingProgressJournalWriterGapLineage[]
+} {
+  const journals = [
+    ...(causalIndex.operationJournalsByWriter.get(lineage.writerId) ?? []),
+    ...(causalIndex.legacyJournalsByWriter.get(lineage.writerId) ?? []),
+  ].filter(journal => journal.sequence <= lineage.sequence)
+  const lineages = deduplicateWriterGapLineages(
+    causalClosureLineagesForJournals(journals),
+    maxRuntimeCausalClosureLineages,
+  )
+  return {
+    sources: deduplicateSources(
+      supersededSourcesForJournals(journals),
+      maxExpandedJournalSources,
+    ),
+    lineages: lineages.filter(lineage => !writerCausalClosureIsSettled(
+      causalIndex.tombstonesByWriter,
+      expected.articleId,
+      expected.attemptId,
+      lineage,
+    )),
+  }
+}
+
+async function readWriterGapCausalLayerFromStore(
   preferences: PreferencesStore,
   expected: CurrentReadingProgressJournal,
   lineage: ReadingProgressJournalWriterGapLineage,
+  tombstoneCache: Map<string, WriterReadingProgressJournalTombstone | null>,
 ): Promise<{
   sources: ReadingProgressJournalSource[]
   lineages: ReadingProgressJournalWriterGapLineage[]
@@ -1262,29 +1418,65 @@ async function readWriterGapCausalLayer(
     journals.push(legacyValue.journal)
   }
   const lineages = deduplicateWriterGapLineages(
-    journals.flatMap(journal => journalCausalClosureLineages(journal)),
+    causalClosureLineagesForJournals(journals),
+    maxRuntimeCausalClosureLineages,
   )
-  const tombstones = new Map<string, WriterReadingProgressJournalTombstone>()
-  await Promise.all(lineages.map(async (nestedLineage) => {
+  const missingWriterIds = [...new Set(lineages.map(lineage => lineage.writerId))]
+    .filter(writerId => !tombstoneCache.has(writerId))
+  await Promise.all(missingWriterIds.map(async (writerId) => {
     const value = await preferences.get<unknown>(writerTombstoneKey(
       expected.articleId,
-      nestedLineage.writerId,
+      writerId,
     ))
-    if (isWriterJournalTombstone(value)
+    tombstoneCache.set(writerId, isWriterJournalTombstone(value)
       && value.articleId === expected.articleId
       && value.attemptId === expected.attemptId
-      && value.writerId === nestedLineage.writerId) {
-      tombstones.set(nestedLineage.writerId, value)
-    }
+      && value.writerId === writerId
+      ? value
+      : null)
   }))
+  const tombstones = new Map<string, WriterReadingProgressJournalTombstone>()
+  for (const nestedLineage of lineages) {
+    const tombstone = tombstoneCache.get(nestedLineage.writerId)
+    if (tombstone) {
+      tombstones.set(nestedLineage.writerId, tombstone)
+    }
+  }
   return {
-    sources: journals.flatMap(journal => journal.supersedes ?? []),
+    sources: deduplicateSources(
+      supersededSourcesForJournals(journals),
+      maxExpandedJournalSources,
+    ),
     lineages: lineages.filter(lineage => !writerCausalClosureIsSettled(
       tombstones,
       expected.articleId,
       expected.attemptId,
       lineage,
     )),
+  }
+}
+
+function* causalClosureLineagesForJournals(
+  journals: Iterable<ReadingProgressJournalDraft>,
+): Generator<ReadingProgressJournalWriterGapLineage> {
+  for (const journal of journals) {
+    yield* journalCausalClosureLineages(journal)
+  }
+}
+
+function* writerGapLineagesForJournals(
+  journals: Iterable<ReadingProgressJournalDraft>,
+): Generator<ReadingProgressJournalWriterGapLineage> {
+  for (const journal of journals) {
+    yield* journalWriterGapLineages(journal)
+  }
+}
+
+function* supersededSourcesForJournals(
+  journals: Iterable<ReadingProgressJournalDraft>,
+): Generator<ReadingProgressJournalSource> {
+  for (const journal of journals) {
+    yield* journal.supersedes ?? []
   }
 }
 
@@ -1516,7 +1708,7 @@ function prepareWriterJournalOperation(
     .filter(source => !isWriterJournalSource(source)
       || source.writerId !== journal.writerId
       || source.sequence > writerSequenceHighWater)
-  if (supersedes.length > maxSupersededSources) {
+  if (supersedes.length > maxStoredSupersededSources) {
     throw new Error('Reading progress journal supersession history is too large.')
   }
   const {
@@ -2123,8 +2315,11 @@ function isStoredReadingProgressJournal(
     ))
     && (value.writerSequenceHasGap === undefined
       || value.writerSequenceHasGap === true)
-    && (value.writerGapLineages === undefined
-      || isWriterGapLineages(value.writerGapLineages))
+    && isStoredWriterGapHistory(
+      value.writerGapLineages,
+      value.writerId,
+      value.writerSequenceHasGap,
+    )
     && (value.supersedes === undefined || (
       isJournalSources(value.supersedes)
       && value.supersedes.every(source =>
@@ -2137,17 +2332,39 @@ function isWriterGapLineages(
   value: unknown,
 ): value is readonly ReadingProgressJournalWriterGapLineage[] {
   return Array.isArray(value)
-    && value.length <= maxSupersededSources
+    && value.length <= maxStoredWriterGapLineages
     && value.every(lineage => isRecord(lineage)
       && isBoundedId(lineage.writerId)
       && isPositiveSafeInteger(lineage.sequence))
+}
+
+function isStoredWriterGapHistory(
+  value: unknown,
+  writerId: unknown,
+  writerSequenceHasGap: unknown,
+): boolean {
+  const lineages = value === undefined
+    ? []
+    : isWriterGapLineages(value) ? value : null
+  if (!lineages) {
+    return false
+  }
+  if (writerSequenceHasGap !== true) {
+    return true
+  }
+  if (!isBoundedId(writerId)) {
+    return false
+  }
+  const writers = new Set(lineages.map(lineage => lineage.writerId))
+  writers.add(writerId)
+  return writers.size <= maxStoredWriterGapLineages
 }
 
 function isJournalSources(
   value: unknown,
 ): value is readonly ReadingProgressJournalSource[] {
   return Array.isArray(value)
-    && value.length <= maxSupersededSources
+    && value.length <= maxStoredSupersededSources
     && value.every(source => isRecord(source)
       && (source.slotVersion === aggregateSlotSchemaVersion
         || source.slotVersion === journalSlotSchemaVersion
