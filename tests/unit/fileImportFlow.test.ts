@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { createApp, nextTick } from 'vue'
-import { createMemoryHistory } from 'vue-router'
+import { createMemoryHistory, type RouterHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '@/App.vue'
@@ -9,6 +9,7 @@ import { platformServicesKey } from '@/app/platformServices'
 import { createYomuRouter } from '@/app/router'
 import { themeControllerKey } from '@/app/themePreference'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
+import type { LocalRepositories } from '@/data/repositories'
 import {
   createFakePlatformServices,
   type FakePlatformOptions,
@@ -99,6 +100,1025 @@ describe('file import flow', () => {
     clickButton(host, '继续编辑')
     await navigation
     expect(router.currentRoute.value.path).toBe('/import')
+  })
+
+  it('closes the confirmation before handling Escape or native back and restores focus', async () => {
+    const { host, harness, router } = await mountImport({ kind: 'mobile' })
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const settingsLink = host.querySelector<HTMLAnchorElement>('a[href="/settings"]')
+    expect(settingsLink).not.toBeNull()
+    settingsLink?.focus()
+
+    const escapeNavigation = router.push('/settings')
+    await settleView()
+    expect(document.activeElement?.textContent).toContain('继续编辑')
+
+    const handledEscape = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.activeElement?.addEventListener('keydown', event => event.preventDefault(), {
+      once: true,
+    })
+    document.activeElement?.dispatchEvent(handledEscape)
+    await settleView()
+    expect(handledEscape.defaultPrevented).toBe(true)
+    expect(host.querySelector('dialog[open]')).not.toBeNull()
+
+    const escapeEvent = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.activeElement?.dispatchEvent(escapeEvent)
+    await escapeNavigation
+    await settleView()
+
+    expect(escapeEvent.defaultPrevented).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/import')
+    expect(host.querySelector('dialog[open]')).toBeNull()
+    expect(document.activeElement).toBe(settingsLink)
+
+    const nativeBackNavigation = router.push('/settings')
+    await settleView()
+    expect(host.querySelector('dialog[open]')).not.toBeNull()
+
+    harness.backNavigation.emit('android')
+    await nativeBackNavigation
+    await settleView()
+
+    expect(router.currentRoute.value.path).toBe('/import')
+    expect(host.querySelector('dialog[open]')).toBeNull()
+    expect(document.activeElement).toBe(settingsLink)
+  })
+
+  it('leaves focus management to the destination after discarding a draft', async () => {
+    const { host, router } = await mountImport()
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const settingsLink = host.querySelector<HTMLAnchorElement>('a[href="/settings"]')
+    settingsLink?.focus()
+    const navigation = router.push('/settings')
+    await settleView()
+
+    clickButton(host, '放弃并离开')
+    await navigation
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/settings')
+    })
+    await settleView()
+
+    expect(document.activeElement).toBe(host.querySelector('h1'))
+  })
+
+  it('keeps a saved article recoverable when its automatic navigation closes a dialog', async () => {
+    const gatedRepositories = createGatedPersistentRepositories()
+    const { host, router } = await mountImport({
+      repositories: gatedRepositories.repositories,
+    })
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    clickButton(host, '生成预览')
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="import-preview"]')).not.toBeNull()
+    })
+
+    clickButton(host, '保存并开始阅读')
+    await gatedRepositories.started
+    expect(findButton(host, '正在保存…').disabled).toBe(true)
+
+    const settingsNavigation = router.push('/settings')
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    gatedRepositories.release()
+    await settingsNavigation
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+      expect(host.querySelector('[data-testid="import-saved-state"]')).not.toBeNull()
+      expect(host.querySelector('dialog[open]')).toBeNull()
+    })
+    expect(findButton(host, '开始阅读').disabled).toBe(false)
+    expect(host.textContent).not.toContain('正在保存…')
+
+    clickButton(host, '开始阅读')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.name).toBe('reader')
+    })
+  })
+
+  it('closes one confirmation and settles both concurrent route intents', async () => {
+    const { host, router } = await mountImport()
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const firstNavigation = router.push('/settings')
+    await settleView()
+    expect(host.querySelectorAll('dialog[open]')).toHaveLength(1)
+
+    const secondNavigation = router.push('/words')
+    await Promise.all([firstNavigation, secondNavigation])
+    await settleView()
+
+    expect(router.currentRoute.value.path).toBe('/import')
+    expect(host.querySelector('dialog[open]')).toBeNull()
+
+    const finalNavigation = router.push('/settings')
+    await settleView()
+    expect(host.querySelectorAll('dialog[open]')).toHaveLength(1)
+    clickButton(host, '放弃并离开')
+    await finalNavigation
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/settings')
+    })
+  })
+
+  it('continues the original replace navigation with its state and history position', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const navigation = router.replace({
+      path: '/settings',
+      state: { navigationMarker: 'original-replace' },
+    })
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+
+    expect(await navigation).toBeUndefined()
+    expect(history.location).toBe('/settings')
+    expect(history.state).toMatchObject({ navigationMarker: 'original-replace' })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/')
+      expect(router.currentRoute.value.fullPath).toBe('/')
+    })
+  })
+
+  it('keeps Vue Router latest-wins semantics for concurrent navigation intents', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const firstNavigation = router.push({
+      path: '/settings',
+      state: { navigationMarker: 'superseded-push' },
+    })
+    const latestNavigation = router.replace({
+      path: '/words',
+      state: { navigationMarker: 'latest-replace' },
+    })
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+
+    await Promise.all([firstNavigation, latestNavigation])
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/words')
+    })
+    expect(history.state).toMatchObject({ navigationMarker: 'latest-replace' })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/')
+    })
+  })
+
+  it.each([
+    { kind: 'desktop', source: 'desktop' },
+    { kind: 'mobile', source: 'android' },
+  ] as const)(
+    'keeps the import route coherent after rapid $kind back events',
+    async ({ kind, source }) => {
+      const { harness, history, host, router } = await mountImport({ kind })
+      await router.replace('/settings')
+      await router.push('/')
+      await router.push('/import')
+      await settleView()
+
+      const body = readLabeledControl(host, '英文正文')
+      body.value = readableEnglish
+      body.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      harness.backNavigation.emit(source)
+      harness.backNavigation.emit(source)
+
+      await vi.waitFor(() => {
+        expect(host.querySelector('dialog[open]')).not.toBeNull()
+      })
+      clickButton(host, '继续编辑')
+
+      await vi.waitFor(() => {
+        expect(history.location).toBe('/import')
+        expect(router.currentRoute.value.fullPath).toBe('/import')
+      })
+      expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+      expect(host.querySelector('dialog[open]')).toBeNull()
+    },
+  )
+
+  it('continues browser-style back without duplicating its destination', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/')
+      expect(router.currentRoute.value.fullPath).toBe('/')
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/settings')
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+  })
+
+  it('allows an accepted browser back to follow a route-guard redirect', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const removeRedirect = router.beforeResolve((to) => {
+      if (to.path === '/settings') {
+        return { path: '/words' }
+      }
+      return true
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/words')
+      expect(router.currentRoute.value.fullPath).toBe('/words')
+    })
+    removeRedirect()
+  })
+
+  it.each([
+    { finalDestination: '/words', rejectFinalRedirect: false },
+    { finalDestination: '/import', rejectFinalRedirect: true },
+  ])(
+    'coordinates a route-record and guard redirect chain to $finalDestination',
+    async ({ finalDestination, rejectFinalRedirect }) => {
+      const deferredHistory = createDeferredPopHistory()
+      const { host, router } = await mountImport({}, deferredHistory)
+      await router.replace('/settings')
+      deferredHistory.push('/today')
+      await router.push('/import')
+      await settleView()
+
+      const body = readLabeledControl(host, '英文正文')
+      body.value = readableEnglish
+      body.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      const removeRedirect = router.beforeResolve((to) => {
+        if (to.path === '/legacy') {
+          return { path: '/words' }
+        }
+        if (to.path === '/words' && rejectFinalRedirect) {
+          return false
+        }
+        return true
+      })
+
+      router.back()
+      deferredHistory.flushNext()
+      await vi.waitFor(() => {
+        expect(host.querySelector('dialog[open]')).not.toBeNull()
+      })
+      clickButton(host, '放弃并离开')
+
+      if (rejectFinalRedirect) {
+        await vi.waitFor(() => {
+          expect(deferredHistory.pendingCount()).toBe(1)
+        })
+        deferredHistory.flushNext()
+      }
+      await vi.waitFor(() => {
+        expect(deferredHistory.location).toBe(finalDestination)
+        expect(router.currentRoute.value.fullPath).toBe(finalDestination)
+      })
+      if (rejectFinalRedirect) {
+        expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+      }
+      removeRedirect()
+    },
+  )
+
+  it('repairs the guarded origin when a redirected browser back is rejected', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const removeRedirect = router.beforeResolve((to) => {
+      if (to.path === '/settings') {
+        return { path: '/words' }
+      }
+      if (to.path === '/words') {
+        return false
+      }
+      return true
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import')
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+    })
+    expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+    removeRedirect()
+    const nextNavigation = router.push('/words')
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await nextNavigation
+    expect(router.currentRoute.value.fullPath).toBe('/words')
+  })
+
+  it('tracks the guarded origin across same-route query updates', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/')
+    await router.push('/import')
+    await router.push('/import?variant=1')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    router.go(-2)
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    router.back()
+    await settleView()
+
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import?variant=1')
+      expect(router.currentRoute.value.fullPath).toBe('/import?variant=1')
+    })
+    expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+  })
+
+  it('repairs a clamped memory-history traversal to its actual origin', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/import')
+    await router.push('/words')
+    await router.back()
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    router.go(-100)
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '继续编辑')
+
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import')
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+    })
+    expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+  })
+
+  it('rebases another back while the accepted pop target is still resolving', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let releaseTarget!: () => void
+    let reportTargetStarted!: () => void
+    const targetGate = new Promise<void>((resolve) => {
+      releaseTarget = resolve
+    })
+    const targetStarted = new Promise<void>((resolve) => {
+      reportTargetStarted = resolve
+    })
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path === '/') {
+        reportTargetStarted()
+        await targetGate
+      }
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await targetStarted
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/settings')
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+
+    releaseTarget()
+    await settleView()
+    expect(history.location).toBe('/settings')
+    expect(router.currentRoute.value.fullPath).toBe('/settings')
+
+    router.forward()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/')
+      expect(router.currentRoute.value.fullPath).toBe('/')
+    })
+    removeTargetGuard()
+  })
+
+  it('restores the origin when a blocked push cancels the accepted pop', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let releaseTarget!: () => void
+    let reportTargetStarted!: () => void
+    const targetGate = new Promise<void>((resolve) => {
+      releaseTarget = resolve
+    })
+    const targetStarted = new Promise<void>((resolve) => {
+      reportTargetStarted = resolve
+    })
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path === '/') {
+        reportTargetStarted()
+        await targetGate
+      }
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await targetStarted
+
+    await router.push('/words')
+    releaseTarget()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import')
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+    })
+    expect(readLabeledControl(host, '英文正文').value).toBe(readableEnglish)
+    removeTargetGuard()
+  })
+
+  it('does not transfer an accepted pop to an independent same-target push', async () => {
+    const { history, host, router } = await mountImport()
+    await router.replace('/settings')
+    await router.push('/words')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let reportFirstTargetStarted!: () => void
+    let releaseFirstTarget!: () => void
+    const firstTargetStarted = new Promise<void>((resolve) => {
+      reportFirstTargetStarted = resolve
+    })
+    const firstTargetGate = new Promise<void>((resolve) => {
+      releaseFirstTarget = resolve
+    })
+    let wordsNavigationCount = 0
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path !== '/words') {
+        return
+      }
+      wordsNavigationCount += 1
+      if (wordsNavigationCount === 1) {
+        reportFirstTargetStarted()
+        await firstTargetGate
+      }
+    })
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await firstTargetStarted
+
+    const competingFailure = await router.push('/words')
+    expect(competingFailure).toBeDefined()
+    releaseFirstTarget()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import')
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+    })
+
+    const freshNavigation = router.push('/words')
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await freshNavigation
+    expect(history.location).toBe('/words')
+    expect(router.currentRoute.value.fullPath).toBe('/words')
+
+    router.back()
+    await vi.waitFor(() => {
+      expect(history.location).toBe('/import')
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+    })
+    removeTargetGuard()
+  })
+
+  it.each(['cancelled', 'aborted', 'error'] as const)(
+    'does not let an older %s same-URL pop settle the current history generation',
+    async (olderOutcome) => {
+      const { history, host, router } = await mountImport()
+      await router.replace('/settings')
+      await router.push('/words')
+      await router.push('/settings')
+      await router.push('/import')
+      await settleView()
+
+      const body = readLabeledControl(host, '英文正文')
+      body.value = readableEnglish
+      body.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      let firstTargetStarted!: () => void
+      let secondTargetStarted!: () => void
+      let resolveFirstTarget!: (result?: false) => void
+      let rejectFirstTarget!: (reason: Error) => void
+      let releaseSecondTarget!: () => void
+      const firstStarted = new Promise<void>((resolve) => {
+        firstTargetStarted = resolve
+      })
+      const secondStarted = new Promise<void>((resolve) => {
+        secondTargetStarted = resolve
+      })
+      const firstGate = new Promise<void | false>((resolve, reject) => {
+        resolveFirstTarget = resolve
+        rejectFirstTarget = reject
+      })
+      const secondGate = new Promise<void>((resolve) => {
+        releaseSecondTarget = resolve
+      })
+      let settingsNavigationCount = 0
+      const removeTargetGuard = router.beforeResolve(async (to) => {
+        if (to.path !== '/settings') {
+          return
+        }
+        settingsNavigationCount += 1
+        if (settingsNavigationCount === 1) {
+          firstTargetStarted()
+          return firstGate
+        }
+        secondTargetStarted()
+        await secondGate
+      })
+
+      router.back()
+      await vi.waitFor(() => {
+        expect(host.querySelector('dialog[open]')).not.toBeNull()
+      })
+      clickButton(host, '放弃并离开')
+      await firstStarted
+
+      router.go(-2)
+      await secondStarted
+      if (olderOutcome === 'error') {
+        rejectFirstTarget(new Error('The older same-URL target failed.'))
+      }
+      else {
+        resolveFirstTarget(olderOutcome === 'aborted' ? false : undefined)
+      }
+      await settleView()
+      releaseSecondTarget()
+
+      await vi.waitFor(() => {
+        expect(history.location).toBe('/settings')
+        expect(router.currentRoute.value.fullPath).toBe('/settings')
+      })
+      removeTargetGuard()
+    },
+  )
+
+  it('keeps a committed same-URL generation anchored until an older async rollback settles', async () => {
+    const deferredHistory = createDeferredPopHistory()
+    const { host, router } = await mountImport({}, deferredHistory)
+    await router.replace('/settings')
+    await router.push('/words')
+    await router.push('/settings')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let firstTargetStarted!: () => void
+    let secondTargetStarted!: () => void
+    let rejectFirstTarget!: (reason: Error) => void
+    let releaseSecondTarget!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      firstTargetStarted = resolve
+    })
+    const secondStarted = new Promise<void>((resolve) => {
+      secondTargetStarted = resolve
+    })
+    const firstGate = new Promise<void>((_resolve, reject) => {
+      rejectFirstTarget = reject
+    })
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecondTarget = resolve
+    })
+    let settingsNavigationCount = 0
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path !== '/settings') {
+        return
+      }
+      settingsNavigationCount += 1
+      if (settingsNavigationCount === 1) {
+        firstTargetStarted()
+        return firstGate
+      }
+      secondTargetStarted()
+      await secondGate
+    })
+    const removeErrorHandler = router.onError(() => {})
+
+    router.back()
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await firstStarted
+
+    router.go(-2)
+    deferredHistory.flushNext()
+    await secondStarted
+    rejectFirstTarget(new Error('The older async target failed.'))
+    await vi.waitFor(() => {
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+
+    releaseSecondTarget()
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+    deferredHistory.flushNext()
+
+    await vi.waitFor(() => {
+      expect(deferredHistory.location).toBe('/settings')
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+    removeErrorHandler()
+    removeTargetGuard()
+  })
+
+  it('keeps a generation position while a stale rollback is physically visible', async () => {
+    const deferredHistory = createDeferredPopHistory()
+    const { host, router } = await mountImport({}, deferredHistory)
+    await router.replace('/settings')
+    await router.push('/words')
+    await router.push('/settings')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let firstTargetStarted!: () => void
+    let secondTargetStarted!: () => void
+    let rejectFirstTarget!: (reason: Error) => void
+    let releaseSecondTarget!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      firstTargetStarted = resolve
+    })
+    const secondStarted = new Promise<void>((resolve) => {
+      secondTargetStarted = resolve
+    })
+    const firstGate = new Promise<void>((_resolve, reject) => {
+      rejectFirstTarget = reject
+    })
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecondTarget = resolve
+    })
+    let settingsNavigationCount = 0
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path !== '/settings') {
+        return
+      }
+      settingsNavigationCount += 1
+      if (settingsNavigationCount === 1) {
+        firstTargetStarted()
+        return firstGate
+      }
+      secondTargetStarted()
+      await secondGate
+    })
+    const removeErrorHandler = router.onError(() => {})
+
+    router.back()
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await firstStarted
+
+    router.go(-2)
+    deferredHistory.flushNext()
+    await secondStarted
+    rejectFirstTarget(new Error('The older async target failed.'))
+    await vi.waitFor(() => {
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(deferredHistory.location).toBe('/words')
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+
+    releaseSecondTarget()
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+    deferredHistory.flushNext()
+
+    await vi.waitFor(() => {
+      expect(deferredHistory.location).toBe('/settings')
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+      expect(deferredHistory.pendingCount()).toBe(0)
+    })
+    removeErrorHandler()
+    removeTargetGuard()
+  })
+
+  it.each(['/words', '/import?redirected=1'])(
+    'settles a stale rollback before redirecting the pop to %s',
+    async (redirectDestination) => {
+      const deferredHistory = createDeferredPopHistory()
+      const { host, router } = await mountImport({}, deferredHistory)
+      await router.replace('/settings')
+      await router.push('/words')
+      await router.push('/settings')
+      await router.push('/import')
+      await settleView()
+
+      const body = readLabeledControl(host, '英文正文')
+      body.value = readableEnglish
+      body.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+
+      let firstTargetStarted!: () => void
+      let secondTargetStarted!: () => void
+      let rejectFirstTarget!: (reason: Error) => void
+      let releaseSecondTarget!: () => void
+      const firstStarted = new Promise<void>((resolve) => {
+        firstTargetStarted = resolve
+      })
+      const secondStarted = new Promise<void>((resolve) => {
+        secondTargetStarted = resolve
+      })
+      const firstGate = new Promise<void>((_resolve, reject) => {
+        rejectFirstTarget = reject
+      })
+      const secondGate = new Promise<void>((resolve) => {
+        releaseSecondTarget = resolve
+      })
+      let settingsNavigationCount = 0
+      const removeTargetGuard = router.beforeResolve(async (to) => {
+        if (to.path !== '/settings') {
+          return
+        }
+        settingsNavigationCount += 1
+        if (settingsNavigationCount === 1) {
+          firstTargetStarted()
+          return firstGate
+        }
+        secondTargetStarted()
+        await secondGate
+        return redirectDestination
+      })
+      const removeErrorHandler = router.onError(() => {})
+
+      router.back()
+      deferredHistory.flushNext()
+      await vi.waitFor(() => {
+        expect(host.querySelector('dialog[open]')).not.toBeNull()
+      })
+      clickButton(host, '放弃并离开')
+      await firstStarted
+
+      router.go(-2)
+      deferredHistory.flushNext()
+      await secondStarted
+      rejectFirstTarget(new Error('The older async target failed.'))
+      await vi.waitFor(() => {
+        expect(deferredHistory.pendingCount()).toBe(1)
+      })
+      releaseSecondTarget()
+      await settleView()
+      expect(router.currentRoute.value.fullPath).toBe('/import')
+
+      deferredHistory.flushNext()
+      await vi.waitFor(() => {
+        expect(deferredHistory.pendingCount()).toBe(1)
+      })
+      deferredHistory.flushNext()
+
+      await vi.waitFor(() => {
+        expect(deferredHistory.location).toBe(redirectDestination)
+        expect(router.currentRoute.value.fullPath).toBe(redirectDestination)
+        expect(deferredHistory.pendingCount()).toBe(0)
+      })
+      removeErrorHandler()
+      removeTargetGuard()
+    },
+  )
+
+  it('serializes a new route push behind a committed history repair', async () => {
+    const deferredHistory = createDeferredPopHistory()
+    const { host, router } = await mountImport({}, deferredHistory)
+    await router.replace('/settings')
+    await router.push('/words')
+    await router.push('/settings')
+    await router.push('/import')
+    await settleView()
+
+    const body = readLabeledControl(host, '英文正文')
+    body.value = readableEnglish
+    body.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    let firstTargetStarted!: () => void
+    let secondTargetStarted!: () => void
+    let rejectFirstTarget!: (reason: Error) => void
+    let releaseSecondTarget!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      firstTargetStarted = resolve
+    })
+    const secondStarted = new Promise<void>((resolve) => {
+      secondTargetStarted = resolve
+    })
+    const firstGate = new Promise<void>((_resolve, reject) => {
+      rejectFirstTarget = reject
+    })
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecondTarget = resolve
+    })
+    let settingsNavigationCount = 0
+    const removeTargetGuard = router.beforeResolve(async (to) => {
+      if (to.path !== '/settings') {
+        return
+      }
+      settingsNavigationCount += 1
+      if (settingsNavigationCount === 1) {
+        firstTargetStarted()
+        return firstGate
+      }
+      secondTargetStarted()
+      await secondGate
+    })
+    const removeErrorHandler = router.onError(() => {})
+
+    router.back()
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(host.querySelector('dialog[open]')).not.toBeNull()
+    })
+    clickButton(host, '放弃并离开')
+    await firstStarted
+
+    router.go(-2)
+    deferredHistory.flushNext()
+    await secondStarted
+    rejectFirstTarget(new Error('The older async target failed.'))
+    await vi.waitFor(() => {
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+
+    releaseSecondTarget()
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+    const nextNavigation = router.push('/words')
+    await settleView()
+    expect(router.currentRoute.value.fullPath).toBe('/settings')
+
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(deferredHistory.pendingCount()).toBe(1)
+    })
+    deferredHistory.flushNext()
+    await nextNavigation
+
+    expect(deferredHistory.location).toBe('/words')
+    expect(router.currentRoute.value.fullPath).toBe('/words')
+    router.back()
+    deferredHistory.flushNext()
+    await vi.waitFor(() => {
+      expect(deferredHistory.location).toBe('/settings')
+      expect(router.currentRoute.value.fullPath).toBe('/settings')
+    })
+    removeErrorHandler()
+    removeTargetGuard()
   })
 
   it('lets a user grant file permission from the file picker action', async () => {
@@ -322,14 +1342,17 @@ describe('URL import flow', () => {
   })
 })
 
-async function mountImport(options: FakePlatformOptions = {}) {
+async function mountImport(
+  options: FakePlatformOptions = {},
+  history: RouterHistory = createMemoryHistory(),
+) {
   const host = document.createElement('div')
   document.body.append(host)
-  const router = createYomuRouter(createMemoryHistory())
+  const router = createYomuRouter(history)
   await router.push('/import')
   await router.isReady()
 
-  const repositories = createMemoryLocalRepositories()
+  const repositories = options.repositories ?? createMemoryLocalRepositories()
   const harness = createFakePlatformServices({
     ...options,
     repositories,
@@ -342,7 +1365,118 @@ async function mountImport(options: FakePlatformOptions = {}) {
   app.mount(host)
   await settleView()
 
-  return { host, harness, router }
+  return { history, host, harness, router }
+}
+
+interface DeferredPopHistory extends RouterHistory {
+  flushNext: () => void
+  pendingCount: () => number
+}
+
+function createDeferredPopHistory(): DeferredPopHistory {
+  type Listener = Parameters<RouterHistory['listen']>[0]
+  type NavigationInformation = Parameters<Listener>[2]
+  const listeners = new Set<Listener>()
+  const entries: Array<{ location: string, state: Record<string, unknown> }> = [
+    { location: '', state: { position: 0 } },
+  ]
+  const pending: Array<{ delta: number, triggerListeners: boolean }> = []
+  let position = 0
+
+  const history: DeferredPopHistory = {
+    base: '',
+    get location() {
+      return entries[position]?.location ?? ''
+    },
+    get state() {
+      return entries[position]?.state ?? { position }
+    },
+    createHref: location => location,
+    destroy() {
+      listeners.clear()
+      pending.length = 0
+    },
+    flushNext() {
+      const command = pending.shift()
+      if (!command) {
+        throw new Error('No deferred history traversal is pending.')
+      }
+      const from = history.location
+      const previousPosition = position
+      position = Math.max(0, Math.min(position + command.delta, entries.length - 1))
+      if (!command.triggerListeners) {
+        return
+      }
+      const delta = position - previousPosition
+      const direction: NavigationInformation['direction'] = delta < 0
+        ? 'back' as NavigationInformation['direction']
+        : delta > 0
+          ? 'forward' as NavigationInformation['direction']
+          : 'unknown' as NavigationInformation['direction']
+      const information: NavigationInformation = {
+        delta,
+        direction,
+        type: 'pop' as NavigationInformation['type'],
+      }
+      listeners.forEach(listener => listener(history.location, from, information))
+    },
+    go(delta, triggerListeners = true) {
+      pending.push({ delta, triggerListeners })
+    },
+    listen(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    pendingCount: () => pending.length,
+    push(location, state = {}) {
+      position += 1
+      entries.splice(position)
+      entries.push({ location, state: { ...state, position } })
+    },
+    replace(location, state = {}) {
+      entries[position] = { location, state: { ...state, position } }
+    },
+  }
+  return history
+}
+
+function createGatedPersistentRepositories(): {
+  repositories: LocalRepositories
+  release: () => void
+  started: Promise<void>
+} {
+  const base = createMemoryLocalRepositories()
+  let release!: () => void
+  let reportStarted!: () => void
+  let gated = false
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    reportStarted = resolve
+  })
+  const transaction: LocalRepositories['transaction'] = async (stores, mode, operation) => {
+    if (!gated && mode === 'readwrite' && stores.includes('articles')) {
+      gated = true
+      reportStarted()
+      await gate
+    }
+    return base.transaction(stores, mode, operation)
+  }
+  const repositories = new Proxy(base, {
+    get(target, property) {
+      if (property === 'persistence') {
+        return 'persistent'
+      }
+      if (property === 'transaction') {
+        return transaction
+      }
+      const value = Reflect.get(target, property, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  }) as LocalRepositories
+
+  return { repositories, release, started }
 }
 
 function findButton(host: HTMLElement, name: string): HTMLButtonElement {

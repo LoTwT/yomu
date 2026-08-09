@@ -1,21 +1,66 @@
 <script setup lang="ts">
-import { onMounted, useTemplateRef } from 'vue'
+import { onMounted, onUnmounted, useTemplateRef } from 'vue'
+
+import {
+  useInteractionLayer,
+  type ReleaseInteractionLayer,
+} from '@/app/interactionLayer'
 
 const emit = defineEmits<{
   keepEditing: []
   discard: []
 }>()
 
+const interactionLayer = useInteractionLayer()
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
+const keepButton = useTemplateRef<HTMLButtonElement>('keepButton')
+let releaseLayer: ReleaseInteractionLayer | null = null
 
 onMounted(() => {
+  const release = interactionLayer.registerLayer({
+    focusReturn: readFocusReturn(),
+    id: 'unsaved-import',
+    onRequestClose: () => emit('keepEditing'),
+  })
+  if (!release) {
+    return
+  }
+  releaseLayer = release
   if (typeof dialog.value?.showModal === 'function') {
     dialog.value.showModal()
   }
   else {
     dialog.value?.setAttribute('open', '')
   }
+  keepButton.value?.focus()
 })
+
+onUnmounted(() => releaseLayer?.())
+
+function keepEditing(): void {
+  const release = releaseLayer
+  releaseLayer = null
+  emit('keepEditing')
+  release?.()
+}
+
+function discardAndLeave(): void {
+  const release = releaseLayer
+  releaseLayer = null
+  emit('discard')
+  release?.()
+}
+
+function readFocusReturn(): HTMLElement | null {
+  const ownerDocument = dialog.value?.ownerDocument
+  const activeElement = ownerDocument?.activeElement
+  if (activeElement === ownerDocument?.body || activeElement === ownerDocument?.documentElement) {
+    return null
+  }
+  return activeElement && typeof (activeElement as HTMLElement).focus === 'function'
+    ? activeElement as HTMLElement
+    : null
+}
 </script>
 
 <template>
@@ -24,7 +69,7 @@ onMounted(() => {
     class="unsaved-dialog"
     aria-labelledby="unsaved-dialog-heading"
     aria-describedby="unsaved-dialog-description"
-    @cancel.prevent="emit('keepEditing')"
+    @cancel.prevent="keepEditing"
   >
     <h2 id="unsaved-dialog-heading" class="unsaved-dialog__title">
       放弃未保存的导入？
@@ -33,10 +78,15 @@ onMounted(() => {
       当前正文或预览还没有保存。离开后，这些修改将丢失。
     </p>
     <div class="unsaved-dialog__actions">
-      <button class="unsaved-dialog__keep" type="button" @click="emit('keepEditing')">
+      <button
+        ref="keepButton"
+        class="unsaved-dialog__keep"
+        type="button"
+        @click="keepEditing"
+      >
         继续编辑
       </button>
-      <button class="unsaved-dialog__discard" type="button" @click="emit('discard')">
+      <button class="unsaved-dialog__discard" type="button" @click="discardAndLeave">
         放弃并离开
       </button>
     </div>

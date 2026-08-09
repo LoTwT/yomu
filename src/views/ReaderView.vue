@@ -3,6 +3,7 @@ import { PhArrowLeft } from '@phosphor-icons/vue'
 import { computed, onUnmounted } from 'vue'
 import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router'
 
+import { useInteractionLayer } from '@/app/interactionLayer'
 import ReaderArticle from '@/components/reader/ReaderArticle.vue'
 import ReaderPlaybackControls from '@/components/reader/ReaderPlaybackControls.vue'
 import { requestLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
@@ -14,6 +15,7 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
+const interactionLayer = useInteractionLayer()
 const pendingRouteTransitions: Array<{
   token: number
   from: string
@@ -82,6 +84,9 @@ onUnmounted(() => {
 })
 
 onBeforeRouteLeave(async (to, from) => {
+  if (interactionLayer.requestCloseTop('navigation')) {
+    return false
+  }
   const transition = beginRouteTransition()
   pendingRouteTransitions.push({
     token: transition.token,

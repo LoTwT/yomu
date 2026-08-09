@@ -16,6 +16,10 @@ import {
 } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  createInteractionLayerController,
+  interactionLayerKey,
+} from '@/app/interactionLayer'
 import { platformServicesKey } from '@/app/platformServices'
 import type { ArticleRecord } from '@/data/entities'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
@@ -63,6 +67,7 @@ describe('ReaderView lifecycle navigation', () => {
       setup: () => () => h(RouterView),
     })
     mountedApps.push(app)
+    app.provide(interactionLayerKey, createInteractionLayerController())
     app.provide(platformServicesKey, harness.services)
     app.use(router)
     const host = document.createElement('div')
@@ -106,6 +111,68 @@ describe('ReaderView lifecycle navigation', () => {
     expect(takeLibraryArticleFocus()).toBe(article.id)
   })
 
+  it('closes the active interaction before suspending the Reader route', async () => {
+    const article = createArticle()
+    const repositories = createMemoryLocalRepositories({ articles: [article] })
+    const harness = createFakePlatformServices({ repositories })
+    const interactionLayer = createInteractionLayerController()
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        {
+          path: '/read/:articleId',
+          name: 'reader',
+          component: ReaderView,
+          props: true,
+        },
+        {
+          path: '/',
+          name: 'library',
+          component: defineComponent({
+            setup: () => () => h('p', 'Library'),
+          }),
+        },
+      ],
+    })
+    await router.push(`/read/${article.id}`)
+    await router.isReady()
+
+    const app = createApp({
+      setup: () => () => h(RouterView),
+    })
+    mountedApps.push(app)
+    app.provide(interactionLayerKey, interactionLayer)
+    app.provide(platformServicesKey, harness.services)
+    app.use(router)
+    const host = document.createElement('div')
+    document.body.append(host)
+    app.mount(host)
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-sentence-id="article-route:s1"]'),
+    ).not.toBeNull())
+
+    const requestClose = vi.fn()
+    interactionLayer.registerLayer({
+      id: 'reader-settings',
+      onRequestClose: requestClose,
+    })
+    const immediateUpdate = vi.spyOn(harness.preferences, 'updateImmediately')
+
+    const navigation = await router.push({ name: 'library' })
+
+    expect(isNavigationFailure(navigation, NavigationFailureType.aborted)).toBe(true)
+    expect(requestClose).toHaveBeenCalledWith('navigation')
+    expect(immediateUpdate).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.name).toBe('reader')
+
+    const finalSentence = host.querySelector<HTMLButtonElement>(
+      '[data-sentence-id="article-route:s3"]',
+    )
+    finalSentence?.click()
+    await nextTick()
+    expect(finalSentence?.getAttribute('aria-current')).toBe('true')
+  })
+
   it('resumes the reader after a target route fails to load', async () => {
     const article = createArticle()
     const repositories = createMemoryLocalRepositories({ articles: [article] })
@@ -140,6 +207,7 @@ describe('ReaderView lifecycle navigation', () => {
       setup: () => () => h(RouterView),
     })
     mountedApps.push(app)
+    app.provide(interactionLayerKey, createInteractionLayerController())
     app.provide(platformServicesKey, harness.services)
     app.use(router)
     const host = document.createElement('div')

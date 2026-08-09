@@ -54,6 +54,14 @@ for (const target of targets) {
     moduleIds.some(moduleId => moduleId.endsWith('/src/platform/bootstrap.ts')),
     `${target.mode} must include the shared host bootstrap`,
   )
+  assert(
+    moduleIds.some(moduleId => moduleId.includes('/src/views/ReaderView.vue')),
+    `${target.mode} must include the shared Reader view`,
+  )
+  assert(
+    moduleIds.some(moduleId => moduleId.endsWith('/src/features/reader/useReadingSession.ts')),
+    `${target.mode} must include the shared Reader session`,
+  )
 
   if (target.web) {
     await assertWebBuild(target.outputDirectory, files, moduleIds, javaScript)

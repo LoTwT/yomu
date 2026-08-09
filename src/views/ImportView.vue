@@ -6,8 +6,13 @@ import { usePageHeadingFocus } from './usePageHeadingFocus'
 
 const router = useRouter()
 
-function openArticle(articleId: string): void {
-  void router.push({ name: 'reader', params: { articleId } })
+async function openArticle(articleId: string): Promise<void> {
+  try {
+    await router.push({ name: 'reader', params: { articleId } })
+  }
+  catch {
+    // The saved result remains visible as a safe retry surface.
+  }
 }
 
 usePageHeadingFocus()

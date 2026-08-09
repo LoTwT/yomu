@@ -10,6 +10,8 @@ import { createYomuRouter } from '@/app/router'
 import { themeControllerKey } from '@/app/themePreference'
 import type { ArticleRecord, ReadingAttempt } from '@/data/entities'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
+import type { DataStoreName, RepositoryMode, RepositoryScope } from '@/data/repositories'
+import type { PlatformKind } from '@/platform/contracts'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import type { ThemeController, ThemePreference, ThemeSnapshot } from '@/platform/themeController'
 
@@ -25,6 +27,7 @@ beforeEach(() => {
 async function mountAt(
   path: string,
   seed: { articles?: ArticleRecord[], attempts?: ReadingAttempt[] } = {},
+  kind: PlatformKind = 'web',
 ) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -34,15 +37,16 @@ async function mountAt(
   await router.isReady()
 
   const repositories = createMemoryLocalRepositories(seed)
+  const harness = createFakePlatformServices({ kind, repositories })
   const app = createApp(App)
   mountedApps.push(app)
-  app.provide(platformServicesKey, createFakePlatformServices({ repositories }).services)
+  app.provide(platformServicesKey, harness.services)
   app.provide(themeControllerKey, createTestThemeController())
   app.use(router)
   app.mount(host)
   await settleView()
 
-  return { host, router, repositories }
+  return { host, router, repositories, harness }
 }
 
 function createTestThemeController(): ThemeController {
@@ -143,6 +147,85 @@ describe('responsive app shell', () => {
     expect(missing.host.querySelector('.shell-header')).toBeNull()
     expect(missing.host.textContent).toContain('找不到这篇文章')
     expect(missing.host.textContent).toContain('不会用 Today 或其他正文替代它')
+  })
+
+  it.each([
+    { kind: 'desktop', source: 'desktop' },
+    { kind: 'mobile', source: 'android' },
+  ] as const)(
+    'opens the shared Reader and flushes it before $kind system back',
+    async ({ kind, source }) => {
+      const article = createArticle()
+      const attempt: ReadingAttempt = {
+        ...createAttempt(article),
+        currentSentenceId: article.sentences[0]?.id,
+        furthestSentenceOrdinal: 0,
+      }
+      const { harness, host, repositories, router } = await mountAt('/', {
+        articles: [article],
+        attempts: [attempt],
+      }, kind)
+
+      await router.push(`/read/${article.id}`)
+      await vi.waitFor(() => expect(
+        host.querySelector(`[data-sentence-id="${article.sentences[0]?.id}"]`),
+      ).not.toBeNull())
+
+      expect(host.querySelector('.shell-header')).toBeNull()
+      expect(host.textContent).toContain(article.title)
+      const finalSentence = host.querySelector<HTMLButtonElement>(
+        `[data-sentence-id="${article.sentences[2]?.id}"]`,
+      )
+      finalSentence?.click()
+      await nextTick()
+      expect(finalSentence?.getAttribute('aria-current')).toBe('true')
+
+      const originalTransaction = repositories.transaction.bind(repositories)
+      let releaseFlush!: () => void
+      let reportFlushStarted!: () => void
+      const flushGate = new Promise<void>((resolve) => {
+        releaseFlush = resolve
+      })
+      const flushStarted = new Promise<void>((resolve) => {
+        reportFlushStarted = resolve
+      })
+      let gateNextAttemptWrite = true
+      repositories.transaction = async <T>(
+        stores: readonly DataStoreName[],
+        mode: RepositoryMode,
+        operation: (scope: RepositoryScope) => Promise<T>,
+      ): Promise<T> => {
+        if (gateNextAttemptWrite && mode === 'readwrite' && stores.includes('attempts')) {
+          gateNextAttemptWrite = false
+          reportFlushStarted()
+          await flushGate
+        }
+        return originalTransaction(stores, mode, operation)
+      }
+
+      harness.backNavigation.emit(source)
+      await flushStarted
+      await settleView()
+      expect(router.currentRoute.value.name).toBe('reader')
+      expect(host.querySelector('.reader-view')).not.toBeNull()
+
+      releaseFlush()
+      await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('library'))
+
+      expect((await repositories.attempts.get(attempt.id))?.currentSentenceId)
+        .toBe(article.sentences[2]?.id)
+    },
+  )
+
+  it('does not navigate twice when the browser adapter observes popstate', async () => {
+    const { harness, router } = await mountAt('/')
+    await router.push('/settings')
+    await router.push('/words')
+
+    harness.backNavigation.emit('browser')
+    await settleView()
+
+    expect(router.currentRoute.value.path).toBe('/words')
   })
 })
 
