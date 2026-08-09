@@ -58,6 +58,8 @@ export interface CurrentReadingProgressJournal extends ReadingProgressJournalDra
   epochId: string
   generation: number
   sources?: readonly ReadingProgressJournalSource[]
+  /** Runtime-only closure roots from the candidate selected during a synthetic merge. */
+  selectedCausalClosureLineages?: readonly ReadingProgressJournalWriterGapLineage[]
 }
 
 export interface LegacyReadingProgressJournal {
@@ -114,6 +116,11 @@ interface AggregateReadingProgressJournalSlot {
   attemptId: string
   generation: number
   journal: StoredReadingProgressJournal | null
+}
+
+interface ReadingProgressJournalSettlementOverrides {
+  sources: readonly ReadingProgressJournalSource[]
+  causalClosureLineages: readonly ReadingProgressJournalWriterGapLineage[]
 }
 
 export interface ReadingProgressJournalMetadata {
@@ -460,10 +467,15 @@ export async function clearSelectedReadingProgressJournal(
     }
     return
   }
+  const sources = selectedJournalSources(expected)
   if (!await settleJournalSources(
     preferences,
     expected,
-    selectedJournalSources(expected),
+    {
+      sources,
+      causalClosureLineages: expected.selectedCausalClosureLineages
+        ?? journalCausalClosureLineages(expected),
+    },
   )) {
     throw new Error('The selected reading progress journal could not be retired.')
   }
@@ -550,7 +562,7 @@ export async function compactReadingProgressJournalSlots(
     if (writerSlotIsRetired(entry.value, tombstone)) {
       continue
     }
-    for (const lineage of unsettledWriterGapLineages(
+    for (const lineage of unsettledWriterCausalClosureLineages(
       entry.value.journal,
       tombstones,
     )) {
@@ -575,7 +587,7 @@ export async function compactReadingProgressJournalSlots(
     lineageSlots.push(entry)
     slotsByLineage.set(identity, lineageSlots)
     const nested = nestedGapLineages.get(identity) ?? []
-    for (const lineage of unsettledWriterGapLineages(
+    for (const lineage of unsettledWriterCausalClosureLineages(
       entry.value.journal,
       tombstones,
     )) {
@@ -651,10 +663,9 @@ export async function compactReadingProgressJournalSlots(
       }
       const causalEntry = slotsByOperation.get(writerSourceCompactionIdentity(source))
       if (causalEntry) {
-        const causalTombstone = tombstones.get(causalEntry.value.writerId)
         const causalRetired = writerSlotIsRetired(
           causalEntry.value,
-          causalTombstone,
+          tombstones.get(causalEntry.value.writerId),
         )
         const preservesOpenGap = selectedGapAnchorKeys.has(causalEntry.key)
         if (!causalRetired || preservesOpenGap) {
@@ -857,7 +868,7 @@ async function expandWriterGapCausalHistory(
   preferences: PreferencesStore,
   journal: CurrentReadingProgressJournal,
 ): Promise<CurrentReadingProgressJournal> {
-  const gapLineages = journalWriterGapLineages(journal)
+  const gapLineages = journalCausalClosureLineages(journal)
   if (gapLineages.length === 0) {
     return journal
   }
@@ -893,8 +904,12 @@ function removeSettledWriterCausalHistory(
     if (!isWriterJournalSource(source)) {
       return true
     }
-    const tombstone = tombstones.get(source.writerId)
-    return !tombstone || tombstone.sequence < source.sequence
+    return !writerCausalClosureIsSettled(
+      tombstones,
+      journal.articleId,
+      journal.attemptId,
+      { writerId: source.writerId, sequence: source.sequence },
+    )
   })
   // An ordinary lineage tombstone may precede a deeper dependency failure.
   // Only a carrier-last closure proof can retire the corresponding gap debt.
@@ -948,6 +963,7 @@ function mergeWriterJournals(
   const writerGapLineages = deduplicateWriterGapLineages(
     journals.flatMap(journal => journalWriterGapLineages(journal)),
   )
+  const selectedCausalClosureLineages = journalCausalClosureLineages(selected)
   return {
     schemaVersion: journalSchemaVersion,
     epochId: selected.epochId,
@@ -968,6 +984,7 @@ function mergeWriterJournals(
       : {}),
     ...(selected.writerSequenceHasGap ? { writerSequenceHasGap: true as const } : {}),
     ...(writerGapLineages.length > 0 ? { writerGapLineages } : {}),
+    selectedCausalClosureLineages,
     ...(selected.supersedes?.length ? { supersedes: selected.supersedes } : {}),
     sources,
   }
@@ -1028,6 +1045,17 @@ function journalWriterGapLineages(
   ])
 }
 
+function journalCausalClosureLineages(
+  journal: ReadingProgressJournalDraft,
+): ReadingProgressJournalWriterGapLineage[] {
+  return deduplicateWriterGapLineages([
+    ...journalWriterGapLineages(journal),
+    ...(journal.supersedes ?? []).flatMap(source => isWriterJournalSource(source)
+      ? [{ writerId: source.writerId, sequence: source.sequence }]
+      : []),
+  ])
+}
+
 function deduplicateWriterGapLineages(
   lineages: readonly ReadingProgressJournalWriterGapLineage[],
 ): ReadingProgressJournalWriterGapLineage[] {
@@ -1082,14 +1110,12 @@ async function clearJournalSources(
 async function settleJournalSources(
   preferences: PreferencesStore,
   expected: CurrentReadingProgressJournal,
-  sourceOverride?: readonly ReadingProgressJournalSource[],
+  overrides?: ReadingProgressJournalSettlementOverrides,
 ): Promise<boolean> {
-  const directSources = sourceOverride?.length
-    ? sourceOverride
-    : expected.sources?.length
-    ? expected.sources
-    : fallbackSources(expected)
-  const gapLineages = journalWriterGapLineages(expected)
+  const directSources = overrides?.sources
+    ?? (expected.sources?.length ? expected.sources : fallbackSources(expected))
+  const gapLineages = overrides?.causalClosureLineages
+    ?? journalCausalClosureLineages(expected)
   const gapClosure = gapLineages.length > 0
     ? await readWriterGapCausalClosure(preferences, expected, gapLineages)
     : { sources: [], lineages: [] }
@@ -1107,6 +1133,9 @@ async function settleJournalSources(
       && source.sequence === expected.sequence
       && source.epochId === expected.epochId
       && source.generation === expected.generation)
+  if (!carrier) {
+    return false
+  }
   let settled = true
   for (const source of sources.filter(source => source !== carrier)) {
     try {
@@ -1233,7 +1262,7 @@ async function readWriterGapCausalLayer(
     journals.push(legacyValue.journal)
   }
   const lineages = deduplicateWriterGapLineages(
-    journals.flatMap(journal => journalWriterGapLineages(journal)),
+    journals.flatMap(journal => journalCausalClosureLineages(journal)),
   )
   const tombstones = new Map<string, WriterReadingProgressJournalTombstone>()
   await Promise.all(lineages.map(async (nestedLineage) => {
@@ -1601,41 +1630,64 @@ function mergeDurationCheckpoint(
   current: StoredReadingProgressJournal | null,
   incoming: ReadingProgressJournalDraft,
 ): StoredReadingProgressJournal {
+  const storedCurrent = current ? toStoredJournalDraft(current) : null
+  const storedIncoming = toStoredJournalDraft(incoming)
   const supersedes = deduplicateSources([
-    ...(current?.supersedes ?? []),
-    ...(incoming.supersedes ?? []),
+    ...(storedCurrent?.supersedes ?? []),
+    ...(storedIncoming.supersedes ?? []),
   ])
-  if (incoming.cursorMutation
-    || !current?.cursorMutation
-    || incoming.baseAttemptRevision !== current.baseAttemptRevision) {
+  if (storedIncoming.cursorMutation
+    || !storedCurrent?.cursorMutation
+    || storedIncoming.baseAttemptRevision !== storedCurrent.baseAttemptRevision) {
     return {
-      ...incoming,
+      ...storedIncoming,
       ...(supersedes.length > 0 ? { supersedes } : {}),
       furthestSentenceOrdinal: Math.max(
-        current?.furthestSentenceOrdinal ?? 0,
-        incoming.furthestSentenceOrdinal,
+        storedCurrent?.furthestSentenceOrdinal ?? 0,
+        storedIncoming.furthestSentenceOrdinal,
       ),
       activeDurationSec: Math.max(
-        current?.activeDurationSec ?? 0,
-        incoming.activeDurationSec,
+        storedCurrent?.activeDurationSec ?? 0,
+        storedIncoming.activeDurationSec,
       ),
     }
   }
   return {
-    ...incoming,
+    ...storedIncoming,
     ...(supersedes.length > 0 ? { supersedes } : {}),
-    baseAttemptRevision: current.baseAttemptRevision,
+    baseAttemptRevision: storedCurrent.baseAttemptRevision,
     cursorMutation: true,
-    currentSentenceId: current.currentSentenceId,
+    currentSentenceId: storedCurrent.currentSentenceId,
     furthestSentenceOrdinal: Math.max(
-      current.furthestSentenceOrdinal,
-      incoming.furthestSentenceOrdinal,
+      storedCurrent.furthestSentenceOrdinal,
+      storedIncoming.furthestSentenceOrdinal,
     ),
     activeDurationSec: Math.max(
-      current.activeDurationSec,
-      incoming.activeDurationSec,
+      storedCurrent.activeDurationSec,
+      storedIncoming.activeDurationSec,
     ),
   }
+}
+
+function toStoredJournalDraft(
+  journal: ReadingProgressJournalDraft,
+): StoredReadingProgressJournal {
+  const {
+    schemaVersion: _schemaVersion,
+    epochId: _epochId,
+    generation: _generation,
+    sources: _sources,
+    selectedCausalClosureLineages: _selectedCausalClosureLineages,
+    ...stored
+  } = journal as ReadingProgressJournalDraft & Partial<Pick<
+    CurrentReadingProgressJournal,
+    | 'schemaVersion'
+    | 'epochId'
+    | 'generation'
+    | 'sources'
+    | 'selectedCausalClosureLineages'
+  >>
+  return stored
 }
 
 function createAggregateTombstone(attemptId: string): AggregateReadingProgressJournalSlot {
@@ -1687,13 +1739,14 @@ function restoreWriterJournal(
   journal: StoredReadingProgressJournal,
   key: string,
 ): CurrentReadingProgressJournal {
-  const source = journalSource(journalSlotSchemaVersion, key, slot, journal)
+  const stored = toStoredJournalDraft(journal)
+  const source = journalSource(journalSlotSchemaVersion, key, slot, stored)
   return {
     schemaVersion: journalSchemaVersion,
     epochId: slot.epochId,
     generation: slot.generation,
-    ...journal,
-    sources: deduplicateSources([source, ...(journal.supersedes ?? [])]),
+    ...stored,
+    sources: deduplicateSources([source, ...(stored.supersedes ?? [])]),
   }
 }
 
@@ -1702,18 +1755,19 @@ function restoreWriterJournalOperation(
   key: string,
   journal: StoredReadingProgressJournal = slot.journal,
 ): CurrentReadingProgressJournal {
+  const stored = toStoredJournalDraft(journal)
   const source = journalSource(
     journalOperationSlotSchemaVersion,
     key,
     slot,
-    journal,
+    stored,
   )
   return {
     schemaVersion: journalSchemaVersion,
     epochId: slot.epochId,
     generation: slot.generation,
-    ...journal,
-    sources: deduplicateSources([source, ...(journal.supersedes ?? [])]),
+    ...stored,
+    sources: deduplicateSources([source, ...(stored.supersedes ?? [])]),
   }
 }
 
@@ -1722,13 +1776,14 @@ function restoreAggregateJournal(
   journal: StoredReadingProgressJournal,
   key: string,
 ): CurrentReadingProgressJournal {
-  const source = journalSource(aggregateSlotSchemaVersion, key, slot, journal)
+  const stored = toStoredJournalDraft(journal)
+  const source = journalSource(aggregateSlotSchemaVersion, key, slot, stored)
   return {
     schemaVersion: journalSchemaVersion,
     epochId: slot.epochId,
     generation: slot.generation,
-    ...journal,
-    sources: deduplicateSources([source, ...(journal.supersedes ?? [])]),
+    ...stored,
+    sources: deduplicateSources([source, ...(stored.supersedes ?? [])]),
   }
 }
 
@@ -1751,14 +1806,7 @@ function journalSource(
 }
 
 function toJournalDraft(journal: CurrentReadingProgressJournal): ReadingProgressJournalDraft {
-  const {
-    schemaVersion: _schemaVersion,
-    epochId: _epochId,
-    generation: _generation,
-    sources: _sources,
-    ...draft
-  } = journal
-  return draft
+  return toStoredJournalDraft(journal)
 }
 
 function nextGeneration(current?: number): number {
@@ -1841,12 +1889,12 @@ function writerSlotGapAnchorDebt(
           && source.sequence <= slot.sequence) {
           return false
         }
-        const tombstone = tombstones.get(source.writerId)
-        if (tombstone
-          && tombstone.articleId === source.articleId
-          && tombstone.attemptId === source.attemptId
-          && tombstone.writerId === source.writerId
-          && tombstone.sequence >= source.sequence) {
+        if (writerCausalClosureIsSettled(
+          tombstones,
+          source.articleId,
+          source.attemptId,
+          { writerId: source.writerId, sequence: source.sequence },
+        )) {
           return false
         }
       }
@@ -1884,6 +1932,19 @@ function unsettledWriterGapLineages(
   tombstones: ReadonlyMap<string, WriterReadingProgressJournalTombstone>,
 ): ReadingProgressJournalWriterGapLineage[] {
   return journalWriterGapLineages(journal)
+    .filter(lineage => !writerCausalClosureIsSettled(
+      tombstones,
+      journal.articleId,
+      journal.attemptId,
+      lineage,
+    ))
+}
+
+function unsettledWriterCausalClosureLineages(
+  journal: ReadingProgressJournalDraft,
+  tombstones: ReadonlyMap<string, WriterReadingProgressJournalTombstone>,
+): ReadingProgressJournalWriterGapLineage[] {
+  return journalCausalClosureLineages(journal)
     .filter(lineage => !writerCausalClosureIsSettled(
       tombstones,
       journal.articleId,

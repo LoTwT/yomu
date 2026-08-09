@@ -10,6 +10,7 @@ import {
 import {
   adoptReadingProgressJournal,
   clearReadingProgressJournal,
+  clearSelectedReadingProgressJournal,
   compactReadingProgressJournalSlots,
   createReadingProgressJournal,
   readReadingProgressJournal,
@@ -280,6 +281,226 @@ describe('reading attempt commands', () => {
     )
     expect(slots).toHaveLength(2)
     expect(slots.map(({ value }) => value.sequence).sort()).toEqual([1, 1])
+  })
+
+  it('retires only the selected writer when an independent writer has a sequence gap', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-b', sequence: 3 })
+
+    const merged = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+      0,
+    )
+    expect(merged).toMatchObject({
+      writerId: 'writer-a',
+      sequence: 1,
+      writerGapLineages: [{ writerId: 'writer-b', sequence: 3 }],
+    })
+
+    await expect(clearSelectedReadingProgressJournal(preferences, merged!))
+      .resolves.toBeUndefined()
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-a',
+    )).toMatchObject({
+      sequence: 1,
+      causalClosureSequence: 1,
+    })
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-b',
+    )).toBeNull()
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a', 0))
+      .toMatchObject({
+        writerId: 'writer-b',
+        sequence: 3,
+      })
+  })
+
+  it('ignores persisted runtime-only causal closure provenance', async () => {
+    const preferences = new MemoryPreferencesStore()
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: true,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 4,
+    }, { writerId: 'writer-a', sequence: 1 })
+    const key = 'reader-progress-journal:v4:article-a:writer-a:1'
+    const operation = await preferences.get<Record<string, unknown>>(key)
+    if (!operation || !operation.journal || typeof operation.journal !== 'object') {
+      throw new Error('Expected a stored writer operation.')
+    }
+    await preferences.set(key, {
+      ...operation,
+      journal: {
+        ...operation.journal,
+        selectedCausalClosureLineages: [{ writerId: 'forged-writer', sequence: 9 }],
+      },
+    })
+
+    const recovered = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+      0,
+    )
+    expect(recovered).toMatchObject({ writerId: 'writer-a', sequence: 1 })
+    expect(recovered).not.toHaveProperty('selectedCausalClosureLineages')
+  })
+
+  it('derives the selected causal gap without retiring an independent gap writer', async () => {
+    const preferences = new MemoryPreferencesStore()
+    const oldest = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 1,
+    }, { writerId: 'writer-z', sequence: 1 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: false,
+        currentSentenceId: 'article-a:s1',
+        furthestSentenceOrdinal: 0,
+        activeDurationSec: 2,
+      }, { writerId: 'writer-b', sequence: 1 }),
+      supersedes: oldest.sources,
+    })
+    const inheritedGap = await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s1',
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 3,
+    }, { writerId: 'writer-b', sequence: 3 })
+    await storeReadingProgressJournal(preferences, {
+      ...createReadingProgressJournal({
+        articleId: 'article-a',
+        attemptId: 'attempt-a',
+        baseAttemptRevision: 0,
+        cursorMutation: true,
+        currentSentenceId: 'article-a:s3',
+        furthestSentenceOrdinal: 2,
+        activeDurationSec: 5,
+      }, { writerId: 'writer-a', sequence: 1 }),
+      supersedes: inheritedGap.sources,
+    })
+    await writeReadingProgressJournal(preferences, {
+      articleId: 'article-a',
+      attemptId: 'attempt-a',
+      baseAttemptRevision: 0,
+      cursorMutation: false,
+      currentSentenceId: 'article-a:s2',
+      furthestSentenceOrdinal: 1,
+      activeDurationSec: 7,
+    }, { writerId: 'writer-u', sequence: 3 })
+
+    const merged = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+      0,
+    )
+    expect(merged).toMatchObject({
+      writerId: 'writer-a',
+      writerGapLineages: [
+        { writerId: 'writer-b', sequence: 3 },
+        { writerId: 'writer-u', sequence: 3 },
+      ],
+      selectedCausalClosureLineages: [
+        { writerId: 'writer-b', sequence: 3 },
+        { writerId: 'writer-z', sequence: 1 },
+      ],
+    })
+    if (!merged || merged.schemaVersion !== 2) {
+      throw new Error('Expected a merged current progress journal.')
+    }
+
+    const originalUpdate = preferences.update.bind(preferences)
+    let rejectOldestTombstone = true
+    preferences.update = async <T>(key: string, updater: (
+      current: unknown | null,
+    ) => T | null) => {
+      if (rejectOldestTombstone
+        && key === 'reader-progress-journal-tombstone:v3:article-a:writer-z') {
+        throw new Error('Oldest selected source is temporarily unavailable.')
+      }
+      return originalUpdate(key, updater)
+    }
+
+    await expect(clearSelectedReadingProgressJournal(preferences, merged))
+      .rejects.toThrow('selected reading progress journal could not be retired')
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-a',
+    )).toBeNull()
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-b',
+    )).toMatchObject({ sequence: 3 })
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-b',
+    )).not.toHaveProperty('causalClosureSequence')
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-u',
+    )).toBeNull()
+
+    const retry = await readReadingProgressJournal(
+      preferences,
+      'article-a',
+      'attempt-a',
+      0,
+    )
+    expect(retry).toMatchObject({
+      writerId: 'writer-a',
+      selectedCausalClosureLineages: [
+        { writerId: 'writer-b', sequence: 3 },
+        { writerId: 'writer-z', sequence: 1 },
+      ],
+    })
+    if (!retry || retry.schemaVersion !== 2) {
+      throw new Error('Expected a selected progress journal retry.')
+    }
+
+    rejectOldestTombstone = false
+    await expect(clearSelectedReadingProgressJournal(preferences, retry))
+      .resolves.toBeUndefined()
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-a',
+    )).toMatchObject({ sequence: 1, causalClosureSequence: 1 })
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-b',
+    )).toMatchObject({ sequence: 3, causalClosureSequence: 3 })
+    expect(await preferences.get(
+      'reader-progress-journal-tombstone:v3:article-a:writer-u',
+    )).toBeNull()
+    expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a', 0))
+      .toMatchObject({ writerId: 'writer-u', sequence: 3 })
   })
 
   it('keeps each writer tombstone as a high-water mark without blocking a newer sequence', async () => {
@@ -704,6 +925,7 @@ describe('reading attempt commands', () => {
     expect(merged).toMatchObject({
       writerId: 'writer-zz',
       writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
+      selectedCausalClosureLineages: [],
     })
     if (!merged || merged.schemaVersion !== 2) {
       throw new Error('Expected a merged current progress journal.')
@@ -720,6 +942,10 @@ describe('reading attempt commands', () => {
         writerGapLineages: [{ writerId: 'writer-a', sequence: 3 }],
       },
     })
+    expect(adopted.journal).not.toHaveProperty('selectedCausalClosureLineages')
+    expect(await preferences.get(
+      'reader-progress-journal:v4:article-a:writer-current:1',
+    )).not.toHaveProperty('journal.selectedCausalClosureLineages')
     await clearReadingProgressJournal(preferences, adopted.journal)
     expect(await readReadingProgressJournal(preferences, 'article-a', 'attempt-a'))
       .toBeNull()
