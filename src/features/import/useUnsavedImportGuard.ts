@@ -4,9 +4,13 @@ import {
   shallowReadonly,
   shallowRef,
   toValue,
+  watch,
   type MaybeRefOrGetter,
 } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
+
+import { useInteractionLayer } from '@/app/interactionLayer'
+import { getRouteLeaveCoordinator } from '@/app/routeLeaveCoordinator'
 
 interface BeforeUnloadTarget {
   addEventListener: (type: 'beforeunload', listener: (event: BeforeUnloadEvent) => void) => void
@@ -33,6 +37,11 @@ export function useUnsavedImportGuard(
   isDirty: MaybeRefOrGetter<boolean>,
   options: UnsavedImportGuardOptions = {},
 ) {
+  const interactionLayer = useInteractionLayer()
+  const router = useRouter()
+  const routeLeaveCoordinator = getRouteLeaveCoordinator(router)
+  const guardedRecord = router.currentRoute.value.matched.at(-1)
+  let guardedOrigin = router.currentRoute.value.fullPath
   const isConfirming = shallowRef(false)
   const beforeUnloadTarget = options.beforeUnloadTarget === undefined
     ? resolveBeforeUnloadTarget()
@@ -40,13 +49,38 @@ export function useUnsavedImportGuard(
   const handleBeforeUnload = createUnsavedImportBeforeUnloadHandler(() => toValue(isDirty))
   let pendingDecision: Promise<boolean> | null = null
   let resolveDecision: ((allowNavigation: boolean) => void) | null = null
+  let settlementSerial = 0
+  watch(router.currentRoute, (route) => {
+    if (guardedRecord && route.matched.includes(guardedRecord)) {
+      guardedOrigin = route.fullPath
+    }
+  }, { flush: 'sync' })
+  const unregisterRouteBlocker = routeLeaveCoordinator.registerBlocker({
+    hasPendingDecision: () => pendingDecision !== null,
+    onSecondaryPop: () => {
+      interactionLayer.requestCloseTop('navigation')
+    },
+    origin: () => guardedOrigin,
+    shouldBlock: () => toValue(isDirty),
+  })
 
-  onBeforeRouteLeave(() => {
+  onBeforeRouteLeave((to, from) => {
+    if (routeLeaveCoordinator.allowsConcurrentNavigation(to, from)) {
+      return true
+    }
+    if (routeLeaveCoordinator.blocksConcurrentNavigation()) {
+      return false
+    }
     if (!toValue(isDirty)) {
       return true
     }
     if (pendingDecision) {
-      return pendingDecision
+      const currentDecision = pendingDecision
+      interactionLayer.requestCloseTop('navigation')
+      return currentDecision
+    }
+    if (interactionLayer.requestCloseTop('navigation')) {
+      return false
     }
     isConfirming.value = true
     pendingDecision = new Promise<boolean>((resolve) => {
@@ -58,22 +92,28 @@ export function useUnsavedImportGuard(
   onMounted(() => beforeUnloadTarget?.addEventListener('beforeunload', handleBeforeUnload))
   onUnmounted(() => {
     beforeUnloadTarget?.removeEventListener('beforeunload', handleBeforeUnload)
-    settle(false)
+    unregisterRouteBlocker()
+    void settle(false)
   })
 
   function keepEditing(): void {
-    settle(false)
+    void settle(false)
   }
 
   function discardAndLeave(): void {
-    settle(true)
+    void settle(true)
   }
 
-  function settle(allowNavigation: boolean): void {
+  async function settle(allowNavigation: boolean): Promise<void> {
+    const serial = ++settlementSerial
     const resolve = resolveDecision
+    isConfirming.value = false
+    await routeLeaveCoordinator.settleDecision(allowNavigation)
+    if (serial !== settlementSerial || resolve !== resolveDecision) {
+      return
+    }
     resolveDecision = null
     pendingDecision = null
-    isConfirming.value = false
     resolve?.(allowNavigation)
   }
 

@@ -5,15 +5,77 @@ import {
   PhGearSix,
   PhUploadSimple,
 } from '@phosphor-icons/vue'
-import { computed } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted, provide } from 'vue'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+
+import {
+  createInteractionLayerController,
+  interactionLayerKey,
+} from './interactionLayer'
+import { usePlatformServices } from './platformServices'
 
 const route = useRoute()
+const router = useRouter()
+const platformServices = usePlatformServices()
+const interactionLayer = createInteractionLayerController()
 const isImmersive = computed(() => route.meta.immersive === true)
+let unsubscribeBackNavigation: (() => void) | null = null
+
+provide(interactionLayerKey, interactionLayer)
+
+const removeNavigationGuard = router.beforeEach(() => {
+  return interactionLayer.requestCloseTop('navigation') ? false : true
+})
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) {
+    return
+  }
+  if (interactionLayer.requestCloseTop('escape')) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+
+function rememberInteractionTrigger(event: PointerEvent): void {
+  const eventTarget = event.target as {
+    closest?: (selector: string) => HTMLElement | null
+  } | null
+  const focusTarget = eventTarget?.closest?.([
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',')) ?? null
+  interactionLayer.rememberFocusReturn(focusTarget)
+}
+
+onMounted(() => {
+  unsubscribeBackNavigation = platformServices.backNavigation.subscribe((event) => {
+    if (event.source === 'browser') {
+      return
+    }
+    if (!interactionLayer.requestCloseTop('system-back')) {
+      router.back()
+    }
+  })
+})
+
+onUnmounted(() => {
+  unsubscribeBackNavigation?.()
+  removeNavigationGuard()
+})
 </script>
 
 <template>
-  <div class="yomu-app" :class="{ 'yomu-app--immersive': isImmersive }">
+  <div
+    class="yomu-app"
+    :class="{ 'yomu-app--immersive': isImmersive }"
+    @pointerdown.capture="rememberInteractionTrigger"
+    @keydown="handleKeydown"
+  >
     <a v-if="!isImmersive" class="skip-link" href="#main-content">
       跳到主要内容
     </a>

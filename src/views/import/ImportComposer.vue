@@ -39,7 +39,7 @@ const {
   updateBody,
   save,
   cancelPreview,
-  acceptDuplicate,
+  acceptResolvedArticle,
 } = useImportFlow()
 const source = computed<ImportSource>({
   get: () => inputSource.value,
@@ -62,8 +62,8 @@ async function saveAndOpen(): Promise<void> {
   }
 }
 
-function openDuplicate(): void {
-  const articleId = acceptDuplicate()
+function openResolvedArticle(): void {
+  const articleId = acceptResolvedArticle()
   if (articleId) {
     emit('openArticle', articleId)
   }
@@ -141,23 +141,32 @@ function openDuplicate(): void {
     <section
       v-else
       class="import-composer__duplicate"
-      data-testid="import-duplicate-state"
+      :data-testid="state.phase === 'saved'
+        ? 'import-saved-state'
+        : 'import-duplicate-state'"
       aria-labelledby="duplicate-heading"
     >
       <p class="import-composer__eyebrow">
-        已在阅读库
+        {{ state.phase === 'saved' ? '已保存到我的阅读' : '已在阅读库' }}
       </p>
       <h2 id="duplicate-heading" class="import-composer__duplicate-title" lang="en">
         {{ state.articleTitle }}
       </h2>
       <p class="import-composer__duplicate-copy">
-        Yomu 根据最终正文识别到同一篇文章，因此没有创建副本。标题修改不会改变去重结果。
+        {{ state.phase === 'saved'
+          ? '内容已经安全保存，可以现在开始阅读。'
+          : 'Yomu 根据最终正文识别到同一篇文章，因此没有创建副本。标题修改不会改变去重结果。' }}
       </p>
       <div class="import-composer__duplicate-actions">
-        <button class="import-composer__open" type="button" @click="openDuplicate">
-          打开已有文章
+        <button class="import-composer__open" type="button" @click="openResolvedArticle">
+          {{ state.phase === 'saved' ? '开始阅读' : '打开已有文章' }}
         </button>
-        <button class="import-composer__cancel" type="button" @click="cancelPreview">
+        <button
+          v-if="state.phase === 'duplicate'"
+          class="import-composer__cancel"
+          type="button"
+          @click="cancelPreview"
+        >
           返回修改
         </button>
       </div>

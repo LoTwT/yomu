@@ -465,13 +465,21 @@ test('unsaved import drafts require an explicit SPA navigation decision', async 
   await page.getByRole('button', { name: 'TXT / Markdown' }).click()
   await expect(page.getByTestId('file-drop-zone')).toBeVisible()
 
-  await page.getByRole('link', { name: '设置', exact: true }).click({ noWaitAfter: true })
+  const settingsLink = page.getByRole('link', { name: '设置', exact: true })
+  await settingsLink.click({ noWaitAfter: true })
   const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
   await expect(dialog).toBeVisible()
   await expect(page).toHaveURL(/\/import$/)
   await expect(dialog.getByRole('button', { name: '继续编辑' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(settingsLink).toBeFocused()
+
+  await settingsLink.click({ noWaitAfter: true })
+  await expect(dialog).toBeVisible()
   await dialog.getByRole('button', { name: '继续编辑' }).click()
   await expect(dialog).toHaveCount(0)
+  await expect(settingsLink).toBeFocused()
   await page.getByRole('button', { name: '粘贴文本' }).click()
   await expect(bodyField).toHaveValue(importedBody)
 
@@ -485,6 +493,168 @@ test('unsaved import drafts require an explicit SPA navigation decision', async 
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByTestId('library-empty-state')).toBeVisible()
   await expect(page.locator('[data-article-id]')).toHaveCount(0)
+})
+
+test('browser back keeps the import draft until the confirmation is resolved', async ({ page }) => {
+  await page.goto('/settings')
+  await page.getByRole('link', { name: '我的阅读', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await page.getByRole('link', { name: '导入内容', exact: true }).click()
+  await expect(page).toHaveURL(/\/import$/)
+  const bodyField = page.getByLabel('英文正文')
+  await bodyField.fill(importedBody)
+
+  await page.evaluate(() => history.back())
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  await expect(dialog).toBeVisible()
+  await expect(bodyField).toHaveValue(importedBody)
+
+  await page.evaluate(() => history.back())
+  await expect(dialog).toHaveCount(0)
+  await expect(page).toHaveURL(/\/import$/)
+  await expect(bodyField).toHaveValue(importedBody)
+
+  await page.evaluate(() => history.back())
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '放弃并离开' }).click()
+  await expect(page).toHaveURL(/\/$/)
+
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+})
+
+test('rapid browser back keeps the import URL, route, and draft coherent', async ({ page }) => {
+  await page.goto('/settings')
+  await page.getByRole('link', { name: '我的阅读', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await page.getByRole('link', { name: '导入内容', exact: true }).click()
+  await expect(page).toHaveURL(/\/import$/)
+  const bodyField = page.getByLabel('英文正文')
+  await bodyField.fill(importedBody)
+
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    addEventListener('popstate', () => resolve(), { once: true })
+    history.back()
+    history.back()
+  }))
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  // WebKit may coalesce the burst into one pop while Chromium reports both.
+  await expect.poll(async () => {
+    if (await dialog.isVisible()) {
+      return true
+    }
+    return page.evaluate(() => location.pathname === '/import'
+      && document.querySelector('[data-page-heading]')?.textContent?.trim() === '导入内容')
+  }).toBe(true)
+  if (await dialog.isVisible()) {
+    await page.keyboard.press('Escape')
+  }
+
+  await expect(page).toHaveURL(/\/import$/)
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
+  await expect(bodyField).toHaveValue(importedBody)
+})
+
+test('rapid back restores the exact duplicate-URL history entry', async ({ page }) => {
+  await page.goto('/settings')
+  await page.getByRole('link', { name: '导入内容', exact: true }).click()
+  await expect(page).toHaveURL(/\/import$/)
+  await page.getByRole('link', { name: '我的阅读', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await page.getByRole('link', { name: '导入内容', exact: true }).click()
+  await expect(page).toHaveURL(/\/import$/)
+
+  const originPosition = await page.evaluate(() => history.state.position as number)
+  const bodyField = page.getByLabel('英文正文')
+  await bodyField.fill(importedBody)
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    addEventListener('popstate', () => resolve(), { once: true })
+    history.back()
+    history.back()
+  }))
+
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  await expect.poll(async () => {
+    if (await dialog.isVisible()) {
+      return 'dialog'
+    }
+    return page.evaluate((expectedPosition) =>
+      location.pathname === '/import' && history.state.position === expectedPosition
+        ? 'stable'
+        : 'pending', originPosition)
+  }).toMatch(/^(dialog|stable)$/)
+  if (await dialog.isVisible()) {
+    await page.keyboard.press('Escape')
+  }
+  await expect(page).toHaveURL(/\/import$/)
+  await expect.poll(() => page.evaluate(() => history.state.position as number))
+    .toBe(originPosition)
+  await expect(bodyField).toHaveValue(importedBody)
+
+  await bodyField.fill('')
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(/\/$/)
+  await expect.poll(() => page.evaluate(() => history.state.position as number))
+    .toBe(originPosition - 1)
+})
+
+test('browser forward preserves its history entry through both decisions', async ({ page }) => {
+  await page.goto('/import')
+  await page.getByRole('link', { name: '设置', exact: true }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(/\/import$/)
+
+  const importPosition = await page.evaluate(() => history.state.position as number)
+  const bodyField = page.getByLabel('英文正文')
+  await bodyField.fill(importedBody)
+  await page.evaluate(() => history.forward())
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '继续编辑' }).click()
+  await expect(page).toHaveURL(/\/import$/)
+  await expect.poll(() => page.evaluate(() => history.state.position as number))
+    .toBe(importPosition)
+
+  await page.evaluate(() => history.forward())
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: '放弃并离开' }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect.poll(() => page.evaluate(() => history.state.position as number))
+    .toBe(importPosition + 1)
+
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(/\/import$/)
+})
+
+test('a rejected discard navigation keeps the import draft without a page error', async ({ page }) => {
+  const pageErrors: Error[] = []
+  page.on('pageerror', error => pageErrors.push(error))
+  await page.route('**/src/views/VocabularyView.vue*', route => route.abort('failed'))
+  await page.goto('/import')
+  const bodyField = page.getByLabel('英文正文')
+  await bodyField.fill(importedBody)
+
+  const wordsLink = page.getByRole('link', { name: '收藏词', exact: true })
+  await wordsLink.click({ noWaitAfter: true })
+  const dialog = page.getByRole('dialog', { name: '放弃未保存的导入？' })
+  await expect(dialog).toBeVisible()
+  const failedRequest = page.waitForEvent(
+    'requestfailed',
+    request => request.url().includes('/src/views/VocabularyView.vue'),
+  )
+  await dialog.getByRole('button', { name: '放弃并离开' }).click()
+  await failedRequest
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
+
+  await expect(page).toHaveURL(/\/import$/)
+  await expect(bodyField).toHaveValue(importedBody)
+  await expect(dialog).toHaveCount(0)
+  await expect(wordsLink).toBeFocused()
+  expect(pageErrors).toEqual([])
 })
 
 test('library keeps one semantic list across the 1199 and 1200 pixel layout boundary', async ({ page }) => {

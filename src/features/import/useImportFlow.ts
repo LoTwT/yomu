@@ -64,6 +64,14 @@ export type ImportFlowState =
       articleId: string
       articleTitle: string
     }
+  | {
+      phase: 'saved'
+      draft: ImportedArticleDraft
+      title: string
+      body: string
+      articleId: string
+      articleTitle: string
+    }
 
 export type ImportSaveOutcome =
   | { kind: 'created', articleId: string }
@@ -440,6 +448,14 @@ export function useImportFlow() {
         return { kind: 'duplicate', articleId: result.article.id }
       }
       resolved.value = true
+      state.value = {
+        phase: 'saved',
+        draft: finalDraft,
+        title: current.title,
+        body: current.body,
+        articleId: result.article.id,
+        articleTitle: result.article.title,
+      }
       return { kind: 'created', articleId: result.article.id }
     }
     catch {
@@ -482,8 +498,8 @@ export function useImportFlow() {
     }
   }
 
-  function acceptDuplicate(): string | null {
-    if (state.value.phase !== 'duplicate') {
+  function acceptResolvedArticle(): string | null {
+    if (state.value.phase !== 'duplicate' && state.value.phase !== 'saved') {
       return null
     }
     resolved.value = true
@@ -514,7 +530,7 @@ export function useImportFlow() {
     updateBody,
     save,
     cancelPreview,
-    acceptDuplicate,
+    acceptResolvedArticle,
   }
 }
 
