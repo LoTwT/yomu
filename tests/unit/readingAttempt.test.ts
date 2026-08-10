@@ -6,6 +6,7 @@ import {
   ArticleNotFoundError,
   flushReadingPosition,
   openOrCreateActiveAttempt,
+  openReadingAttempt,
 } from '@/features/reader/attemptCommands'
 import {
   adoptReadingProgressJournal,
@@ -3338,6 +3339,14 @@ describe('reading attempt commands', () => {
       articles: [article],
       attempts: [completed],
     })
+
+    const resumed = await openReadingAttempt(repositories, article.id, {
+      randomUUID: () => 'attempt-must-not-be-created',
+      now: () => new Date('2026-08-04T09:00:00.000Z'),
+    })
+    expect(resumed.attempt).toEqual(completed)
+    expect(await repositories.attempts.getActiveByArticle(article.id)).toBeNull()
+    expect(await repositories.attempts.count()).toBe(1)
 
     const opened = await openOrCreateActiveAttempt(repositories, article.id, {
       randomUUID: () => 'attempt-reread',

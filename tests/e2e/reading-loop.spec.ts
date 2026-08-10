@@ -151,6 +151,126 @@ test('empty library becomes a persistent reading session and resumes the selecte
   await expect(page.locator('[data-article-id]')).toHaveCount(1)
 })
 
+test('an imported reading completes into a durable review and rereads only on request', async ({ page }) => {
+  await installReaderSpeechProbe(page)
+  await page.goto('/import')
+  await page.getByLabel('英文正文').fill(importedBody)
+  await page.getByRole('button', { name: '生成预览' }).click()
+  await page.getByLabel('标题').fill('A completed reading loop')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  const articleId = page.url().split('/').at(-1) ?? ''
+  await page.locator('[data-sentence-id]').last().click()
+  await page.getByRole('button', { name: '朗读当前句' }).click()
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toBeVisible()
+  const cancelCountBeforeCompletion = await readSpeechProbe(page, 'cancelCount')
+  await page.waitForTimeout(1_100)
+
+  await page.getByRole('button', { name: '完成阅读' }).click()
+
+  await expect(page).toHaveURL(/\/review\/[0-9a-f-]+$/)
+  const reviewUrl = page.url()
+  await expect(page.getByRole('heading', { level: 1, name: '读后回顾' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'A completed reading loop' }))
+    .toBeVisible()
+  await expect(page.getByText('实际耗时')).toBeVisible()
+  await expect(page.getByText('完成时间')).toBeVisible()
+  await expect(page.getByText('粘贴文本', { exact: true })).toBeVisible()
+  await expect.poll(() => readSpeechProbe(page, 'cancelCount'))
+    .toBeGreaterThan(cancelCountBeforeCompletion)
+  await expect.poll(() => readArticleAttempts(page, articleId)).toEqual([
+    expect.objectContaining({
+      activeDurationSec: expect.any(Number),
+      completedAt: expect.any(String),
+      status: 'completed',
+    }),
+  ])
+  await expect.poll(async () => {
+    const [completed] = await readArticleAttempts(page, articleId)
+    return completed?.activeDurationSec ?? 0
+  }).toBeGreaterThanOrEqual(1)
+
+  await page.reload()
+  await expect(page).toHaveURL(reviewUrl)
+  await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+  await page.getByRole('link', { name: '返回阅读库' }).click()
+  await expect(page).toHaveURL(/\/$/)
+  const articleItem = page.locator(`[data-article-id="${articleId}"]`)
+  await expect(articleItem).toContainText('已完成')
+  await expect(articleItem.getByRole('progressbar')).toHaveAttribute('value', '100')
+  await expect.poll(() => readActiveSentenceId(page, articleId)).toBeNull()
+
+  await page.goto(reviewUrl)
+  await page.getByRole('button', { name: '再读一次' }).click()
+  await expect(page).toHaveURL(new RegExp(`/read/${articleId}$`))
+  await expect.poll(() => readArticleAttempts(page, articleId)).toEqual([
+    expect.objectContaining({ status: 'completed' }),
+    expect.objectContaining({ status: 'active' }),
+  ])
+})
+
+test('completing in one tab stops the same attempt in another tab', async ({ page }) => {
+  await installReaderSpeechProbe(page)
+  await page.goto('/import')
+  await page.getByLabel('英文正文').fill(importedBody)
+  await page.getByRole('button', { name: '生成预览' }).click()
+  await page.getByLabel('标题').fill('A shared completion event')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  const readerUrl = page.url()
+
+  const secondPage = await page.context().newPage()
+  try {
+    await installReaderSpeechProbe(secondPage)
+    await secondPage.goto(readerUrl)
+    await secondPage.getByRole('button', { name: '朗读当前句' }).click()
+    await expect(secondPage.getByRole('button', { name: '暂停朗读' })).toBeVisible()
+    const cancelCountBeforeCompletion = await readSpeechProbe(secondPage, 'cancelCount')
+
+    await page.getByRole('button', { name: '完成阅读' }).click()
+    await expect(page).toHaveURL(/\/review\/[0-9a-f-]+$/)
+
+    await expect(secondPage.getByRole('button', { name: '打开读后回顾' })).toBeVisible()
+    await expect(secondPage.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+    await expect.poll(() => readSpeechProbe(secondPage, 'cancelCount'))
+      .toBeGreaterThan(cancelCountBeforeCompletion)
+  }
+  finally {
+    await secondPage.close()
+  }
+})
+
+test('a failed Review load survives Reader reload without starting a reread', async ({ page }) => {
+  await page.goto('/import')
+  await page.getByLabel('英文正文').fill(importedBody)
+  await page.getByRole('button', { name: '生成预览' }).click()
+  await page.getByLabel('标题').fill('A recoverable completed reading')
+  await page.getByRole('button', { name: '保存并开始阅读' }).click()
+  await expect(page).toHaveURL(/\/read\/[0-9a-f-]+$/)
+  const articleId = page.url().split('/').at(-1) ?? ''
+  const reviewModulePattern = '**/src/views/ReviewView.vue*'
+  await page.route(reviewModulePattern, route => route.abort())
+
+  await page.getByRole('button', { name: '完成阅读' }).click()
+  await expect(page.getByText('阅读已完成，但回顾页面暂时未能打开')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/read/${articleId}$`))
+  await expect.poll(() => readArticleAttempts(page, articleId)).toEqual([
+    expect.objectContaining({ status: 'completed' }),
+  ])
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: '打开读后回顾' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '完成阅读' })).toHaveCount(0)
+  await expect.poll(() => readArticleAttempts(page, articleId)).toEqual([
+    expect.objectContaining({ status: 'completed' }),
+  ])
+
+  await page.unroute(reviewModulePattern)
+  await page.getByRole('button', { name: '打开读后回顾' }).click()
+  await expect(page).toHaveURL(/\/review\/[0-9a-f-]+$/)
+})
+
 test('continuous speech follows the reading sentence and stays paused after background recovery', async ({ page }) => {
   await installReaderSpeechProbe(page)
   await page.goto('/import')
@@ -1565,6 +1685,61 @@ async function readActiveDuration(page: Page, articleId: string): Promise<number
       return typeof active?.activeDurationSec === 'number'
         ? active.activeDurationSec
         : 0
+    }
+    finally {
+      database.close()
+    }
+  }, articleId)
+}
+
+async function readArticleAttempts(page: Page, articleId: string): Promise<Array<{
+  activeDurationSec: number
+  completedAt?: string
+  id: string
+  status: 'active' | 'completed'
+}>> {
+  return page.evaluate(async (targetArticleId) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      const attempts = await new Promise<Array<{
+        activeDurationSec?: unknown
+        articleId?: unknown
+        completedAt?: unknown
+        id?: unknown
+        status?: unknown
+      }>>((resolve, reject) => {
+        const transaction = database.transaction('attempts', 'readonly')
+        const request = transaction.objectStore('attempts').getAll()
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      return attempts
+        .filter((attempt): attempt is typeof attempt & {
+          activeDurationSec: number
+          id: string
+          status: 'active' | 'completed'
+        } => attempt.articleId === targetArticleId
+          && typeof attempt.activeDurationSec === 'number'
+          && typeof attempt.id === 'string'
+          && (attempt.status === 'active' || attempt.status === 'completed'))
+        .map(attempt => ({
+          activeDurationSec: attempt.activeDurationSec,
+          ...(typeof attempt.completedAt === 'string'
+            ? { completedAt: attempt.completedAt }
+            : {}),
+          id: attempt.id,
+          status: attempt.status,
+        }))
+        .sort((left, right) => {
+          if (left.status !== right.status) {
+            return left.status === 'completed' ? -1 : 1
+          }
+          return left.id.localeCompare(right.id)
+        })
     }
     finally {
       database.close()

@@ -31,10 +31,41 @@ export interface FlushReadingPositionResult {
   journalSettled: boolean
 }
 
+export interface CompleteReadingAttemptOptions {
+  articleId: string
+  attemptId: string
+  currentSentenceId: string
+  furthestSentenceOrdinal: number
+  activeDurationSec: number
+  now?: () => Date
+}
+
+export interface CompleteReadingAttemptResult {
+  attempt: ReadingAttempt
+  completedNow: boolean
+}
+
 export async function openOrCreateActiveAttempt(
   repositories: LocalRepositories,
   articleId: string,
   dependencies: ReadingCommandDependencies = {},
+): Promise<OpenArticleResult> {
+  return openReadingAttemptRecord(repositories, articleId, dependencies, true)
+}
+
+export async function openReadingAttempt(
+  repositories: LocalRepositories,
+  articleId: string,
+  dependencies: ReadingCommandDependencies = {},
+): Promise<OpenArticleResult> {
+  return openReadingAttemptRecord(repositories, articleId, dependencies, false)
+}
+
+async function openReadingAttemptRecord(
+  repositories: LocalRepositories,
+  articleId: string,
+  dependencies: ReadingCommandDependencies,
+  createAfterCompletion: boolean,
 ): Promise<OpenArticleResult> {
   const now = dependencies.now ?? (() => new Date())
   const randomUUID = dependencies.randomUUID ?? getRandomUUID
@@ -45,27 +76,39 @@ export async function openOrCreateActiveAttempt(
       throw new ArticleNotFoundError(articleId)
     }
 
-    const timestamp = now().toISOString()
     const activeAttempt = await scope.attempts.getActiveByArticle(articleId)
-    const currentSentenceId = resolveCurrentSentenceId(article, activeAttempt?.currentSentenceId)
-    const attempt: ReadingAttempt = activeAttempt
-      ? {
-          ...activeAttempt,
-          currentSentenceId,
-          lastOpenedAt: timestamp,
-        }
-      : {
-          id: randomUUID(),
-          articleId,
-          currentSentenceId,
-          furthestSentenceOrdinal: 0,
-          activeDurationSec: 0,
-          progressRevision: 0,
-          status: 'active',
-          startedAt: timestamp,
-          lastOpenedAt: timestamp,
-        }
+    if (activeAttempt) {
+      const attempt: ReadingAttempt = {
+        ...activeAttempt,
+        currentSentenceId: resolveCurrentSentenceId(article, activeAttempt.currentSentenceId),
+        lastOpenedAt: now().toISOString(),
+      }
+      await scope.attempts.put(attempt)
+      return { article, attempt }
+    }
 
+    if (!createAfterCompletion) {
+      const latestCompletedAttempt = (await scope.attempts.listByArticle(articleId))
+        .filter((candidate): candidate is ReadingAttempt & { status: 'completed' } =>
+          candidate.status === 'completed')
+        .sort(compareCompletedAttemptsNewestFirst)[0]
+      if (latestCompletedAttempt) {
+        return { article, attempt: latestCompletedAttempt }
+      }
+    }
+
+    const timestamp = now().toISOString()
+    const attempt: ReadingAttempt = {
+      id: randomUUID(),
+      articleId,
+      currentSentenceId: resolveCurrentSentenceId(article),
+      furthestSentenceOrdinal: 0,
+      activeDurationSec: 0,
+      progressRevision: 0,
+      status: 'active',
+      startedAt: timestamp,
+      lastOpenedAt: timestamp,
+    }
     await scope.attempts.put(attempt)
     return { article, attempt }
   })
@@ -188,6 +231,63 @@ export async function flushReadingPosition(
   })
 }
 
+export async function completeReadingAttempt(
+  repositories: LocalRepositories,
+  options: CompleteReadingAttemptOptions,
+): Promise<CompleteReadingAttemptResult> {
+  const now = options.now ?? (() => new Date())
+
+  return repositories.transaction(['articles', 'attempts'], 'readwrite', async (scope) => {
+    const [article, latestAttempt] = await Promise.all([
+      scope.articles.get(options.articleId),
+      scope.attempts.get(options.attemptId),
+    ])
+    if (!article) {
+      throw new ArticleNotFoundError(options.articleId)
+    }
+    if (!latestAttempt || latestAttempt.articleId !== article.id) {
+      throw new ReadingAttemptUnavailableError(options.attemptId)
+    }
+    switch (latestAttempt.status) {
+      case 'completed':
+        return { attempt: latestAttempt, completedNow: false }
+      case 'active':
+        break
+      default:
+        throw new ReadingAttemptUnavailableError(options.attemptId)
+    }
+
+    const currentSentenceId = resolveCurrentSentenceId(article, options.currentSentenceId)
+    const currentOrdinal = resolveSentenceOrdinal(article, currentSentenceId)
+    const requestedFurthestSentenceOrdinal = Number.isSafeInteger(
+      options.furthestSentenceOrdinal,
+    )
+      ? Math.max(0, options.furthestSentenceOrdinal, currentOrdinal)
+      : currentOrdinal
+    const activeDurationSec = Number.isFinite(options.activeDurationSec)
+      ? Math.max(0, Math.floor(options.activeDurationSec))
+      : 0
+    const timestamp = now().toISOString()
+    const nextAttempt: ReadingAttempt = {
+      ...latestAttempt,
+      currentSentenceId,
+      furthestSentenceOrdinal: Math.max(
+        latestAttempt.furthestSentenceOrdinal,
+        requestedFurthestSentenceOrdinal,
+      ),
+      activeDurationSec: Math.max(latestAttempt.activeDurationSec, activeDurationSec),
+      progressRevision: (latestAttempt.progressRevision ?? 0)
+        + (currentSentenceId === latestAttempt.currentSentenceId ? 0 : 1),
+      status: 'completed',
+      lastOpenedAt: timestamp,
+      completedAt: timestamp,
+    }
+
+    await scope.attempts.put(nextAttempt)
+    return { attempt: nextAttempt, completedNow: true }
+  })
+}
+
 function resolveCurrentSentenceId(article: ArticleRecord, candidate?: string): string {
   if (candidate && article.sentences.some(sentence => sentence.id === candidate)) {
     return candidate
@@ -202,6 +302,15 @@ function resolveCurrentSentenceId(article: ArticleRecord, candidate?: string): s
 function resolveSentenceOrdinal(article: ArticleRecord, sentenceId: string): number {
   const sorted = [...article.sentences].sort((left, right) => left.order - right.order)
   return Math.max(0, sorted.findIndex(sentence => sentence.id === sentenceId))
+}
+
+function compareCompletedAttemptsNewestFirst(
+  left: ReadingAttempt,
+  right: ReadingAttempt,
+): number {
+  const leftTimestamp = Date.parse(left.completedAt ?? left.lastOpenedAt)
+  const rightTimestamp = Date.parse(right.completedAt ?? right.lastOpenedAt)
+  return rightTimestamp - leftTimestamp || right.id.localeCompare(left.id)
 }
 
 function getRandomUUID(): string {
