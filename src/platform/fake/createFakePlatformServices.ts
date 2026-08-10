@@ -22,6 +22,8 @@ import {
   type RemoteArticleContent,
   type RemoteServiceRequest,
   type RemoteServicesAdapter,
+  type ReadingAttemptCompletedEvent,
+  type ReadingAttemptEventsAdapter,
   type SharedImportPayload,
   type ShareImportAdapter,
   type SpeechAdapter,
@@ -56,6 +58,7 @@ export interface FakePlatformHarness {
   articleExtractor: FakeArticleContentExtractor
   externalNavigation: FakeExternalNavigationAdapter
   backNavigation: FakeBackNavigationAdapter
+  readingAttemptEvents: FakeReadingAttemptEventsAdapter
   shareInbox: FakeShareImportAdapter
   preferences: MemoryPreferencesStore
   secrets: MemorySecretStore
@@ -77,6 +80,7 @@ export function createFakePlatformServices(
   )
   const externalNavigation = new FakeExternalNavigationAdapter()
   const backNavigation = new FakeBackNavigationAdapter()
+  const readingAttemptEvents = new FakeReadingAttemptEventsAdapter()
   const shareInbox = new FakeShareImportAdapter()
   const preferences = new MemoryPreferencesStore()
   const secrets = new MemorySecretStore()
@@ -117,6 +121,7 @@ export function createFakePlatformServices(
       articleExtractor,
       externalNavigation,
       backNavigation,
+      readingAttemptEvents,
       shareInbox,
     },
     lifecycle,
@@ -127,6 +132,7 @@ export function createFakePlatformServices(
     articleExtractor,
     externalNavigation,
     backNavigation,
+    readingAttemptEvents,
     shareInbox,
     preferences,
     secrets,
@@ -383,6 +389,28 @@ export class FakeBackNavigationAdapter implements BackNavigationAdapter {
 
   emit(source: BackNavigationEvent['source'] = 'test'): void {
     this.listeners.forEach(listener => listener({ source }))
+  }
+}
+
+export class FakeReadingAttemptEventsAdapter implements ReadingAttemptEventsAdapter {
+  private readonly listeners = new Set<(
+    event: ReadingAttemptCompletedEvent,
+  ) => void>()
+
+  publishCompleted(event: ReadingAttemptCompletedEvent): void {
+    this.listeners.forEach((listener) => {
+      try {
+        listener({ attempt: { ...event.attempt } })
+      }
+      catch {}
+    })
+  }
+
+  subscribeCompleted(
+    listener: (event: ReadingAttemptCompletedEvent) => void,
+  ): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
   }
 }
 

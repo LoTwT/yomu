@@ -1,3 +1,5 @@
+import { isReadingAttempt } from '@/data/entities'
+
 import {
   PlatformCapabilityError,
   RemoteServiceError,
@@ -14,6 +16,8 @@ import {
   type RemoteServiceOperation,
   type RemoteServiceRequest,
   type RemoteServicesAdapter,
+  type ReadingAttemptCompletedEvent,
+  type ReadingAttemptEventsAdapter,
   type SharedImportPayload,
   type ShareImportAdapter,
   type SpeechAdapter,
@@ -261,6 +265,56 @@ export class WebBackNavigationAdapter implements BackNavigationAdapter {
   }
 }
 
+export class WebReadingAttemptEventsAdapter implements ReadingAttemptEventsAdapter {
+  private readonly listeners = new Set<(
+    event: ReadingAttemptCompletedEvent,
+  ) => void>()
+  private readonly channel: BroadcastChannel | null
+
+  constructor(runtime: Window) {
+    try {
+      const BroadcastChannelConstructor = (runtime as Window & {
+        BroadcastChannel?: typeof BroadcastChannel
+      }).BroadcastChannel
+      this.channel = typeof BroadcastChannelConstructor === 'function'
+        ? new BroadcastChannelConstructor('yomu-reading-attempts-v1')
+        : null
+      this.channel?.addEventListener('message', (event) => {
+        if (isReadingAttemptCompletedEvent(event.data)) {
+          this.deliver(event.data)
+        }
+      })
+    }
+    catch {
+      this.channel = null
+    }
+  }
+
+  publishCompleted(event: ReadingAttemptCompletedEvent): void {
+    this.deliver(event)
+    try {
+      this.channel?.postMessage(event)
+    }
+    catch {}
+  }
+
+  subscribeCompleted(
+    listener: (event: ReadingAttemptCompletedEvent) => void,
+  ): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  private deliver(event: ReadingAttemptCompletedEvent): void {
+    this.listeners.forEach((listener) => {
+      try {
+        listener({ attempt: { ...event.attempt } })
+      }
+      catch {}
+    })
+  }
+}
+
 export class EmptyShareImportAdapter implements ShareImportAdapter {
   async takePending(): Promise<SharedImportPayload | null> {
     return null
@@ -355,6 +409,7 @@ export function createDefaultWebRuntimeAdapters(options: {
   articleExtractor: ArticleContentExtractor
   externalNavigation: WebExternalNavigationAdapter
   backNavigation: WebBackNavigationAdapter
+  readingAttemptEvents: WebReadingAttemptEventsAdapter
   shareInbox: EmptyShareImportAdapter
 } {
   const windowRef = options.windowRef ?? window
@@ -370,6 +425,19 @@ export function createDefaultWebRuntimeAdapters(options: {
     articleExtractor: new WebArticleContentExtractor(documentRef.defaultView?.DOMParser ?? null),
     externalNavigation: new WebExternalNavigationAdapter(windowRef),
     backNavigation: new WebBackNavigationAdapter(windowRef),
+    readingAttemptEvents: new WebReadingAttemptEventsAdapter(windowRef),
     shareInbox: new EmptyShareImportAdapter(),
   }
+}
+
+function isReadingAttemptCompletedEvent(
+  value: unknown,
+): value is ReadingAttemptCompletedEvent {
+  if (typeof value !== 'object' || value === null || !('attempt' in value)) {
+    return false
+  }
+  const attempt = value.attempt
+  return isReadingAttempt(attempt)
+    && attempt.status === 'completed'
+    && typeof attempt.completedAt === 'string'
 }

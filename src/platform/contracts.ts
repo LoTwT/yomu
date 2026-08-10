@@ -1,3 +1,4 @@
+import type { ReadingAttempt } from '@/data/entities'
 import type { LocalRepositories } from '@/data/repositories'
 
 export type PlatformKind = 'web' | 'desktop' | 'mobile'
@@ -159,6 +160,20 @@ export interface BackNavigationAdapter {
   subscribe: (listener: (event: BackNavigationEvent) => void) => () => void
 }
 
+export interface ReadingAttemptCompletedEvent {
+  attempt: ReadingAttempt & {
+    status: 'completed'
+    completedAt: string
+  }
+}
+
+export interface ReadingAttemptEventsAdapter {
+  publishCompleted: (event: ReadingAttemptCompletedEvent) => void
+  subscribeCompleted: (
+    listener: (event: ReadingAttemptCompletedEvent) => void,
+  ) => () => void
+}
+
 export interface SharedImportPayload {
   text?: string
   url?: string
@@ -184,6 +199,7 @@ export interface PlatformServices {
   articleExtractor: ArticleContentExtractor
   externalNavigation: ExternalNavigationAdapter
   backNavigation: BackNavigationAdapter
+  readingAttemptEvents?: ReadingAttemptEventsAdapter
   shareInbox: ShareImportAdapter
 }
 

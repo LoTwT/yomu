@@ -2,6 +2,7 @@
 import { PhArrowLeft, PhSlidersHorizontal } from '@phosphor-icons/vue'
 import { computed, onUnmounted, shallowRef, useTemplateRef, watch } from 'vue'
 import {
+  isNavigationFailure,
   onBeforeRouteLeave,
   onBeforeRouteUpdate,
   RouterLink,
@@ -11,6 +12,7 @@ import {
 import { useInteractionLayer } from '@/app/interactionLayer'
 import { getRouteLeaveCoordinator } from '@/app/routeLeaveCoordinator'
 import ReaderArticle from '@/components/reader/ReaderArticle.vue'
+import ReaderCompletionAction from '@/components/reader/ReaderCompletionAction.vue'
 import ReaderPlaybackControls from '@/components/reader/ReaderPlaybackControls.vue'
 import ReaderSettingsOverlay from '@/components/reader/ReaderSettingsOverlay.vue'
 import { requestLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
@@ -30,7 +32,13 @@ const settingsButton = useTemplateRef<HTMLButtonElement>('settingsButton')
 const settingsOpen = shallowRef(false)
 const showIpa = shallowRef(false)
 const preferencesReady = shallowRef(false)
+const reviewNavigationError = shallowRef('')
 let viewUnmounted = false
+let reviewNavigationVersion = 0
+let reviewNavigationOperation: {
+  articleId: string
+  attemptId: string
+} | null = null
 const pendingRouteTransitions: Array<{
   token: number
   from: string
@@ -49,6 +57,7 @@ const {
 const {
   status,
   article,
+  attempt,
   orderedSentences,
   currentSentenceId,
   currentSentenceIndex,
@@ -56,18 +65,23 @@ const {
   playingSentenceId,
   isPlaying,
   errorMessage,
+  completionState,
+  completionErrorMessage,
   speechAvailable,
   load,
   selectSentence,
   previousSentence,
   nextSentence,
   togglePlayback,
+  completeReading,
   beginRouteTransition,
   resumeAfterFailedRouteTransition,
 } = useReadingSession(currentArticleId)
 const articleCapabilities = computed(() => article.value
   ? deriveArticleCapabilities(article.value.sentences)
   : undefined)
+const completionActionError = computed(() =>
+  reviewNavigationError.value || completionErrorMessage.value)
 const settingsHistoryLayer = routeLeaveCoordinator.registerHistoryLayer({
   id: 'reader-settings',
   onActivate: () => {
@@ -100,6 +114,7 @@ void readerPreferencesReady.finally(() => {
 watch(currentArticleId, () => {
   void settingsHistoryLayer.deactivate()
   showIpa.value = false
+  reviewNavigationError.value = ''
 })
 
 watch(articleCapabilities, (capabilities) => {
@@ -163,6 +178,9 @@ onBeforeRouteLeave(async (to, from) => {
     void settingsHistoryLayer.deactivate()
     return false
   }
+  if (completionState.value === 'saving') {
+    reviewNavigationVersion += 1
+  }
   const transition = beginRouteTransition()
   pendingRouteTransitions.push({
     token: transition.token,
@@ -173,13 +191,23 @@ onBeforeRouteLeave(async (to, from) => {
   return true
 })
 
-onBeforeRouteUpdate(() => {
+onBeforeRouteUpdate(async (to, from) => {
   if (interactionLayer.requestCloseTop('navigation')) {
     return false
   }
   if (settingsOpen.value) {
     void settingsHistoryLayer.deactivate()
     return false
+  }
+  if (completionState.value === 'saving') {
+    reviewNavigationVersion += 1
+    const transition = beginRouteTransition()
+    pendingRouteTransitions.push({
+      token: transition.token,
+      from: from.fullPath,
+      to: to.fullPath,
+    })
+    await transition.ready
   }
   return true
 })
@@ -188,6 +216,90 @@ usePageHeadingFocus()
 
 function handleTogglePlayback(): void {
   void togglePlayback()
+}
+
+function handleCompleteReading(): void {
+  const sourceArticle = article.value
+  const sourceAttempt = attempt.value
+  if (!sourceArticle || !sourceAttempt) {
+    return
+  }
+  if (reviewNavigationOperation?.articleId === sourceArticle.id
+    && reviewNavigationOperation.attemptId === sourceAttempt.id) {
+    return
+  }
+  const operation = {
+    articleId: sourceArticle.id,
+    attemptId: sourceAttempt.id,
+  }
+  reviewNavigationOperation = operation
+  reviewNavigationError.value = ''
+  const navigationVersion = reviewNavigationVersion
+  void completeReading()
+    .then((completedAttempt) => {
+      if (!completedAttempt) {
+        return
+      }
+      return navigateToReview(completedAttempt.id, sourceArticle.id, navigationVersion)
+    })
+    .finally(() => {
+      if (reviewNavigationOperation === operation) {
+        reviewNavigationOperation = null
+      }
+    })
+}
+
+function handleOpenReview(): void {
+  const sourceArticle = article.value
+  const sourceAttempt = attempt.value
+  if (!sourceArticle || sourceAttempt?.status !== 'completed') {
+    return
+  }
+  if (reviewNavigationOperation?.articleId === sourceArticle.id
+    && reviewNavigationOperation.attemptId === sourceAttempt.id) {
+    return
+  }
+  const operation = {
+    articleId: sourceArticle.id,
+    attemptId: sourceAttempt.id,
+  }
+  reviewNavigationOperation = operation
+  reviewNavigationError.value = ''
+  const navigationVersion = reviewNavigationVersion
+  void navigateToReview(sourceAttempt.id, sourceArticle.id, navigationVersion)
+    .finally(() => {
+      if (reviewNavigationOperation === operation) {
+        reviewNavigationOperation = null
+      }
+    })
+}
+
+async function navigateToReview(
+  attemptId: string,
+  targetArticleId: string | undefined,
+  navigationVersion: number,
+): Promise<void> {
+  if (viewUnmounted
+    || navigationVersion !== reviewNavigationVersion
+    || !targetArticleId
+    || article.value?.id !== targetArticleId
+    || router.currentRoute.value.name !== 'reader') {
+    return
+  }
+  try {
+    const failure = await router.replace({
+      name: 'review',
+      params: { attemptId },
+    })
+    if (failure && isNavigationFailure(failure) && !viewUnmounted) {
+      reviewNavigationError.value = '阅读已完成，但回顾页面暂时未能打开。请重试。'
+    }
+  }
+  catch {
+    if (!viewUnmounted) {
+      reviewNavigationError.value = '阅读已完成，但回顾页面暂时未能打开。请重试。'
+    }
+  }
 }
 
 function openSettings(): void {
@@ -266,10 +378,19 @@ function closeSettings(): void {
           :show-ipa="showIpa"
           @select-sentence="selectSentence"
         />
+        <ReaderCompletionAction
+          :error-message="completionActionError"
+          :state="completionState"
+          @complete="handleCompleteReading"
+          @open-review="handleOpenReview"
+        />
       </template>
     </main>
 
-    <footer v-if="status === 'ready'" class="reader-view__footer">
+    <footer
+      v-if="status === 'ready' && (completionState === 'idle' || completionState === 'error')"
+      class="reader-view__footer"
+    >
       <ReaderPlaybackControls
         :current-index="currentSentenceIndex"
         :total="orderedSentences.length"

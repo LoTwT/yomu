@@ -10,11 +10,16 @@ import {
 
 import { usePlatformServices } from '@/app/platformServices'
 import type { ArticleRecord, ArticleSentenceRecord, ReadingAttempt } from '@/data/entities'
-import type { AppLifecycleState, SpeechPlaybackHandle } from '@/platform/contracts'
+import type {
+  AppLifecycleState,
+  ReadingAttemptCompletedEvent,
+  SpeechPlaybackHandle,
+} from '@/platform/contracts'
 import {
   ArticleNotFoundError,
+  completeReadingAttempt,
   flushReadingPosition,
-  openOrCreateActiveAttempt,
+  openReadingAttempt,
 } from './attemptCommands'
 import { calculateReadingProgress } from './readingProgress'
 import {
@@ -35,6 +40,7 @@ import {
 } from './progressJournal'
 
 export type ReadingSessionStatus = 'loading' | 'ready' | 'missing' | 'error'
+export type ReadingCompletionState = 'idle' | 'saving' | 'completed' | 'error'
 
 type ReadingPlaybackState =
   | { phase: 'idle', sentenceId: null }
@@ -86,6 +92,12 @@ interface PendingSuspension {
   deferred: VoidDeferred
 }
 
+interface ReadingCompletionOperation {
+  articleId: string
+  attemptId: string
+  promise: Promise<ReadingAttempt | null>
+}
+
 export interface ReadingRouteTransition {
   token: number
   ready: Promise<void>
@@ -107,6 +119,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   const furthestSentenceOrdinal = shallowRef(0)
   const playbackState = shallowRef<ReadingPlaybackState>(idlePlaybackState)
   const errorMessage = shallowRef('')
+  const completionState = shallowRef<ReadingCompletionState>('idle')
+  const completionErrorMessage = shallowRef('')
   const orderedSentences = computed(() =>
     [...(article.value?.sentences ?? [])].sort((left, right) => left.order - right.order))
   const currentSentenceIndex = computed(() => Math.max(
@@ -149,6 +163,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   let cursorDirty = false
   let routeTransitionVersion = 0
   let routeTransitionSuspended = false
+  let completionOperation: ReadingCompletionOperation | null = null
+  const observedCompletedAttempts = new Map<string, ReadingAttemptCompletedEvent['attempt']>()
   let disposed = false
 
   const unsubscribeLifecycle = services.lifecycle.subscribe((event) => {
@@ -165,6 +181,14 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     }
     void suspend().catch(() => {})
   })
+  const unsubscribeAttemptEvents = services.readingAttemptEvents?.subscribeCompleted((event) => {
+    observedCompletedAttempts.set(event.attempt.id, event.attempt)
+    if (attempt.value?.id === event.attempt.id
+      && attempt.value.status !== 'completed'
+      && article.value?.id === event.attempt.articleId) {
+      presentCompletedAttempt(article.value, event.attempt)
+    }
+  }) ?? (() => {})
 
   watch(
     () => toValue(articleId),
@@ -176,6 +200,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     disposed = true
     loadVersion += 1
     unsubscribeLifecycle()
+    unsubscribeAttemptEvents()
     cancelScheduledFlush()
     void suspend().catch(() => {})
   })
@@ -196,13 +221,20 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     activeSinceMs = null
     cursorDirty = false
     errorMessage.value = ''
+    completionState.value = 'idle'
+    completionErrorMessage.value = ''
 
     try {
-      const result = await openOrCreateActiveAttempt(
+      const result = await openReadingAttempt(
         services.repositories,
         targetArticleId,
       )
       if (!isCurrentLoad(version, targetArticleId)) {
+        return
+      }
+      const observedCompletion = observedCompletedAttempts.get(result.attempt.id)
+      if (result.attempt.status === 'completed' || observedCompletion) {
+        presentCompletedAttempt(result.article, observedCompletion ?? result.attempt)
         return
       }
       const recovered = await replayProgressJournal(
@@ -210,6 +242,11 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         result.attempt,
       )
       if (!isCurrentLoad(version, targetArticleId)) {
+        return
+      }
+      const completionDuringRecovery = observedCompletedAttempts.get(recovered.attempt.id)
+      if (completionDuringRecovery) {
+        presentCompletedAttempt(result.article, completionDuringRecovery)
         return
       }
       article.value = result.article
@@ -241,6 +278,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   function selectSentence(sentenceId: string): void {
     if (status.value !== 'ready'
       || routeTransitionSuspended
+      || !allowsReadingInteraction()
       || !orderedSentences.value.some(sentence => sentence.id === sentenceId)) {
       return
     }
@@ -288,6 +326,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     if (disposed
       || status.value !== 'ready'
       || routeTransitionSuspended
+      || !allowsReadingInteraction()
       || lifecycleState !== 'active') {
       return Promise.resolve()
     }
@@ -416,6 +455,15 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     cancelScheduledFlush()
     stopSpeech()
     checkpointActiveDuration(false)
+    if (completionState.value === 'completed') {
+      return Promise.resolve()
+    }
+    if (completionState.value === 'saving') {
+      const operation = currentCompletionOperation()
+      return operation
+        ? settleWithin(operation.promise, routeTransitionSaveDeadlineMs)
+        : Promise.resolve()
+    }
     const journalOperation = persistCurrentProgress()
     return queueSuspension(journalOperation)
   }
@@ -424,7 +472,13 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     cancelScheduledFlush()
     stopSpeech()
     checkpointActiveDuration(false)
+    if (completionState.value === 'completed') {
+      return
+    }
     persistCurrentProgressImmediately()
+    if (completionState.value === 'saving') {
+      return
+    }
     void queueSuspension(Promise.resolve()).catch(() => {})
   }
 
@@ -434,6 +488,18 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     cancelScheduledFlush()
     stopSpeech()
     checkpointActiveDuration(false)
+    if (completionState.value === 'completed') {
+      return { token, ready: Promise.resolve() }
+    }
+    if (completionState.value === 'saving') {
+      const operation = currentCompletionOperation()
+      return {
+        token,
+        ready: operation
+          ? settleWithin(operation.promise, routeTransitionSaveDeadlineMs)
+          : Promise.resolve(),
+      }
+    }
     persistCurrentProgressImmediately()
     const backgroundSave = queueSuspension(Promise.resolve())
     return {
@@ -443,7 +509,10 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   }
 
   function resumeAfterFailedRouteTransition(token: number): void {
-    if (disposed || token !== routeTransitionVersion) {
+    if (disposed
+      || token !== routeTransitionVersion
+      || !allowsReadingInteraction()
+      || attempt.value?.status !== 'active') {
       return
     }
     routeTransitionSuspended = false
@@ -506,6 +575,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   function startTiming(): void {
     if (status.value !== 'ready'
       || routeTransitionSuspended
+      || !allowsReadingInteraction()
+      || attempt.value?.status !== 'active'
       || lifecycleState !== 'active'
       || activeSinceMs !== null) {
       return
@@ -513,10 +584,38 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     activeSinceMs = Date.now()
   }
 
+  function allowsReadingInteraction(): boolean {
+    return attempt.value?.status === 'active'
+      && (completionState.value === 'idle' || completionState.value === 'error')
+  }
+
   function isCurrentLoad(version: number, targetArticleId: string): boolean {
     return version === loadVersion
       && !disposed
       && targetArticleId === toValue(articleId)
+  }
+
+  function presentCompletedAttempt(
+    completedArticle: ArticleRecord,
+    completedAttempt: ReadingAttempt,
+  ): void {
+    cancelScheduledFlush()
+    stopSpeech()
+    activeSinceMs = null
+    article.value = completedArticle
+    attempt.value = completedAttempt
+    currentSentenceId.value = completedAttempt.currentSentenceId
+      ?? completedArticle.sentences[0]?.id
+      ?? ''
+    furthestSentenceOrdinal.value = completedAttempt.furthestSentenceOrdinal
+    activeDurationMs = completedAttempt.activeDurationSec * 1_000
+    cursorDirty = false
+    errorMessage.value = ''
+    completionState.value = 'completed'
+    completionErrorMessage.value = ''
+    routeTransitionSuspended = false
+    status.value = 'ready'
+    void retireCompletedProgressJournal(completedAttempt)
   }
 
   function checkpointActiveDuration(continueTiming = true): void {
@@ -602,7 +701,11 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     const currentAttempt = attempt.value
     const currentArticle = article.value
     const sentenceId = currentSentenceId.value
-    if (!currentAttempt || !currentArticle || !sentenceId) {
+    if (!currentAttempt
+      || currentAttempt.status !== 'active'
+      || completionState.value === 'completed'
+      || !currentArticle
+      || !sentenceId) {
       return
     }
 
@@ -669,6 +772,156 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         errorMessage.value = '阅读位置尚未保存，请保持页面打开并稍后重试。'
       }
     }
+  }
+
+  function completeReading(): Promise<ReadingAttempt | null> {
+    const currentArticle = article.value
+    const currentAttempt = attempt.value
+    const existingOperation = currentCompletionOperation()
+    if (existingOperation) {
+      return existingOperation.promise
+    }
+    if (completionState.value === 'completed' && attempt.value?.status === 'completed') {
+      return Promise.resolve(attempt.value)
+    }
+
+    if (status.value !== 'ready'
+      || routeTransitionSuspended
+      || !currentArticle
+      || !currentAttempt
+      || currentAttempt.status !== 'active'
+      || !currentSentenceId.value) {
+      return Promise.resolve(null)
+    }
+
+    completionState.value = 'saving'
+    completionErrorMessage.value = ''
+    routeTransitionSuspended = true
+    routeTransitionVersion += 1
+    cancelScheduledFlush()
+    stopSpeech()
+    checkpointActiveDuration(false)
+    const snapshot = createCurrentProgressSnapshot()
+    if (!snapshot) {
+      completionState.value = 'error'
+      completionErrorMessage.value = '本次阅读暂时无法完成，请继续阅读后重试。'
+      routeTransitionSuspended = false
+      startTiming()
+      return Promise.resolve(null)
+    }
+
+    const operation = finishReading(snapshot)
+    const trackedOperation: ReadingCompletionOperation = {
+      articleId: snapshot.articleId,
+      attemptId: snapshot.attemptId,
+      promise: operation,
+    }
+    completionOperation = trackedOperation
+    void operation.finally(() => {
+      if (completionOperation === trackedOperation) {
+        completionOperation = null
+      }
+    })
+    return operation
+  }
+
+  async function finishReading(
+    snapshot: ReadingProgressSnapshot,
+  ): Promise<ReadingAttempt | null> {
+    try {
+      await settleWithin(
+        queueSuspension(persistCurrentProgress()),
+        routeTransitionSaveDeadlineMs,
+      )
+      const result = await completeReadingAttempt(services.repositories, {
+        articleId: snapshot.articleId,
+        attemptId: snapshot.attemptId,
+        currentSentenceId: snapshot.currentSentenceId,
+        furthestSentenceOrdinal: snapshot.furthestSentenceOrdinal,
+        activeDurationSec: snapshot.activeDurationSec,
+      })
+      if (isCurrentCompletion(snapshot)) {
+        attempt.value = result.attempt
+        activeDurationMs = Math.max(
+          activeDurationMs,
+          result.attempt.activeDurationSec * 1_000,
+        )
+        furthestSentenceOrdinal.value = Math.max(
+          furthestSentenceOrdinal.value,
+          result.attempt.furthestSentenceOrdinal,
+        )
+        cursorDirty = false
+        errorMessage.value = ''
+        completionState.value = 'completed'
+        completionErrorMessage.value = ''
+      }
+      if (result.attempt.status === 'completed'
+        && typeof result.attempt.completedAt === 'string') {
+        try {
+          services.readingAttemptEvents?.publishCompleted({
+            attempt: {
+              ...result.attempt,
+              status: 'completed',
+              completedAt: result.attempt.completedAt,
+            },
+          })
+        }
+        catch {}
+      }
+      void retireCompletedProgressJournal(result.attempt)
+      return result.attempt
+    }
+    catch {
+      if (isCurrentCompletion(snapshot)) {
+        if (attempt.value?.status === 'completed') {
+          completionState.value = 'completed'
+          completionErrorMessage.value = ''
+          return attempt.value
+        }
+        completionState.value = 'error'
+        completionErrorMessage.value = '本次阅读暂时无法保存为已完成，请稍后重试。当前进度仍会保留。'
+        routeTransitionSuspended = false
+        startTiming()
+      }
+      return null
+    }
+  }
+
+  function isCurrentCompletion(snapshot: ReadingProgressSnapshot): boolean {
+    return !disposed
+      && article.value?.id === snapshot.articleId
+      && attempt.value?.id === snapshot.attemptId
+  }
+
+  function currentCompletionOperation(): ReadingCompletionOperation | null {
+    const operation = completionOperation
+    return operation
+      && article.value?.id === operation.articleId
+      && attempt.value?.id === operation.attemptId
+      ? operation
+      : null
+  }
+
+  async function retireCompletedProgressJournal(
+    completedAttempt: ReadingAttempt,
+  ): Promise<void> {
+    try {
+      await journalWriter
+      await journalStorageQueue
+      const journal = await readReadingProgressJournal(
+        services.preferences,
+        completedAttempt.articleId,
+        completedAttempt.id,
+        completedAttempt.progressRevision ?? 0,
+      )
+      if (!journal || journal.attemptId !== completedAttempt.id) {
+        return
+      }
+      await runJournalStorageOperation(() =>
+        clearReadingProgressJournal(services.preferences, journal))
+      scheduleProgressJournalCompaction(completedAttempt.articleId)
+    }
+    catch {}
   }
 
   async function replayProgressJournal(
@@ -843,7 +1096,11 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     const currentArticle = article.value
     const currentAttempt = attempt.value
     const sentenceId = currentSentenceId.value
-    if (!currentArticle || !currentAttempt || !sentenceId) {
+    if (!currentArticle
+      || !currentAttempt
+      || currentAttempt.status !== 'active'
+      || completionState.value === 'completed'
+      || !sentenceId) {
       return null
     }
     return {
@@ -1003,6 +1260,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     return !disposed
       && article.value?.id === snapshot.articleId
       && attempt.value?.id === snapshot.attemptId
+      && attempt.value?.status === 'active'
+      && completionState.value !== 'completed'
   }
 
   function isJournalCoveredByAttempt(
@@ -1208,12 +1467,15 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     playingSentenceId,
     isPlaying,
     errorMessage: shallowReadonly(errorMessage),
+    completionState: shallowReadonly(completionState),
+    completionErrorMessage: shallowReadonly(completionErrorMessage),
     speechAvailable,
     load,
     selectSentence,
     previousSentence,
     nextSentence,
     togglePlayback,
+    completeReading,
     suspend,
     beginRouteTransition,
     resumeAfterFailedRouteTransition,

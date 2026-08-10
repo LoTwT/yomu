@@ -12,7 +12,7 @@ import {
   registerRouteLeaveCoordinator,
 } from './routeLeaveCoordinator'
 
-function resolveArticleId(value: string | string[]): string {
+function resolveRouteParam(value: string | string[]): string {
   return Array.isArray(value) ? (value[0] ?? '') : value
 }
 
@@ -37,7 +37,7 @@ const readerRoutes: RouteRecordRaw[] = [
     path: '/read/:articleId',
     name: 'reader',
     component: () => import('../views/ReaderView.vue'),
-    props: route => ({ articleId: resolveArticleId(route.params.articleId) }),
+    props: route => ({ articleId: resolveRouteParam(route.params.articleId) }),
     meta: { immersive: true },
   },
 ]
@@ -62,6 +62,13 @@ export const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('../views/SettingsView.vue'),
+  },
+  {
+    path: '/review/:attemptId',
+    name: 'review',
+    component: () => import('../views/ReviewView.vue'),
+    props: route => ({ attemptId: resolveRouteParam(route.params.attemptId) }),
+    meta: { immersive: true },
   },
   ...readerRoutes,
   {
