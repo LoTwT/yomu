@@ -173,6 +173,22 @@ describe('responsive app shell', () => {
 
       expect(host.querySelector('.shell-header')).toBeNull()
       expect(host.textContent).toContain(article.title)
+      const settingsButton = host.querySelector<HTMLButtonElement>('[aria-label="阅读设置"]')
+      expect(settingsButton).not.toBeNull()
+      settingsButton?.focus()
+      settingsButton?.click()
+      await nextTick()
+      expect(host.querySelector('#reader-settings[open]')).not.toBeNull()
+
+      const updateImmediately = vi.spyOn(harness.preferences, 'updateImmediately')
+      harness.backNavigation.emit(source)
+      await settleView()
+
+      expect(router.currentRoute.value.name).toBe('reader')
+      expect(host.querySelector('#reader-settings')).toBeNull()
+      expect(document.activeElement).toBe(settingsButton)
+      expect(updateImmediately).not.toHaveBeenCalled()
+
       const finalSentence = host.querySelector<HTMLButtonElement>(
         `[data-sentence-id="${article.sentences[2]?.id}"]`,
       )

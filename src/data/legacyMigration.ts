@@ -1,9 +1,9 @@
+import { deriveArticleCapabilities } from './articleCapabilities'
 import {
   isArticleRecord,
   YOMU_ENTITY_SCHEMA_VERSION,
   type ArticleRecord,
   type ArticleSentenceRecord,
-  type CapabilityCoverage,
   type ReadingAttempt,
   type VocabularyContext,
   type VocabularyTerm,
@@ -358,11 +358,7 @@ function convertLegacyArticle(value: unknown): ArticleRecord | null {
       translationAllowed: legacyRights?.translationAllowed !== false,
       cacheAllowed: legacyRights?.cacheAllowed !== false,
     },
-    capabilities: {
-      sentenceTranslation: coverage(validSentences, sentence => Boolean(sentence.translation?.trim())),
-      sentenceIpa: coverage(validSentences, sentence => Boolean(sentence.sentenceIpa?.trim())),
-      tokenMeaning: tokenCoverage(validSentences, token => Boolean(token.meaning?.trim())),
-    },
+    capabilities: deriveArticleCapabilities(validSentences),
     sentences: validSentences,
     factSources,
     wordCount,
@@ -422,21 +418,6 @@ function convertLegacySentence(
     sentenceIpa: typeof annotations?.ipa === 'string' && annotations.ipa ? annotations.ipa : undefined,
     tokens,
   }
-}
-
-function coverage<T>(values: T[], present: (value: T) => boolean): CapabilityCoverage {
-  const count = values.filter(present).length
-  if (count === 0) {
-    return 'none'
-  }
-  return count === values.length ? 'complete' : 'partial'
-}
-
-function tokenCoverage(
-  sentences: ArticleSentenceRecord[],
-  present: (token: ArticleSentenceRecord['tokens'][number]) => boolean,
-): CapabilityCoverage {
-  return coverage(sentences.flatMap(sentence => sentence.tokens.filter(token => token.kind === 'word')), present)
 }
 
 function namespaceId(articleId: string, localId: string): string {

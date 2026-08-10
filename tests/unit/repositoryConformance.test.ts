@@ -365,6 +365,44 @@ function defineRepositoryConformance(label: string, factory: RepositoryFactory):
       expect(await repositories.articles.count()).toBe(0)
       expect(await repositories.migration.getVersion()).toBe(0)
     })
+
+    it('reconciles stale article capabilities on reads and exports without rerunning migration', async () => {
+      const article = createArticle('article-stale-capabilities')
+      article.sentences[0] = {
+        ...article.sentences[0]!,
+        translation: '实际已有译文。',
+        sentenceIpa: '/',
+        tokens: [{
+          ...article.sentences[0]!.tokens[0]!,
+          ipa: '/ˈriːdər',
+        }],
+      }
+      article.capabilities = {
+        sentenceTranslation: 'none',
+        sentenceIpa: 'none',
+        tokenMeaning: 'none',
+      }
+      await repositories.migration.apply({
+        targetVersion: 2,
+        articles: [article],
+        attempts: [],
+        vocabularyTerms: [],
+        vocabularyContexts: [],
+      })
+
+      const expectedCapabilities: ArticleRecord['capabilities'] = {
+        sentenceTranslation: 'complete',
+        sentenceIpa: 'complete',
+        tokenMeaning: 'complete',
+      }
+      expect((await repositories.articles.get(article.id))?.capabilities)
+        .toEqual(expectedCapabilities)
+      expect((await repositories.articles.list())[0]?.capabilities)
+        .toEqual(expectedCapabilities)
+      expect((await repositories.exportData(defaultExportPreferences, now)).articles[0]?.capabilities)
+        .toEqual(expectedCapabilities)
+      expect(await repositories.migration.getVersion()).toBe(2)
+    })
   })
 }
 

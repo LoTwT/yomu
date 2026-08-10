@@ -6,7 +6,9 @@ import { usePlatformInitialization } from '@/app/platformInitialization'
 import { usePlatformServices } from '@/app/platformServices'
 import { useThemePreference } from '@/app/themePreference'
 import ReadExpansionSettingsPanel from '@/components/ReadExpansionSettingsPanel.vue'
+import ReaderDisplaySettings from '@/components/reader/ReaderDisplaySettings.vue'
 import TtsSettingsPanel from '@/components/TtsSettingsPanel.vue'
+import { useReaderDisplayPreferences } from '@/features/preferences/useReaderDisplayPreferences'
 import { useProviderSettings } from '@/features/settings/useProviderSettings'
 import { platformInitializationPreferenceKeys } from '@/platform/initialization'
 
@@ -21,12 +23,20 @@ const { state: themeState, setPreference } = useThemePreference()
 const initialization = usePlatformInitialization()
 const platformServices = usePlatformServices()
 const {
+  defaultExpandTranslation,
+  fontScale,
+  persistence: readerPreferencePersistence,
+  persistenceStatus: readerPreferencePersistenceStatus,
+  setDefaultExpandTranslation,
+  setFontScale,
+} = useReaderDisplayPreferences()
+const {
   ttsSettings,
   readExpansionSettings,
   rememberMimoKey,
   rememberOpenAiKey,
   loadStatus,
-  persistenceStatus,
+  persistenceStatus: providerPersistenceStatus,
   canRememberOnDevice,
   clearAllProviderSecrets,
 } = useProviderSettings()
@@ -146,8 +156,17 @@ usePageHeadingFocus()
           阅读
         </h2>
         <p class="settings-view__group-copy">
-          字号与默认辅助显示会在新版阅读设置中集中管理。
+          这里的字号与译文默认会同步用于新版阅读器；IPA 仍由每次阅读单独决定。
         </p>
+        <ReaderDisplaySettings
+          :default-expand-translation="defaultExpandTranslation"
+          :font-scale="fontScale"
+          :persistence="readerPreferencePersistence"
+          :persistence-status="readerPreferencePersistenceStatus"
+          :show-ipa="false"
+          @update:default-expand-translation="setDefaultExpandTranslation"
+          @update:font-scale="setFontScale"
+        />
       </section>
       <p v-if="loadStatus === 'loading'" class="settings-view__loading" role="status">
         正在读取语音与 AI 设置…
@@ -174,13 +193,13 @@ usePageHeadingFocus()
           />
         </section>
         <p class="settings-view__save-status" aria-live="polite">
-          <template v-if="loadStatus === 'failed' || persistenceStatus === 'failed'">
+          <template v-if="loadStatus === 'failed' || providerPersistenceStatus === 'failed'">
             暂时无法保存设置。Key 只保留在本次页面会话中，请检查设备存储权限后重试。
           </template>
-          <template v-else-if="persistenceStatus === 'saving'">
+          <template v-else-if="providerPersistenceStatus === 'saving'">
             正在保存设置…
           </template>
-          <template v-else-if="persistenceStatus === 'saved'">
+          <template v-else-if="providerPersistenceStatus === 'saved'">
             设置已保存。
           </template>
         </p>

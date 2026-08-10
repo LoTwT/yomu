@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { PhArrowLeft } from '@phosphor-icons/vue'
-import { computed, onUnmounted } from 'vue'
-import { onBeforeRouteLeave, RouterLink, useRouter } from 'vue-router'
+import { PhArrowLeft, PhSlidersHorizontal } from '@phosphor-icons/vue'
+import { computed, onUnmounted, shallowRef, useTemplateRef, watch } from 'vue'
+import {
+  onBeforeRouteLeave,
+  onBeforeRouteUpdate,
+  RouterLink,
+  useRouter,
+} from 'vue-router'
 
 import { useInteractionLayer } from '@/app/interactionLayer'
+import { getRouteLeaveCoordinator } from '@/app/routeLeaveCoordinator'
 import ReaderArticle from '@/components/reader/ReaderArticle.vue'
 import ReaderPlaybackControls from '@/components/reader/ReaderPlaybackControls.vue'
+import ReaderSettingsOverlay from '@/components/reader/ReaderSettingsOverlay.vue'
 import { requestLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
+import { useReaderDisplayPreferences } from '@/features/preferences/useReaderDisplayPreferences'
+import { deriveArticleCapabilities } from '@/features/reader/articleCapabilities'
 import { useReadingSession } from '@/features/reader/useReadingSession'
 import { usePageHeadingFocus } from './usePageHeadingFocus'
 
@@ -16,12 +25,27 @@ const props = defineProps<{
 
 const router = useRouter()
 const interactionLayer = useInteractionLayer()
+const routeLeaveCoordinator = getRouteLeaveCoordinator(router)
+const settingsButton = useTemplateRef<HTMLButtonElement>('settingsButton')
+const settingsOpen = shallowRef(false)
+const showIpa = shallowRef(false)
+const preferencesReady = shallowRef(false)
+let viewUnmounted = false
 const pendingRouteTransitions: Array<{
   token: number
   from: string
   to: string
 }> = []
 const currentArticleId = computed(() => props.articleId)
+const {
+  defaultExpandTranslation,
+  fontScale,
+  persistence: readerPreferencePersistence,
+  persistenceStatus: readerPreferencePersistenceStatus,
+  ready: readerPreferencesReady,
+  setDefaultExpandTranslation,
+  setFontScale,
+} = useReaderDisplayPreferences()
 const {
   status,
   article,
@@ -41,6 +65,48 @@ const {
   beginRouteTransition,
   resumeAfterFailedRouteTransition,
 } = useReadingSession(currentArticleId)
+const articleCapabilities = computed(() => article.value
+  ? deriveArticleCapabilities(article.value.sentences)
+  : undefined)
+const settingsHistoryLayer = routeLeaveCoordinator.registerHistoryLayer({
+  id: 'reader-settings',
+  onActivate: () => {
+    settingsOpen.value = true
+  },
+  onDeactivate: () => {
+    settingsOpen.value = false
+  },
+  origin: () => router.currentRoute.value.fullPath,
+})
+// The open sheet is already the pending leave decision: restore a native pop
+// to this Reader entry before asking the interaction layer to close the sheet.
+const unregisterSettingsRouteBlocker = routeLeaveCoordinator.registerBlocker({
+  hasPendingDecision: () => settingsOpen.value,
+  onSecondaryPop: () => {
+    if (!interactionLayer.requestCloseTop('navigation')) {
+      void settingsHistoryLayer.deactivate()
+    }
+  },
+  origin: () => router.currentRoute.value.fullPath,
+  shouldBlock: () => settingsOpen.value,
+})
+
+void readerPreferencesReady.finally(() => {
+  if (!viewUnmounted) {
+    preferencesReady.value = true
+  }
+})
+
+watch(currentArticleId, () => {
+  void settingsHistoryLayer.deactivate()
+  showIpa.value = false
+})
+
+watch(articleCapabilities, (capabilities) => {
+  if (capabilities?.sentenceIpa === 'none') {
+    showIpa.value = false
+  }
+})
 
 function takePendingRouteTransition(to: string, from: string) {
   const transitionIndex = pendingRouteTransitions.findIndex(transition =>
@@ -79,12 +145,22 @@ const removeNavigationError = router.onError((_error, to, from) => {
 })
 
 onUnmounted(() => {
+  viewUnmounted = true
+  settingsHistoryLayer.dispose()
+  unregisterSettingsRouteBlocker()
   removeAfterEach()
   removeNavigationError()
 })
 
 onBeforeRouteLeave(async (to, from) => {
   if (interactionLayer.requestCloseTop('navigation')) {
+    return false
+  }
+  // A restored history layer can become active before article capabilities
+  // allow its dialog to mount. Keep navigation overlay-first in that window
+  // without treating a dialog that is already closing as a second overlay.
+  if (settingsOpen.value && !articleCapabilities.value) {
+    void settingsHistoryLayer.deactivate()
     return false
   }
   const transition = beginRouteTransition()
@@ -97,10 +173,29 @@ onBeforeRouteLeave(async (to, from) => {
   return true
 })
 
+onBeforeRouteUpdate(() => {
+  if (interactionLayer.requestCloseTop('navigation')) {
+    return false
+  }
+  if (settingsOpen.value) {
+    void settingsHistoryLayer.deactivate()
+    return false
+  }
+  return true
+})
+
 usePageHeadingFocus()
 
 function handleTogglePlayback(): void {
   void togglePlayback()
+}
+
+function openSettings(): void {
+  settingsHistoryLayer.activate()
+}
+
+function closeSettings(): void {
+  void settingsHistoryLayer.deactivate()
 }
 </script>
 
@@ -114,14 +209,28 @@ function handleTogglePlayback(): void {
       <h1 ref="pageHeading" class="reader-view__short-title" data-page-heading tabindex="-1" lang="en">
         {{ article?.title ?? '专注阅读' }}
       </h1>
-      <div class="reader-view__progress-wrap">
-        <progress
-          class="reader-view__progress"
-          :value="progress"
-          max="100"
-          :aria-label="`文章进度 ${progress}%`"
-        />
-        <span>{{ progress }}%</span>
+      <div class="reader-view__toolbar-actions">
+        <div class="reader-view__progress-wrap">
+          <progress
+            class="reader-view__progress"
+            :value="progress"
+            max="100"
+            :aria-label="`文章进度 ${progress}%`"
+          />
+          <span>{{ progress }}%</span>
+        </div>
+        <button
+          v-if="status === 'ready' && article"
+          ref="settingsButton"
+          class="reader-view__settings"
+          type="button"
+          aria-label="阅读设置"
+          :aria-controls="settingsOpen ? 'reader-settings' : undefined"
+          :aria-expanded="settingsOpen"
+          @click="openSettings"
+        >
+          <PhSlidersHorizontal aria-hidden="true" :size="20" />
+        </button>
       </div>
     </header>
 
@@ -150,7 +259,11 @@ function handleTogglePlayback(): void {
         <ReaderArticle
           :article="article"
           :current-sentence-id="currentSentenceId"
+          :default-expand-translation="defaultExpandTranslation"
+          :font-scale="fontScale"
           :playing-sentence-id="playingSentenceId"
+          :preferences-ready="preferencesReady"
+          :show-ipa="showIpa"
           @select-sentence="selectSentence"
         />
       </template>
@@ -167,6 +280,21 @@ function handleTogglePlayback(): void {
         @next="nextSentence"
       />
     </footer>
+
+    <ReaderSettingsOverlay
+      v-if="settingsOpen && articleCapabilities"
+      :article-capabilities="articleCapabilities"
+      :default-expand-translation="defaultExpandTranslation"
+      :focus-return="settingsButton"
+      :font-scale="fontScale"
+      :persistence="readerPreferencePersistence"
+      :persistence-status="readerPreferencePersistenceStatus"
+      :show-ipa="showIpa"
+      @close="closeSettings"
+      @update:default-expand-translation="setDefaultExpandTranslation"
+      @update:font-scale="setFontScale"
+      @update:show-ipa="showIpa = $event"
+    />
   </div>
 </template>
 
@@ -230,6 +358,28 @@ function handleTogglePlayback(): void {
   color: var(--text-secondary);
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
+}
+
+.reader-view__toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  min-inline-size: 0;
+}
+
+.reader-view__settings {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  inline-size: 2.75rem;
+  block-size: 2.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  padding: 0;
+  background: transparent;
+  color: var(--text-accent);
+  cursor: pointer;
 }
 
 .reader-view__progress {
@@ -302,6 +452,7 @@ function handleTogglePlayback(): void {
 }
 
 .reader-view__back:focus-visible,
+.reader-view__settings:focus-visible,
 .reader-view__state a:focus-visible,
 .reader-view__state button:focus-visible {
   outline: 3px solid var(--focus-ring-color);
@@ -318,7 +469,14 @@ function handleTogglePlayback(): void {
   }
 
   .reader-view__toolbar {
-    grid-template-columns: 2.75rem minmax(0, 1fr) minmax(4rem, auto);
+    grid-template-columns: 2.75rem minmax(0, 1fr) minmax(4.75rem, auto);
+  }
+}
+
+@media (hover: hover) {
+  .reader-view__settings:hover {
+    border-color: var(--border-subtle);
+    background: var(--surface-muted);
   }
 }
 

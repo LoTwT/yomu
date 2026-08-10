@@ -1,3 +1,4 @@
+import { reconcileArticleCapabilities } from './articleCapabilities'
 import { diagnoseSnapshot } from './diagnostics'
 import {
   isArticleRecord,
@@ -164,7 +165,7 @@ class MemoryLocalRepositories implements LocalRepositories {
         format: 'yomu-export',
         formatVersion: 1,
         exportedAt,
-        articles: sortById(snapshot.articles),
+        articles: sortById(snapshot.articles.map(reconcileArticleCapabilities)),
         attempts: sortById(snapshot.attempts),
         vocabularyTerms: sortById(snapshot.vocabularyTerms),
         vocabularyContexts: sortById(snapshot.vocabularyContexts),
@@ -268,7 +269,15 @@ function createScope(
 }
 
 function createArticleRepository(state: MemoryState): EntityRepository<ArticleRecord> {
-  return createEntityRepository('articles', state.articles, isArticleRecord)
+  const base = createEntityRepository('articles', state.articles, isArticleRecord)
+  return {
+    ...base,
+    get: async (id) => {
+      const article = await base.get(id)
+      return article ? reconcileArticleCapabilities(article) : null
+    },
+    list: async () => (await base.list()).map(reconcileArticleCapabilities),
+  }
 }
 
 function createAttemptRepository(state: MemoryState): AttemptRepository {

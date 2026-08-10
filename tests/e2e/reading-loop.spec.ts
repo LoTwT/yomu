@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
+import { isArticleRecord } from '../../src/data/entities'
+
 const importedSentences = [
   'A quiet reading habit gives the mind enough space to notice how an argument develops.',
   'When each sentence is considered on its own, unfamiliar words feel less overwhelming and context remains clear.',
@@ -13,6 +15,80 @@ const secondImportedBody = [
   'A second article also makes the library useful for comparing progress without mixing one text with another.',
   'Clear local organization keeps both reading sessions independent while preserving a calm interface.',
 ].join(' ')
+
+const displayAssistanceArticle = {
+  id: 'stage-3c-display-assistance',
+  schemaVersion: 2,
+  contentHash: 'stage-3c-display-assistance-content',
+  title: 'A Calm Cross-Platform Reading Surface',
+  description: 'A capable local article for reader display assistance coverage.',
+  language: 'en',
+  level: 'unassessed',
+  source: {
+    kind: 'paste',
+    label: 'Display assistance fixture',
+  },
+  rights: {
+    status: 'user-provided-unknown',
+    note: 'User-provided test content.',
+    ttsAllowed: true,
+    translationAllowed: true,
+    cacheAllowed: true,
+  },
+  capabilities: {
+    sentenceTranslation: 'partial',
+    sentenceIpa: 'complete',
+    tokenMeaning: 'none',
+  },
+  sentences: [
+    {
+      id: 'stage-3c-display-assistance:s1',
+      order: 0,
+      paragraphIndex: 0,
+      textHash: 'stage-3c-display-assistance-sentence-1',
+      original: 'Focused reading makes unfamiliar ideas easier to revisit.',
+      translation: '专注阅读让陌生的观点更容易被重新理解。',
+      tokens: [
+        {
+          id: 'stage-3c-display-assistance:s1:t1',
+          text: 'Focused',
+          kind: 'word',
+          ipa: 'ˈfoʊkəst',
+        },
+        {
+          id: 'stage-3c-display-assistance:s1:t2',
+          text: 'reading',
+          kind: 'word',
+        },
+      ],
+    },
+    {
+      id: 'stage-3c-display-assistance:s2',
+      order: 1,
+      paragraphIndex: 0,
+      textHash: 'stage-3c-display-assistance-sentence-2',
+      original: 'A quiet interface keeps attention on the current sentence.',
+      sentenceIpa: '/ə ˈkwaɪət ˈɪntərfeɪs kiːps əˈtɛnʃən ɑːn ðə ˈkʌrənt ˈsɛntəns/',
+      tokens: [
+        {
+          id: 'stage-3c-display-assistance:s2:t1',
+          text: 'A',
+          kind: 'word',
+        },
+        {
+          id: 'stage-3c-display-assistance:s2:t2',
+          text: 'quiet',
+          kind: 'word',
+        },
+      ],
+    },
+  ],
+  factSources: [],
+  wordCount: 17,
+  estimatedReadTimeMinutes: 1,
+  createdAt: '2026-08-10T08:00:00.000Z',
+  updatedAt: '2026-08-10T08:00:00.000Z',
+} as const
 
 test('empty library becomes a persistent reading session and resumes the selected sentence', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
@@ -144,6 +220,629 @@ test('continuous speech follows the reading sentence and stays paused after back
   await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
   await expect.poll(() => readSpeechProbe(page, 'spokenTexts')).toEqual([])
+})
+
+test('reader display assistance adapts by viewport and only persists durable preferences', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  await page.goto(`/read/${displayAssistanceArticle.id}`)
+
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+  const articleBody = page.locator('.reader-article__body')
+  const initialFontSize = await articleBody.evaluate(element =>
+    Number.parseFloat(getComputedStyle(element).fontSize))
+  await expect(page.getByTestId('sentence-translation')).toHaveCount(0)
+  await expect(page.getByTestId('sentence-ipa')).toHaveCount(0)
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await page.getByRole('link', { name: displayAssistanceArticle.title, exact: true }).click()
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+
+  const settingsButton = page.getByRole('button', { name: '阅读设置', exact: true })
+  await expect(settingsButton).toBeVisible()
+  const readBackgroundBounds = () => page.evaluate(() => {
+    const reader = document.querySelector('.reader-view')?.getBoundingClientRect()
+    const footer = document.querySelector('.reader-view__footer')?.getBoundingClientRect()
+    const round = (value: number | undefined) => Math.round((value ?? -1) * 100) / 100
+    return {
+      readerLeft: round(reader?.left),
+      readerRight: round(reader?.right),
+      footerLeft: round(footer?.left),
+      footerRight: round(footer?.right),
+    }
+  })
+  const backgroundBoundsBeforeSettings = await readBackgroundBounds()
+  await settingsButton.focus()
+  await settingsButton.click()
+
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(settingsDialog).toBeVisible()
+  await expect(settingsDialog.getByRole('heading', { name: '调整当前阅读' })).toBeFocused()
+  await expect.poll(readBackgroundBounds).toEqual(backgroundBoundsBeforeSettings)
+  const ipaToggle = settingsDialog.getByRole('checkbox', { name: /本次阅读显示 IPA/ })
+  await page.keyboard.press('Shift+Tab')
+  await expect(ipaToggle).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(settingsDialog.getByRole('button', { name: '关闭阅读设置' })).toBeFocused()
+  await expect.poll(() => settingsDialog.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    const round = (value: number) => Math.round(value * 100) / 100
+    return {
+      alignedToBottom: Math.abs(bounds.bottom - innerHeight) <= 1,
+      spansViewport: Math.abs(bounds.left) <= 1 && Math.abs(bounds.right - innerWidth) <= 1,
+      leavesReadingContextVisible: bounds.top > 0,
+      leftGap: round(bounds.left),
+      rightGap: round(innerWidth - bounds.right),
+    }
+  })).toEqual({
+    alignedToBottom: true,
+    spansViewport: true,
+    leavesReadingContextVisible: true,
+    leftGap: 0,
+    rightGap: 0,
+  })
+
+  const readerUrl = page.url()
+  const readerScrollY = await page.evaluate(() => scrollY)
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerUrl)
+  await expect(settingsButton).toBeFocused()
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(readerScrollY)
+
+  await settingsButton.click()
+  await expect(settingsDialog).toBeVisible()
+
+  const extraLargeFont = settingsDialog.getByRole('radio', { name: /特大/ })
+  await settingsDialog.getByText('特大', { exact: true }).click()
+  await expect(extraLargeFont).toBeChecked()
+  await settingsDialog.getByRole('checkbox', { name: /打开文章时展开译文/ }).check()
+  await settingsDialog.getByRole('checkbox', { name: /本次阅读显示 IPA/ }).check()
+  await expect(settingsDialog.getByText('字号与译文偏好已保存到此设备')).toBeVisible()
+  await expect.poll(() => articleBody.evaluate(element =>
+    Number.parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(initialFontSize)
+
+  await page.keyboard.press('Escape')
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(settingsButton).toBeFocused()
+
+  const currentIpa = page.getByTestId('sentence-ipa')
+  await expect(currentIpa).toHaveCount(1)
+  await expect(currentIpa).toContainText('ˈfoʊkəst')
+  const translationButton = page.getByRole('button', {
+    name: '显示第 1 句译文',
+    exact: true,
+  })
+  await expect.poll(() => translationButton.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    return bounds.width >= 44 && bounds.height >= 44
+  })).toBe(true)
+  await translationButton.click()
+  await expect(page.getByTestId('sentence-translation')).toHaveText(
+    displayAssistanceArticle.sentences[0].translation,
+  )
+  await expect(page.getByRole('button', { name: /第 2 句译文/ })).toHaveCount(0)
+
+  const secondSentence = page.locator('[data-sentence-id]').nth(1)
+  await secondSentence.click()
+  await expect(secondSentence).toHaveAttribute('aria-current', 'true')
+  await expect(currentIpa).toHaveCount(1)
+  await expect(currentIpa).toContainText(displayAssistanceArticle.sentences[1].sentenceIpa)
+  await expect(currentIpa).not.toContainText('ˈfoʊkəst')
+
+  await page.reload()
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+  await expect(page.getByTestId('sentence-translation')).toHaveText(
+    displayAssistanceArticle.sentences[0].translation,
+  )
+  await expect(page.getByTestId('sentence-ipa')).toHaveCount(0)
+  await expect.poll(() => articleBody.evaluate(element =>
+    Number.parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(initialFontSize)
+
+  await settingsButton.click()
+  await expect(settingsDialog.getByRole('radio', { name: /特大/ })).toBeChecked()
+  await expect(settingsDialog.getByRole('checkbox', { name: /打开文章时展开译文/ })).toBeChecked()
+  await expect(settingsDialog.getByRole('checkbox', { name: /本次阅读显示 IPA/ })).not.toBeChecked()
+  await page.keyboard.press('Escape')
+  await expect(settingsButton).toBeFocused()
+
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await settingsButton.click()
+  await expect(settingsDialog).toBeVisible()
+  await expect.poll(() => settingsDialog.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    const round = (value: number) => Math.round(value * 100) / 100
+    return {
+      alignedToRight: Math.abs(bounds.right - innerWidth) <= 1,
+      fillsHeight: Math.abs(bounds.top) <= 1 && Math.abs(bounds.bottom - innerHeight) <= 1,
+      remainsASidePanel: bounds.left > innerWidth / 2 && bounds.width < innerWidth / 2,
+      rightGap: round(innerWidth - bounds.right),
+    }
+  })).toEqual({
+    alignedToRight: true,
+    fillsHeight: true,
+    remainsASidePanel: true,
+    rightGap: 0,
+  })
+})
+
+test('rapid browser back closes reader settings without skipping the direct predecessor', async ({
+  page,
+}) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  await page.goto('/settings')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+
+  await page.getByRole('link', { name: '我的阅读', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await page.getByRole('link', {
+    name: displayAssistanceArticle.title,
+    exact: true,
+  }).click()
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await expect(page).toHaveURL(readerPath)
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+
+  const readerPosition = await page.evaluate(() => history.state.position as number)
+  const settingsButton = page.getByRole('button', { name: '阅读设置', exact: true })
+  await settingsButton.click()
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    addEventListener('popstate', () => resolve(), { once: true })
+    history.back()
+    history.back()
+  }))
+
+  await expect(settingsDialog).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => ({
+    current: history.state.current as string,
+    pathname: location.pathname,
+    position: history.state.position as number,
+    readerVisible: document.querySelector('.reader-view') !== null,
+  }))).toEqual({
+    current: readerPath,
+    pathname: readerPath,
+    position: readerPosition,
+    readerVisible: true,
+  })
+  await expect(settingsButton).toBeFocused()
+
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('heading', { level: 1, name: '我的阅读' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => history.state.position as number))
+    .toBe(readerPosition - 1)
+})
+
+test('programmatic replace waits for rapid Reader settings history repair', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  await page.goto('/import')
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
+  await page.goto(`/read/${displayAssistanceArticle.id}`)
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toBeVisible()
+
+  await page.evaluate(async () => {
+    const appRoot = document.querySelector('#app') as HTMLElement & {
+      __vue_app__?: {
+        config: {
+          globalProperties: {
+            $router: {
+              replace: (location: string) => Promise<unknown>
+            }
+          }
+        }
+      }
+    }
+    const router = appRoot.__vue_app__?.config.globalProperties.$router
+    if (!router) {
+      throw new Error('Vue Router was not available to the history-race probe.')
+    }
+    const replacements = new Promise<void>((resolve, reject) => {
+      addEventListener('popstate', () => {
+        void (async () => {
+          await router.replace('/settings')
+          await router.replace('/settings')
+          resolve()
+        })().catch(reject)
+      }, { once: true })
+    })
+    history.back()
+    history.back()
+    await replacements
+  })
+
+  await expect(page).toHaveURL('/settings')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+  await expect(page.locator('.reader-view')).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() =>
+    history.state.__yomuRouteHistoryLayer ?? null)).toBeNull()
+
+  await page.reload()
+  await expect(page).toHaveURL('/settings')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+})
+
+test('a cross-document back closes Reader settings before leaving the deep link', async ({
+  page,
+}) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  await page.goto('http://localhost:57241/settings')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+
+  const readerUrl = `http://127.0.0.1:57241/read/${displayAssistanceArticle.id}`
+  await page.goto(readerUrl)
+  await expect(page.getByRole('heading', {
+    level: 1,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+
+  const readerPosition = await page.evaluate(() => history.state.position as number)
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => {
+    history.back()
+    history.back()
+  })
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerUrl)
+  await expect.poll(() => page.evaluate(() => ({
+    hasLayerMarker: '__yomuRouteHistoryLayer' in history.state,
+    position: history.state.position as number,
+  }))).toEqual({
+    hasLayerMarker: false,
+    position: readerPosition,
+  })
+  await expect(page.getByRole('heading', {
+    level: 1,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+
+  await page.evaluate(() => history.forward())
+  await expect(settingsDialog).toBeVisible()
+  await expect(page).toHaveURL(readerUrl)
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerUrl)
+
+  await page.goBack({ waitUntil: 'domcontentloaded' })
+  await expect(page).toHaveURL('http://localhost:57241/settings')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+})
+
+test('Reader settings restore from their history marker after reload', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto(readerPath)
+  await expect(page.getByRole('heading', {
+    level: 1,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toBeVisible()
+  await page.reload()
+
+  const restoredDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(restoredDialog).toBeVisible()
+  await page.evaluate(() => history.back())
+  await expect(restoredDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerPath)
+})
+
+test('Back closes a reloaded settings marker before the overlay mounts', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto(readerPath)
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toBeVisible()
+
+  await page.addInitScript(() => {
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('.reader-view')
+        && !document.querySelector('#reader-settings[open]')) {
+        observer.disconnect()
+        ;(window as typeof window & { __readerLoadingBackTriggered?: boolean })
+          .__readerLoadingBackTriggered = true
+        history.back()
+      }
+    })
+    observer.observe(document, { childList: true, subtree: true })
+  })
+  await page.reload()
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { __readerLoadingBackTriggered?: boolean })
+      .__readerLoadingBackTriggered ?? false)).toBe(true)
+  await expect(page).toHaveURL(readerPath)
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '阅读设置', exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => ({
+    hasLayerMarker: Boolean(history.state.__yomuRouteHistoryLayer),
+    pathname: location.pathname,
+  }))).toEqual({
+    hasLayerMarker: false,
+    pathname: readerPath,
+  })
+})
+
+test('navigation closes a reloaded settings marker before the overlay mounts without history debt', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto('/import')
+  await page.goto(readerPath)
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toBeVisible()
+
+  await page.addInitScript(() => {
+    const observer = new MutationObserver(() => {
+      const readerBack = document.querySelector<HTMLAnchorElement>('.reader-view__back')
+      if (readerBack && !document.querySelector('#reader-settings[open]')) {
+        observer.disconnect()
+        ;(window as typeof window & { __readerLoadingNavigationTriggered?: boolean })
+          .__readerLoadingNavigationTriggered = true
+        readerBack.click()
+      }
+    })
+    observer.observe(document, { childList: true, subtree: true })
+  })
+  await page.reload()
+
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { __readerLoadingNavigationTriggered?: boolean })
+      .__readerLoadingNavigationTriggered ?? false)).toBe(true)
+  await expect(page).toHaveURL(readerPath)
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() =>
+    Boolean(history.state.__yomuRouteHistoryLayer))).toBe(false)
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await expect(page).toHaveURL('/')
+  await page.goBack()
+  await expect(page).toHaveURL(readerPath)
+  await page.goBack()
+  await expect(page).toHaveURL('/import')
+})
+
+test('Reader settings forward marker survives a reload of its base entry', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto(readerPath)
+  const settingsButton = page.getByRole('button', { name: '阅读设置', exact: true })
+  await settingsButton.click()
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await page.reload()
+  await expect(settingsButton).toBeVisible()
+
+  await page.evaluate(() => history.forward())
+  await expect(settingsDialog).toBeVisible()
+  await expect(page).toHaveURL(readerPath)
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerPath)
+})
+
+test('multi-step Forward adopts the Reader settings marker without history debt', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto('/import')
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
+  await page.evaluate(async (path) => {
+    const appRoot = document.querySelector('#app') as HTMLElement & {
+      __vue_app__?: {
+        config: {
+          globalProperties: {
+            $router: { push: (location: string) => Promise<unknown> }
+          }
+        }
+      }
+    }
+    const router = appRoot.__vue_app__?.config.globalProperties.$router
+    if (!router) {
+      throw new Error('Vue Router was not available to the Forward probe.')
+    }
+    await router.push(path)
+  }, readerPath)
+  await expect(page).toHaveURL(readerPath)
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerPath)
+  await page.goBack()
+  await expect(page).toHaveURL('/import')
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
+
+  await page.evaluate(() => history.go(2))
+  await expect(page).toHaveURL(readerPath)
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(page).toHaveURL(readerPath)
+  await page.goBack()
+  await expect(page).toHaveURL('/import')
+})
+
+test('a multi-step Forward guard redirect replaces the Reader settings marker', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto('/import')
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
+  await page.evaluate(async (path) => {
+    const appRoot = document.querySelector('#app') as HTMLElement & {
+      __vue_app__?: {
+        config: {
+          globalProperties: {
+            $router: { push: (location: string) => Promise<unknown> }
+          }
+        }
+      }
+    }
+    const router = appRoot.__vue_app__?.config.globalProperties.$router
+    if (!router) {
+      throw new Error('Vue Router was not available to the redirect probe.')
+    }
+    await router.push(path)
+  }, readerPath)
+  await expect(page).toHaveURL(readerPath)
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate(() => history.back())
+  await expect(settingsDialog).toHaveCount(0)
+  await page.goBack()
+  await expect(page).toHaveURL('/import')
+
+  await page.evaluate((path) => {
+    const appRoot = document.querySelector('#app') as HTMLElement & {
+      __vue_app__?: {
+        config: {
+          globalProperties: {
+            $router: {
+              beforeEach: (
+                guard: (to: { fullPath: string }) => true | Record<string, unknown>,
+              ) => () => void
+            }
+          }
+        }
+      }
+    }
+    const router = appRoot.__vue_app__?.config.globalProperties.$router
+    if (!router) {
+      throw new Error('Vue Router was not available to install the redirect probe.')
+    }
+    let redirectArrival = true
+    router.beforeEach((to) => {
+      if (redirectArrival && to.fullPath === path) {
+        redirectArrival = false
+        return {
+          hash: '#arrival',
+          path: '/settings',
+          query: { from: 'reader' },
+          state: { arrivalRedirect: 'preserved' },
+        }
+      }
+      return true
+    })
+    history.go(2)
+  }, readerPath)
+
+  await expect(page).toHaveURL('/settings?from=reader#arrival')
+  await expect(page.getByRole('heading', { level: 1, name: '设置' })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => ({
+    marker: history.state.__yomuRouteHistoryLayer ?? null,
+    state: history.state.arrivalRedirect ?? null,
+  }))).toEqual({ marker: null, state: 'preserved' })
+
+  await page.goBack()
+  await expect(page).toHaveURL(readerPath)
+  await expect(settingsDialog).toHaveCount(0)
+  await page.goBack()
+  await expect(page).toHaveURL('/import')
+})
+
+test('a stale Reader settings marker cannot reactivate after reload', async ({ page }) => {
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  const readerPath = `/read/${displayAssistanceArticle.id}`
+  await page.goto(readerPath)
+  await page.getByRole('button', { name: '阅读设置', exact: true }).click()
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+  await expect(settingsDialog).toBeVisible()
+
+  await page.evaluate((stalePath) => {
+    const currentState = history.state as Record<string, unknown> & { position: number }
+    history.pushState({
+      ...currentState,
+      back: currentState.current ?? location.pathname,
+      current: stalePath,
+      forward: null,
+      position: currentState.position + 1,
+      replaced: false,
+      scroll: null,
+    }, '', stalePath)
+  }, '/read/stale-history-entry')
+  await settingsDialog.getByRole('button', { name: '关闭阅读设置' }).click()
+  await expect(settingsDialog).toHaveCount(0)
+
+  await page.evaluate(() => history.back())
+  await expect(page).toHaveURL(readerPath)
+  await expect.poll(() => page.evaluate(() =>
+    history.state.__yomuRouteHistoryLayer ?? null)).toBeNull()
+
+  await page.reload()
+  await expect(page).toHaveURL(readerPath)
+  await expect(page.getByRole('dialog', { name: '调整当前阅读' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '阅读设置', exact: true })).toBeVisible()
+})
+
+test('reader settings keep backdrop scrolling from moving the reading position', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 640 })
+  await seedArticleInIndexedDb(page, displayAssistanceArticle)
+  await page.goto(`/read/${displayAssistanceArticle.id}`)
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: displayAssistanceArticle.title,
+  })).toBeVisible()
+  await page.evaluate(() => {
+    document.body.style.minHeight = '300vh'
+    scrollTo(0, 0)
+  })
+
+  const settingsButton = page.getByRole('button', { name: '阅读设置', exact: true })
+  const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
+
+  await settingsButton.click()
+  await expect(settingsDialog).toBeVisible()
+  await page.mouse.move(12, 12)
+  await page.mouse.wheel(0, 600)
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(0)
+  await page.keyboard.press('Escape')
+  await expect(settingsDialog).toHaveCount(0)
+
+  await page.evaluate(() => {
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+      configurable: true,
+      value: undefined,
+    })
+  })
+  await settingsButton.click()
+  await expect(settingsDialog).toBeVisible()
+  await expect(settingsDialog).toHaveAttribute('data-modal-fallback', '')
+  await page.mouse.move(12, 12)
+  await page.mouse.wheel(0, 600)
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(0)
+  await page.keyboard.press('Escape')
+  await expect(settingsDialog).toHaveCount(0)
+  await expect(settingsButton).toBeFocused()
 })
 
 test('same confirmed body opens the existing article instead of creating a duplicate', async ({ page }) => {
@@ -683,6 +1382,38 @@ test('library keeps one semantic list across the 1199 and 1200 pixel layout boun
     getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(2)
   await expect(firstArticleLink).toBeFocused()
 })
+
+async function seedArticleInIndexedDb(
+  page: Page,
+  article: typeof displayAssistanceArticle,
+): Promise<void> {
+  expect(isArticleRecord(article)).toBe(true)
+  await page.goto('/')
+  await expect(page.getByTestId('library-empty-state')).toBeVisible()
+  await page.evaluate(async (record) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction('articles', 'readwrite')
+        transaction.oncomplete = () => resolve()
+        transaction.onabort = () => reject(
+          transaction.error ?? new Error('Article seed transaction was aborted.'),
+        )
+        transaction.onerror = () => reject(
+          transaction.error ?? new Error('Article seed transaction failed.'),
+        )
+        transaction.objectStore('articles').put(record)
+      })
+    }
+    finally {
+      database.close()
+    }
+  }, article)
+}
 
 async function importAndReturnToLibrary(
   page: Page,

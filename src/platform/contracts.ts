@@ -20,7 +20,10 @@ export interface CapabilitySnapshot {
   serviceWorker: CapabilityState
 }
 
+export type PreferencePersistence = 'session' | 'device'
+
 export interface PreferencesStore {
+  readonly persistence: PreferencePersistence
   get: <T>(key: string) => Promise<T | null>
   getImmediately: <T>(key: string) => T | null
   listByPrefix: <T>(prefix: string) => Promise<Array<{ key: string, value: T }>>
