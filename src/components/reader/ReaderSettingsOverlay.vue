@@ -200,7 +200,7 @@ function readFocusReturn(): HTMLElement | null {
   inset: auto 0 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  inline-size: 100%;
+  inline-size: calc(100% + var(--modal-scrollbar-gutter, 0px));
   max-inline-size: none;
   max-block-size: min(85vh, 46rem);
   max-block-size: min(85dvh, 46rem);
@@ -228,6 +228,7 @@ function readFocusReturn(): HTMLElement | null {
 :global(.reader-settings-overlay__fallback-backdrop) {
   position: fixed;
   inset: 0;
+  inset-inline-end: calc(0px - var(--modal-scrollbar-gutter, 0px));
   z-index: 100;
   background: color-mix(in srgb, var(--surface-canvas) 42%, transparent);
   backdrop-filter: blur(4px);
@@ -337,6 +338,7 @@ function readFocusReturn(): HTMLElement | null {
 @media (min-width: 768px) and (pointer: fine) {
   .reader-settings-overlay {
     inset: 0 0 0 auto;
+    inset-inline-end: calc(0px - var(--modal-scrollbar-gutter, 0px));
     inline-size: clamp(22.5rem, 30vw, 25rem);
     block-size: 100vh;
     block-size: 100dvh;

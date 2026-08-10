@@ -246,12 +246,25 @@ test('reader display assistance adapts by viewport and only persists durable pre
 
   const settingsButton = page.getByRole('button', { name: '阅读设置', exact: true })
   await expect(settingsButton).toBeVisible()
+  const readBackgroundBounds = () => page.evaluate(() => {
+    const reader = document.querySelector('.reader-view')?.getBoundingClientRect()
+    const footer = document.querySelector('.reader-view__footer')?.getBoundingClientRect()
+    const round = (value: number | undefined) => Math.round((value ?? -1) * 100) / 100
+    return {
+      readerLeft: round(reader?.left),
+      readerRight: round(reader?.right),
+      footerLeft: round(footer?.left),
+      footerRight: round(footer?.right),
+    }
+  })
+  const backgroundBoundsBeforeSettings = await readBackgroundBounds()
   await settingsButton.focus()
   await settingsButton.click()
 
   const settingsDialog = page.getByRole('dialog', { name: '调整当前阅读' })
   await expect(settingsDialog).toBeVisible()
   await expect(settingsDialog.getByRole('heading', { name: '调整当前阅读' })).toBeFocused()
+  await expect.poll(readBackgroundBounds).toEqual(backgroundBoundsBeforeSettings)
   const ipaToggle = settingsDialog.getByRole('checkbox', { name: /本次阅读显示 IPA/ })
   await page.keyboard.press('Shift+Tab')
   await expect(ipaToggle).toBeFocused()
@@ -259,15 +272,20 @@ test('reader display assistance adapts by viewport and only persists durable pre
   await expect(settingsDialog.getByRole('button', { name: '关闭阅读设置' })).toBeFocused()
   await expect.poll(() => settingsDialog.evaluate((element) => {
     const bounds = element.getBoundingClientRect()
+    const round = (value: number) => Math.round(value * 100) / 100
     return {
       alignedToBottom: Math.abs(bounds.bottom - innerHeight) <= 1,
       spansViewport: Math.abs(bounds.left) <= 1 && Math.abs(bounds.right - innerWidth) <= 1,
       leavesReadingContextVisible: bounds.top > 0,
+      leftGap: round(bounds.left),
+      rightGap: round(innerWidth - bounds.right),
     }
   })).toEqual({
     alignedToBottom: true,
     spansViewport: true,
     leavesReadingContextVisible: true,
+    leftGap: 0,
+    rightGap: 0,
   })
 
   const readerUrl = page.url()
@@ -342,15 +360,18 @@ test('reader display assistance adapts by viewport and only persists durable pre
   await expect(settingsDialog).toBeVisible()
   await expect.poll(() => settingsDialog.evaluate((element) => {
     const bounds = element.getBoundingClientRect()
+    const round = (value: number) => Math.round(value * 100) / 100
     return {
       alignedToRight: Math.abs(bounds.right - innerWidth) <= 1,
       fillsHeight: Math.abs(bounds.top) <= 1 && Math.abs(bounds.bottom - innerHeight) <= 1,
       remainsASidePanel: bounds.left > innerWidth / 2 && bounds.width < innerWidth / 2,
+      rightGap: round(innerWidth - bounds.right),
     }
   })).toEqual({
     alignedToRight: true,
     fillsHeight: true,
     remainsASidePanel: true,
+    rightGap: 0,
   })
 })
 

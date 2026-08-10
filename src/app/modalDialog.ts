@@ -26,9 +26,11 @@ interface ScrollLockState {
     element: HTMLElement
     values: InlineStylePropertyState[]
   }>
+  releaseViewportListener: () => void
 }
 
 const documentScrollLocks = new WeakMap<Document, ScrollLockState>()
+const modalScrollbarGutterProperty = '--modal-scrollbar-gutter'
 
 const focusableSelector = [
   'a[href]',
@@ -168,6 +170,11 @@ function acquireDialogFocusTrap(dialog: HTMLDialogElement): () => void {
 function acquireDocumentScrollLock(ownerDocument: Document): () => void {
   let state = documentScrollLocks.get(ownerDocument)
   if (!state) {
+    const documentElement = ownerDocument.documentElement
+    const ownerWindow = ownerDocument.defaultView
+    const preLockGutter = ownerWindow
+      ? Math.max(0, ownerWindow.innerWidth - documentElement.offsetWidth)
+      : 0
     const elements = [ownerDocument.documentElement, ownerDocument.body]
       .filter((element): element is HTMLElement => element !== null)
     const propertyNames = [
@@ -179,18 +186,42 @@ function acquireDocumentScrollLock(ownerDocument: Document): () => void {
       count: 0,
       properties: elements.map(element => ({
         element,
-        values: propertyNames.map(name => ({
+        values: [
+          ...propertyNames,
+          ...(element === documentElement ? [modalScrollbarGutterProperty] : []),
+        ].map(name => ({
           name,
           priority: element.style.getPropertyPriority(name),
           value: element.style.getPropertyValue(name),
         })),
       })),
+      releaseViewportListener: () => {},
     }
     state.properties.forEach(({ element }) => {
       element.style.setProperty('overflow', 'hidden', 'important')
       element.style.setProperty('overscroll-behavior', 'none', 'important')
-      element.style.setProperty('scrollbar-gutter', 'stable', 'important')
+      element.style.setProperty(
+        'scrollbar-gutter',
+        element === documentElement && preLockGutter > 0 ? 'stable' : 'auto',
+        'important',
+      )
     })
+
+    const updateScrollbarGutter = () => {
+      const gutter = ownerWindow
+        ? Math.max(0, ownerWindow.innerWidth - documentElement.offsetWidth)
+        : 0
+      documentElement.style.setProperty(
+        modalScrollbarGutterProperty,
+        `${gutter}px`,
+        'important',
+      )
+    }
+    updateScrollbarGutter()
+    ownerWindow?.addEventListener('resize', updateScrollbarGutter)
+    state.releaseViewportListener = () => {
+      ownerWindow?.removeEventListener('resize', updateScrollbarGutter)
+    }
     documentScrollLocks.set(ownerDocument, state)
   }
   state.count += 1
@@ -209,6 +240,7 @@ function acquireDocumentScrollLock(ownerDocument: Document): () => void {
     if (activeState.count > 0) {
       return
     }
+    activeState.releaseViewportListener()
     activeState.properties.forEach(({ element, values }) => {
       values.forEach(({ name, priority, value }) => {
         if (value) {
