@@ -1,7 +1,9 @@
+import { nextTick } from 'vue'
 import {
   isNavigationFailure,
   NavigationFailureType,
   type RouteLocationNormalized,
+  type RouteLocationRaw,
   type Router,
   type RouterHistory,
 } from 'vue-router'
@@ -16,6 +18,19 @@ export interface RouteLeaveBlocker {
   shouldBlock: () => boolean
 }
 
+export interface RouteHistoryLayerRegistration {
+  id: string
+  onActivate: () => void
+  onDeactivate: () => void
+  origin: () => string
+}
+
+export interface RouteHistoryLayerController {
+  activate: () => boolean
+  deactivate: () => Promise<void>
+  dispose: () => void
+}
+
 export interface RouteLeaveCoordinator {
   allowsConcurrentNavigation: (
     to: RouteLocationNormalized,
@@ -24,6 +39,9 @@ export interface RouteLeaveCoordinator {
   attachRouter: (router: Router) => void
   blocksConcurrentNavigation: () => boolean
   registerBlocker: (blocker: RouteLeaveBlocker) => () => void
+  registerHistoryLayer: (
+    registration: RouteHistoryLayerRegistration,
+  ) => RouteHistoryLayerController
   settleDecision: (allowNavigation: boolean) => Promise<void>
 }
 
@@ -33,6 +51,24 @@ interface HistoryAnchor {
 }
 
 interface BlockerRegistration extends RouteLeaveBlocker {
+  token: symbol
+}
+
+interface RouteHistoryLayerMarker {
+  basePosition: number | null
+  id: string
+  nonce: number
+  origin: string
+  version: 1
+}
+
+interface RouteHistoryLayerRegistrationState extends RouteHistoryLayerRegistration {
+  closePromise: Promise<void> | null
+  disposed: boolean
+  marker: RouteHistoryLayerMarker | null
+  notifyOnDeactivate: boolean
+  phase: 'closed' | 'closing' | 'open'
+  resolveClose: (() => void) | null
   token: symbol
 }
 
@@ -62,7 +98,17 @@ interface NavigationOwnership {
   generation: number
 }
 
+interface PendingHistoryLayerArrival {
+  delta: number
+  marker: RouteHistoryLayerMarker
+  navigation: object | null
+  origin: HistoryAnchor
+  replacementRequested: boolean
+  token: symbol
+}
+
 const coordinators = new WeakMap<Router, RouteLeaveCoordinator>()
+const routeHistoryLayerStateKey = '__yomuRouteHistoryLayer'
 
 /**
  * Serializes native history movement around an async leave decision. The first
@@ -75,6 +121,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
 } {
   const listeners = new Set<HistoryListener>()
   const blockers: BlockerRegistration[] = []
+  const historyLayers: RouteHistoryLayerRegistrationState[] = []
   const usesNativeHistoryPositions = isHistoryPosition(sourceHistory.state.position)
   let activeFence: PopFence | null = null
   let attachedRouter: Router | null = null
@@ -82,8 +129,10 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
   let fallbackHistoryUpperBound = 0
   let fallbackTraversalOrigin: number | null = null
   let historyChangeSerial = 0
+  let historyLayerNonce = 0
   const historyChangeWaiters = new Set<() => void>()
   const navigationOwnership = new WeakMap<object, NavigationOwnership>()
+  let pendingHistoryLayerArrival: PendingHistoryLayerArrival | null = null
   let pendingSilentTraversal: SilentTraversal | null = null
   let removeBeforeEach: (() => void) | null = null
   let removeAfterEach: (() => void) | null = null
@@ -95,6 +144,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
     if (silentTraversal
       && readNativeHistoryPosition() === silentTraversal.targetPosition) {
       pendingSilentTraversal = null
+      returnClosingHistoryLayerToBase()
       signalHistoryChange()
       return
     }
@@ -105,6 +155,10 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
       // observable repair, so recompute from the position that actually won.
       pendingSilentTraversal = null
       signalHistoryChange()
+    }
+    if (handleHistoryLayerTraversal(to, from, information)) {
+      signalHistoryChange()
+      return
     }
 
     if (activeFence?.phase === 'committed') {
@@ -187,8 +241,13 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
       removeSourceListener()
       listeners.clear()
       activeFence = null
+      pendingHistoryLayerArrival = null
       pendingSilentTraversal = null
       blockers.length = 0
+      historyLayers.splice(0).forEach((layer) => {
+        layer.disposed = true
+        finishHistoryLayerClose(layer, false)
+      })
       signalHistoryChange()
       sourceHistory.destroy()
     },
@@ -230,27 +289,33 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
         return
       }
       attachedRouter = router
-      removeBeforeEach = router.beforeEach(async (to) => {
+      removeBeforeEach = router.beforeEach(async (to, from) => {
+        const historyLayerRedirect = claimPendingHistoryLayerNavigation(to, from)
+        const closingLayer = historyLayers.find(layer => layer.phase === 'closing')
+        if (closingLayer?.closePromise) {
+          await closingLayer.closePromise
+        }
         const fence = activeFence
         if (!fence) {
-          return true
+          return historyLayerRedirect ?? true
         }
         if (fence.phase === 'navigation'
           && pendingSilentTraversal
           && claimFenceNavigation(fence, to)) {
           await restoreFence(fence)
-          return true
+          return historyLayerRedirect ?? true
         }
         if (fence.phase !== 'committed') {
-          return true
+          return historyLayerRedirect ?? true
         }
         const stable = await restoreFence(fence)
         if (stable && activeFence?.token === fence.token && fence.phase === 'committed') {
           clearFence(fence)
         }
-        return true
+        return historyLayerRedirect ?? true
       })
       removeAfterEach = router.afterEach((to, from, failure) => {
+        settlePendingHistoryLayerNavigation(to, failure === undefined)
         const fence = activeFence
         if (!fence) {
           return
@@ -280,6 +345,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
         )
       })
       removeRouterError = router.onError((_error, to, from) => {
+        settlePendingHistoryLayerNavigation(to, false)
         const fence = activeFence
         if (!fence) {
           return
@@ -319,6 +385,29 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
         }
       }
     },
+    registerHistoryLayer(registration) {
+      if (!registration.id.trim()) {
+        throw new Error('Route history layer id must not be empty.')
+      }
+      const layer: RouteHistoryLayerRegistrationState = {
+        ...registration,
+        closePromise: null,
+        disposed: false,
+        marker: null,
+        notifyOnDeactivate: true,
+        phase: 'closed',
+        resolveClose: null,
+        token: Symbol(`route-history-layer:${registration.id}`),
+      }
+      historyLayers.push(layer)
+      adoptCurrentHistoryLayer(layer)
+
+      return {
+        activate: () => activateHistoryLayer(layer),
+        deactivate: () => deactivateHistoryLayer(layer),
+        dispose: () => disposeHistoryLayer(layer),
+      }
+    },
     async settleDecision(allowNavigation) {
       const fence = activeFence
       if (!fence) {
@@ -337,6 +426,543 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
       fence.phase = 'rollback'
       fence.desired = fence.origin
     },
+  }
+
+  function activateHistoryLayer(layer: RouteHistoryLayerRegistrationState): boolean {
+    if (layer.disposed || layer.phase === 'closing') {
+      return false
+    }
+    if (layer.phase === 'open') {
+      return true
+    }
+    if (historyLayers.some(candidate => candidate !== layer && candidate.phase !== 'closed')) {
+      return false
+    }
+
+    const origin = layer.origin()
+    if (sourceHistory.location !== origin) {
+      return false
+    }
+    const currentMarker = readCurrentHistoryLayerMarker()
+    if (currentMarker && historyLayerMarkerBelongsTo(layer, currentMarker)) {
+      layer.marker = currentMarker
+      layer.phase = 'open'
+      layer.onActivate()
+      return true
+    }
+
+    const marker: RouteHistoryLayerMarker = {
+      basePosition: readHistoryPosition(),
+      id: layer.id,
+      nonce: ++historyLayerNonce,
+      origin,
+      version: 1,
+    }
+    layer.marker = marker
+    history.push(origin, {
+      [routeHistoryLayerStateKey]: { ...marker },
+    })
+    layer.phase = 'open'
+    layer.onActivate()
+    return true
+  }
+
+  function deactivateHistoryLayer(
+    layer: RouteHistoryLayerRegistrationState,
+  ): Promise<void> {
+    if (layer.phase === 'closed') {
+      if (layer.marker && !canReopenHistoryLayerFromCurrentBase(layer, layer.marker)) {
+        layer.marker = null
+      }
+      return Promise.resolve()
+    }
+    if (layer.closePromise) {
+      return layer.closePromise
+    }
+
+    layer.phase = 'closing'
+    layer.closePromise = new Promise<void>((resolve) => {
+      layer.resolveClose = resolve
+    })
+    const closePromise = layer.closePromise
+    const marker = layer.marker
+    const currentMarker = readCurrentHistoryLayerMarker()
+    if (!marker
+      || !currentMarker
+      || !historyLayerMarkersMatch(marker, currentMarker)
+      || sourceHistory.location !== marker.origin) {
+      if (marker
+        && canReopenHistoryLayerFromCurrentBase(layer, marker)
+        && pendingTraversalTargetsHistoryLayerMarker(marker)) {
+        return closePromise
+      }
+      if (marker && !canReopenHistoryLayerFromCurrentBase(layer, marker)) {
+        layer.marker = null
+      }
+      finishHistoryLayerClose(layer, true)
+      return closePromise
+    }
+
+    const currentPosition = readHistoryPosition()
+    const delta = marker.basePosition !== null && currentPosition !== null
+      ? marker.basePosition - currentPosition
+      : -1
+    if (delta === 0) {
+      finishHistoryLayerClose(layer, true)
+    }
+    else {
+      moveHistory(delta, true)
+    }
+    return closePromise
+  }
+
+  function disposeHistoryLayer(layer: RouteHistoryLayerRegistrationState): void {
+    if (layer.disposed) {
+      return
+    }
+    layer.notifyOnDeactivate = false
+    const marker = layer.marker
+    const currentMarker = readCurrentHistoryLayerMarker()
+    if (layer.phase !== 'closed'
+      && marker
+      && currentMarker
+      && historyLayerMarkersMatch(marker, currentMarker)
+      && sourceHistory.location === marker.origin) {
+      void deactivateHistoryLayer(layer).finally(() => removeHistoryLayer(layer))
+      return
+    }
+    finishHistoryLayerClose(layer, false)
+    removeHistoryLayer(layer)
+  }
+
+  function removeHistoryLayer(layer: RouteHistoryLayerRegistrationState): void {
+    layer.disposed = true
+    const index = historyLayers.findIndex(candidate => candidate.token === layer.token)
+    if (index >= 0) {
+      historyLayers.splice(index, 1)
+    }
+  }
+
+  function finishHistoryLayerClose(
+    layer: RouteHistoryLayerRegistrationState,
+    notify: boolean,
+  ): void {
+    const wasClosed = layer.phase === 'closed'
+    layer.phase = 'closed'
+    const resolveClose = layer.resolveClose
+    layer.resolveClose = null
+    layer.closePromise = null
+    resolveClose?.()
+    if (!wasClosed && notify && layer.notifyOnDeactivate && !layer.disposed) {
+      layer.onDeactivate()
+    }
+  }
+
+  function adoptCurrentHistoryLayer(layer: RouteHistoryLayerRegistrationState): void {
+    if (layer.disposed || layer.phase !== 'closed') {
+      return
+    }
+    const marker = readCurrentHistoryLayerMarker()
+    if (!marker
+      || sourceHistory.location !== layer.origin()
+      || !historyLayerMarkerBelongsTo(layer, marker)
+      || historyLayers.some(candidate => candidate !== layer && candidate.phase !== 'closed')) {
+      return
+    }
+    historyLayerNonce = Math.max(historyLayerNonce, marker.nonce)
+    if (!usesNativeHistoryPositions && marker.basePosition !== null) {
+      fallbackHistoryPosition = marker.basePosition + 1
+      fallbackHistoryUpperBound = Math.max(
+        fallbackHistoryUpperBound,
+        fallbackHistoryPosition,
+      )
+    }
+    layer.marker = marker
+    layer.phase = 'open'
+    clearPendingHistoryLayerArrival(marker)
+    layer.onActivate()
+  }
+
+  function handleHistoryLayerTraversal(
+    to: string,
+    from: string,
+    information: HistoryNavigationInformation,
+  ): boolean {
+    const closingLayer = historyLayers.find(layer => layer.phase === 'closing')
+    if (closingLayer?.marker
+      && to === closingLayer.marker.origin
+      && isAtHistoryLayerBase(closingLayer.marker)) {
+      finishHistoryLayerClose(closingLayer, true)
+      if (closingLayer.disposed) {
+        removeHistoryLayer(closingLayer)
+      }
+      return true
+    }
+
+    const marker = readCurrentHistoryLayerMarker()
+    if (!marker) {
+      return false
+    }
+    const layer = historyLayers.find(candidate =>
+      !candidate.disposed
+      && candidate.phase === 'closed'
+      && (candidate.marker === null || historyLayerMarkersMatch(candidate.marker, marker))
+      && historyLayerMarkerBelongsTo(candidate, marker),
+    )
+    const isForwardToMarker = to === marker.origin && information.delta > 0
+    if (layer && isForwardToMarker) {
+      layer.marker = marker
+      layer.phase = 'open'
+      clearPendingHistoryLayerArrival(marker)
+      layer.onActivate()
+      return true
+    }
+    if (!layer && isForwardToMarker) {
+      const markerPosition = readHistoryPosition()
+      pendingHistoryLayerArrival = {
+        delta: information.delta,
+        marker,
+        navigation: null,
+        origin: {
+          location: from,
+          position: markerPosition === null
+            ? null
+            : markerPosition - information.delta,
+        },
+        replacementRequested: false,
+        token: Symbol('pending-route-history-layer-arrival'),
+      }
+      return false
+    }
+    stripCurrentHistoryLayerMarker(to, marker)
+    return false
+  }
+
+  function claimPendingHistoryLayerNavigation(
+    destination: RouteLocationNormalized,
+    origin: RouteLocationNormalized,
+  ): RouteLocationRaw | null {
+    const pending = pendingHistoryLayerArrival
+    if (!pending || origin.fullPath !== pending.origin.location) {
+      return null
+    }
+    if (pending.navigation) {
+      if (!navigationDescendsFrom(destination, pending.navigation)
+        && currentHistoryLayerMarkerMatches(pending.marker)) {
+        pending.navigation = destination
+        pending.replacementRequested = true
+        return historyLayerReplacementLocation(pending, destination)
+      }
+      return historyLayerRedirectReplacement(pending, destination)
+    }
+
+    let candidate:
+      | RouteLocationNormalized
+      | NonNullable<RouteLocationNormalized['redirectedFrom']>
+      | undefined = destination
+    const visited = new Set<object>()
+    while (candidate && !visited.has(candidate)) {
+      if (candidate.fullPath === pending.marker.origin) {
+        pending.navigation = candidate
+        return historyLayerRedirectReplacement(pending, destination)
+      }
+      visited.add(candidate)
+      candidate = candidate.redirectedFrom
+    }
+    return null
+  }
+
+  function historyLayerRedirectReplacement(
+    pending: PendingHistoryLayerArrival,
+    destination: RouteLocationNormalized,
+  ): RouteLocationRaw | null {
+    if (pending.replacementRequested
+      || !pending.navigation
+      || destination === pending.navigation
+      || !navigationDescendsFrom(destination, pending.navigation)) {
+      return null
+    }
+    pending.replacementRequested = true
+    return historyLayerReplacementLocation(pending, destination)
+  }
+
+  function historyLayerReplacementLocation(
+    pending: PendingHistoryLayerArrival,
+    destination: RouteLocationNormalized,
+  ): RouteLocationRaw {
+    return {
+      hash: destination.hash,
+      path: destination.path,
+      query: destination.query,
+      replace: true,
+      state: {
+        [routeHistoryLayerStateKey]: { ...pending.marker },
+      },
+    }
+  }
+
+  function settlePendingHistoryLayerNavigation(
+    destination: RouteLocationNormalized,
+    succeeded: boolean,
+  ): void {
+    const pending = pendingHistoryLayerArrival
+    if (!pending) {
+      return
+    }
+    if (!pending.navigation) {
+      if (!succeeded
+        && navigationChainIncludesLocation(destination, pending.marker.origin)) {
+        pendingHistoryLayerArrival = null
+        if (destination.redirectedFrom
+          && currentHistoryLayerMarkerMatches(pending.marker)
+          && !pendingTraversalTargetsHistoryAnchor(pending.origin)) {
+          restorePendingHistoryLayerOrigin(pending)
+        }
+      }
+      return
+    }
+    if (!navigationDescendsFrom(destination, pending.navigation)) {
+      return
+    }
+    if (!succeeded) {
+      pendingHistoryLayerArrival = null
+      if (pending.replacementRequested
+        && currentHistoryLayerMarkerMatches(pending.marker)
+        && !pendingTraversalTargetsHistoryAnchor(pending.origin)) {
+        restorePendingHistoryLayerOrigin(pending)
+      }
+      return
+    }
+
+    const token = pending.token
+    void nextTick(() => {
+      let current = pendingHistoryLayerArrival
+      if (!current || current.token !== token) {
+        return
+      }
+      historyLayers.forEach((layer) => {
+        adoptCurrentHistoryLayer(layer)
+      })
+      current = pendingHistoryLayerArrival
+      if (!current || current.token !== token) {
+        return
+      }
+      pendingHistoryLayerArrival = null
+      const marker = readCurrentHistoryLayerMarker()
+      if (!marker || !historyLayerMarkersMatch(marker, current.marker)) {
+        return
+      }
+      const owner = historyLayers.some(layer =>
+        !layer.disposed
+        && layer.phase === 'open'
+        && layer.marker !== null
+        && historyLayerMarkersMatch(layer.marker, marker)
+        && historyLayerMarkerBelongsTo(layer, marker),
+      )
+      if (!owner) {
+        stripCurrentHistoryLayerMarker(sourceHistory.location, marker)
+      }
+    })
+  }
+
+  function restorePendingHistoryLayerOrigin(
+    pending: PendingHistoryLayerArrival,
+  ): void {
+    const currentPosition = readHistoryPosition()
+    const delta = pending.origin.position !== null && currentPosition !== null
+      ? pending.origin.position - currentPosition
+      : -pending.delta
+    if (delta !== 0) {
+      moveHistory(delta, true)
+    }
+  }
+
+  function currentHistoryLayerMarkerMatches(
+    expected: RouteHistoryLayerMarker,
+  ): boolean {
+    const current = readCurrentHistoryLayerMarker()
+    return current !== null
+      && sourceHistory.location === expected.origin
+      && historyLayerMarkersMatch(current, expected)
+  }
+
+  function pendingTraversalTargetsHistoryAnchor(anchor: HistoryAnchor): boolean {
+    return anchor.position !== null
+      && pendingSilentTraversal?.targetPosition === anchor.position
+  }
+
+  function navigationChainIncludesLocation(
+    destination: RouteLocationNormalized,
+    location: string,
+  ): boolean {
+    let candidate:
+      | RouteLocationNormalized
+      | NonNullable<RouteLocationNormalized['redirectedFrom']>
+      | undefined = destination
+    const visited = new Set<object>()
+    while (candidate && !visited.has(candidate)) {
+      if (candidate.fullPath === location) {
+        return true
+      }
+      visited.add(candidate)
+      candidate = candidate.redirectedFrom
+    }
+    return false
+  }
+
+  function navigationDescendsFrom(
+    destination: RouteLocationNormalized,
+    expected: object,
+  ): boolean {
+    let candidate:
+      | RouteLocationNormalized
+      | NonNullable<RouteLocationNormalized['redirectedFrom']>
+      | undefined = destination
+    const visited = new Set<object>()
+    while (candidate && !visited.has(candidate)) {
+      if (candidate === expected) {
+        return true
+      }
+      visited.add(candidate)
+      candidate = candidate.redirectedFrom
+    }
+    return false
+  }
+
+  function clearPendingHistoryLayerArrival(marker: RouteHistoryLayerMarker): void {
+    if (pendingHistoryLayerArrival
+      && historyLayerMarkersMatch(pendingHistoryLayerArrival.marker, marker)) {
+      pendingHistoryLayerArrival = null
+    }
+  }
+
+  function stripCurrentHistoryLayerMarker(
+    location: string,
+    marker: RouteHistoryLayerMarker,
+  ): void {
+    const state = sourceHistory.state
+    if (!isRecord(state)) {
+      return
+    }
+    const currentMarker = readCurrentHistoryLayerMarker()
+    if (!currentMarker || !historyLayerMarkersMatch(currentMarker, marker)) {
+      return
+    }
+    if (!usesNativeHistoryPositions) {
+      try {
+        if (Reflect.deleteProperty(state, routeHistoryLayerStateKey)) {
+          return
+        }
+      }
+      catch {
+        // Fall through to the RouterHistory replacement for immutable states.
+      }
+    }
+    // Vue Router merges replacement data over the existing Web History state,
+    // so omitting this key would retain the stale marker across a reload.
+    const nextState = {
+      ...state,
+      [routeHistoryLayerStateKey]: null,
+    }
+    sourceHistory.replace(location, nextState)
+  }
+
+  function isAtHistoryLayerBase(marker: RouteHistoryLayerMarker): boolean {
+    const position = readHistoryPosition()
+    return marker.basePosition === null
+      || position === null
+      || position === marker.basePosition
+  }
+
+  function canReopenHistoryLayerFromCurrentBase(
+    layer: RouteHistoryLayerRegistrationState,
+    marker: RouteHistoryLayerMarker,
+  ): boolean {
+    return sourceHistory.location === marker.origin
+      && historyLayerMarkerBelongsTo(layer, marker)
+      && isAtHistoryLayerBase(marker)
+  }
+
+  function pendingTraversalTargetsHistoryLayerMarker(
+    marker: RouteHistoryLayerMarker,
+  ): boolean {
+    return marker.basePosition !== null
+      && pendingSilentTraversal?.targetPosition === marker.basePosition + 1
+  }
+
+  function returnClosingHistoryLayerToBase(): void {
+    const marker = readCurrentHistoryLayerMarker()
+    if (!marker) {
+      return
+    }
+    const layer = historyLayers.find(candidate =>
+      candidate.phase === 'closing'
+      && candidate.marker !== null
+      && historyLayerMarkersMatch(candidate.marker, marker),
+    )
+    if (!layer) {
+      return
+    }
+    const currentPosition = readHistoryPosition()
+    const delta = marker.basePosition !== null && currentPosition !== null
+      ? marker.basePosition - currentPosition
+      : -1
+    if (delta === 0) {
+      finishHistoryLayerClose(layer, true)
+      return
+    }
+    moveHistory(delta, true)
+  }
+
+  function readCurrentHistoryLayerMarker(): RouteHistoryLayerMarker | null {
+    const state = sourceHistory.state
+    if (!isRecord(state)) {
+      return null
+    }
+    const candidate = state[routeHistoryLayerStateKey]
+    if (!isRecord(candidate)
+      || candidate.version !== 1
+      || typeof candidate.id !== 'string'
+      || !candidate.id
+      || typeof candidate.origin !== 'string'
+      || !candidate.origin
+      || !Number.isSafeInteger(candidate.nonce)
+      || (candidate.basePosition !== null && !isHistoryPosition(candidate.basePosition))) {
+      return null
+    }
+    const marker: RouteHistoryLayerMarker = {
+      basePosition: candidate.basePosition as number | null,
+      id: candidate.id,
+      nonce: candidate.nonce as number,
+      origin: candidate.origin,
+      version: 1,
+    }
+    const currentPosition = readHistoryPosition()
+    if (usesNativeHistoryPositions
+      && marker.basePosition !== null
+      && currentPosition !== null
+      && currentPosition !== marker.basePosition + 1) {
+      return null
+    }
+    return marker
+  }
+
+  function historyLayerMarkerBelongsTo(
+    layer: RouteHistoryLayerRegistrationState,
+    marker: RouteHistoryLayerMarker,
+  ): boolean {
+    return layer.id === marker.id && layer.origin() === marker.origin
+  }
+
+  function historyLayerMarkersMatch(
+    left: RouteHistoryLayerMarker,
+    right: RouteHistoryLayerMarker,
+  ): boolean {
+    return left.version === right.version
+      && left.id === right.id
+      && left.origin === right.origin
+      && left.nonce === right.nonce
+      && left.basePosition === right.basePosition
   }
 
   function clearFence(fence: PopFence): void {
@@ -675,12 +1301,49 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
     if (!triggerListeners && currentPosition !== null) {
       const targetPosition = currentPosition + delta
       if (pendingSilentTraversal?.targetPosition !== targetPosition) {
-        pendingSilentTraversal = { targetPosition }
+        const traversal = { targetPosition }
+        pendingSilentTraversal = traversal
         sourceHistory.go(delta, true)
+        retryDroppedHistoryLayerTraversal(traversal)
       }
       return
     }
     sourceHistory.go(delta, triggerListeners)
+  }
+
+  function retryDroppedHistoryLayerTraversal(traversal: SilentTraversal): void {
+    const layer = historyLayers.find(candidate =>
+      candidate.phase !== 'closed'
+      && candidate.marker !== null
+      && candidate.marker.basePosition !== null
+      && candidate.marker.basePosition + 1 === traversal.targetPosition
+      && sourceHistory.location === candidate.marker.origin
+      && historyLayerMarkerBelongsTo(candidate, candidate.marker),
+    )
+    if (!layer) {
+      return
+    }
+
+    // Chromium can coalesce a rapid pair of Back commands after the first one
+    // has already scheduled our marker repair. Classic History exposes no
+    // completion promise, so retry only this safe, app-created terminal marker
+    // when the browser produces neither the target pop nor a superseding pop.
+    setTimeout(() => {
+      if (pendingSilentTraversal !== traversal
+        || layer.disposed
+        || layer.phase === 'closed'
+        || layer.marker === null
+        || !historyLayerMarkerBelongsTo(layer, layer.marker)) {
+        return
+      }
+      if (readNativeHistoryPosition() === traversal.targetPosition) {
+        pendingSilentTraversal = null
+        signalHistoryChange()
+        return
+      }
+      pendingSilentTraversal = null
+      signalHistoryChange()
+    }, 32)
   }
 
   function clampHistoryPosition(position: number): number {
@@ -708,6 +1371,10 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
 
 function isHistoryPosition(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 export function getRouteLeaveCoordinator(router: Router): RouteLeaveCoordinator {

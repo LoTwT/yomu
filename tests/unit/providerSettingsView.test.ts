@@ -9,6 +9,10 @@ import {
   providerPreferenceKeys,
   providerSecretKeys,
 } from '@/features/settings/providerSettingsStorage'
+import {
+  readerDisplayPreferenceKey,
+  type ReaderDisplayPreferences,
+} from '@/features/preferences/useReaderDisplayPreferences'
 import { createYomuApp } from '@/platform/bootstrap'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import {
@@ -27,6 +31,32 @@ afterEach(() => {
 })
 
 describe('unified provider settings', () => {
+  it('shares the persisted reader display preferences with the Reader settings', async () => {
+    const { host, harness } = await mountSettings(
+      createEmptyPlatformInitializationReport(),
+      { fontScale: 1.15, defaultExpandTranslation: true },
+    )
+
+    const largerScale = findInput(host, '.reader-display-settings input[value="1.15"]')
+    const extraLargeScale = findInput(host, '.reader-display-settings input[value="1.3"]')
+    const translationDefault = findInput(
+      host,
+      '.reader-display-settings__toggle input[type="checkbox"]',
+    )
+    expect(largerScale.checked).toBe(true)
+    expect(translationDefault.checked).toBe(true)
+    expect(host.textContent).not.toContain('本次阅读显示 IPA')
+
+    dispatchChecked(extraLargeScale, true)
+    dispatchChecked(translationDefault, false)
+    await settle()
+
+    expect(await harness.preferences.get(readerDisplayPreferenceKey)).toEqual({
+      fontScale: 1.3,
+      defaultExpandTranslation: false,
+    })
+  })
+
   it('persists keys only through SecretStore and removes them when providers are disabled', async () => {
     const { host, harness } = await mountSettings()
 
@@ -111,8 +141,12 @@ describe('unified provider settings', () => {
 
 async function mountSettings(
   initialization: PlatformInitializationReport = createEmptyPlatformInitializationReport(),
+  readerPreferences?: ReaderDisplayPreferences,
 ) {
   const harness = createFakePlatformServices()
+  if (readerPreferences) {
+    await harness.preferences.set(readerDisplayPreferenceKey, readerPreferences)
+  }
   const router = createYomuRouter(createMemoryHistory())
   await router.push('/settings')
   await router.isReady()

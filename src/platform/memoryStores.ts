@@ -5,6 +5,8 @@ import type {
 } from './contracts'
 
 export class MemoryPreferencesStore implements PreferencesStore {
+  readonly persistence = 'session' as const
+
   private readonly values = new Map<string, unknown>()
 
   async get<T>(key: string): Promise<T | null> {

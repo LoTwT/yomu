@@ -11,6 +11,8 @@ const preferencePrefix = 'yomu:v2:preference:'
 const secretPrefix = 'yomu:v2:secret:'
 
 export class WebPreferencesStore implements PreferencesStore {
+  readonly persistence = 'device' as const
+
   constructor(
     private readonly storage: Storage,
     private readonly locks: LockManager | null = readLockManager(),

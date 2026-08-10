@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, shallowRef, useId, watch } from 'vue'
 
+import {
+  normalizeIpa,
+  sentenceHasIpa,
+  sentenceHasTranslation,
+} from '@/data/articleCapabilities'
 import type { ArticleRecord, ArticleSentenceRecord } from '@/data/entities'
+import type { ReaderFontScale } from '@/features/preferences/useReaderDisplayPreferences'
 
 const props = defineProps<{
   article: ArticleRecord
   currentSentenceId: string
+  defaultExpandTranslation: boolean
+  fontScale: ReaderFontScale
   playingSentenceId: string | null
+  preferencesReady: boolean
+  showIpa: boolean
 }>()
 
 const emit = defineEmits<{
@@ -27,6 +37,78 @@ const paragraphs = computed(() => {
     sentences,
   }))
 })
+const expandedTranslationIds = shallowRef<ReadonlySet<string>>(new Set())
+const translationControlId = useId()
+const translationPanelIds = computed(() => new Map(
+  props.article.sentences.map((sentence, index) => [
+    sentence.id,
+    `${translationControlId}-translation-${index}`,
+  ]),
+))
+const articleClasses = computed(() => ({
+  [`reader-article--font-${Math.round(props.fontScale * 100)}`]: true,
+}))
+let initializedArticleId: string | null = null
+let activeArticleId = props.article.id
+let translationStateTouched = false
+
+watch(
+  [() => props.article.id, () => props.preferencesReady],
+  ([articleId, preferencesReady]) => {
+    if (activeArticleId !== articleId) {
+      activeArticleId = articleId
+      initializedArticleId = null
+      translationStateTouched = false
+      expandedTranslationIds.value = new Set()
+    }
+    if (!preferencesReady || initializedArticleId === articleId) {
+      return
+    }
+    initializedArticleId = articleId
+    if (!translationStateTouched) {
+      expandedTranslationIds.value = props.defaultExpandTranslation
+        ? new Set(props.article.sentences
+            .filter(sentenceHasTranslation)
+            .map(sentence => sentence.id))
+        : new Set()
+    }
+  },
+  { immediate: true },
+)
+
+function isCurrentSentence(sentenceId: string): boolean {
+  return sentenceId === props.currentSentenceId
+}
+
+function isTranslationExpanded(sentenceId: string): boolean {
+  return expandedTranslationIds.value.has(sentenceId)
+}
+
+function toggleTranslation(sentenceId: string): void {
+  translationStateTouched = true
+  const nextExpandedIds = new Set(expandedTranslationIds.value)
+  if (nextExpandedIds.has(sentenceId)) {
+    nextExpandedIds.delete(sentenceId)
+  }
+  else {
+    nextExpandedIds.add(sentenceId)
+  }
+  expandedTranslationIds.value = nextExpandedIds
+}
+
+function tokenIpaEntries(sentence: ArticleSentenceRecord) {
+  return sentence.tokens.flatMap((token) => {
+    if (token.kind !== 'word') {
+      return []
+    }
+    const ipa = normalizeIpa(token.ipa)
+    return ipa ? [{ id: token.id, ipa, text: token.text }] : []
+  })
+}
+
+function translationPanelId(sentenceId: string): string {
+  return translationPanelIds.value.get(sentenceId) ?? `${translationControlId}-translation`
+}
 
 function handleSentenceClick(sentenceId: string, event: MouseEvent): void {
   const sentence = event.currentTarget as HTMLButtonElement | null
@@ -91,7 +173,7 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
 </script>
 
 <template>
-  <article class="reader-article">
+  <article class="reader-article" :class="articleClasses">
     <header class="reader-article__header">
       <p class="reader-article__source">
         {{ props.article.source.label }} · {{ props.article.level === 'unassessed' ? '未评估' : props.article.level }}
@@ -110,24 +192,76 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
         :key="paragraph.paragraphIndex"
         class="reader-article__paragraph"
       >
-        <button
+        <span
           v-for="sentence in paragraph.sentences"
           :key="sentence.id"
-          class="reader-article__sentence"
-          :class="{
-            'reader-article__sentence--current': sentence.id === props.currentSentenceId,
-            'reader-article__sentence--playing': sentence.id === props.playingSentenceId,
-          }"
-          type="button"
-          :data-sentence-id="sentence.id"
-          :data-playing="sentence.id === props.playingSentenceId ? 'true' : undefined"
-          :tabindex="sentence.id === props.currentSentenceId ? 0 : -1"
-          :aria-current="sentence.id === props.currentSentenceId ? 'true' : undefined"
-          @click="handleSentenceClick(sentence.id, $event)"
-          @keydown="handleSentenceKeydown"
+          class="reader-article__sentence-cluster"
         >
-          {{ sentence.original }}
-        </button>
+          <button
+            class="reader-article__sentence"
+            :class="{
+              'reader-article__sentence--current': isCurrentSentence(sentence.id),
+              'reader-article__sentence--playing': sentence.id === props.playingSentenceId,
+            }"
+            type="button"
+            :data-sentence-id="sentence.id"
+            :data-playing="sentence.id === props.playingSentenceId ? 'true' : undefined"
+            :tabindex="isCurrentSentence(sentence.id) ? 0 : -1"
+            :aria-current="isCurrentSentence(sentence.id) ? 'true' : undefined"
+            @click="handleSentenceClick(sentence.id, $event)"
+            @keydown="handleSentenceKeydown"
+          >
+            {{ sentence.original }}
+          </button>
+
+          <span
+            v-if="props.showIpa && isCurrentSentence(sentence.id) && sentenceHasIpa(sentence)"
+            class="reader-article__ipa"
+            data-testid="sentence-ipa"
+          >
+            <span class="reader-article__assist-label">IPA</span>
+            <span v-if="normalizeIpa(sentence.sentenceIpa)" class="reader-article__sentence-ipa">
+              {{ normalizeIpa(sentence.sentenceIpa) }}
+            </span>
+            <span v-else class="reader-article__token-ipa-list" aria-label="当前句单词 IPA">
+              <span
+                v-for="entry in tokenIpaEntries(sentence)"
+                :key="entry.id"
+                class="reader-article__token-ipa"
+              >
+                <span class="reader-article__ipa-word">{{ entry.text }}</span>
+                <span class="reader-article__ipa-value">{{ entry.ipa }}</span>
+              </span>
+            </span>
+          </span>
+
+          <span
+            v-if="sentenceHasTranslation(sentence)"
+            class="reader-article__translation-action"
+          >
+            <button
+              class="reader-article__translation-toggle"
+              type="button"
+              :tabindex="isCurrentSentence(sentence.id) ? 0 : -1"
+              :aria-expanded="isTranslationExpanded(sentence.id)"
+              :aria-controls="isTranslationExpanded(sentence.id) ? translationPanelId(sentence.id) : undefined"
+              :aria-label="`${isTranslationExpanded(sentence.id) ? '收起' : '显示'}第 ${sentence.order + 1} 句译文`"
+              @click="toggleTranslation(sentence.id)"
+            >
+              {{ isTranslationExpanded(sentence.id) ? '收起译文' : '译文' }}
+            </button>
+          </span>
+
+          <span
+            v-if="isTranslationExpanded(sentence.id) && sentenceHasTranslation(sentence)"
+            :id="translationPanelId(sentence.id)"
+            class="reader-article__translation"
+            data-testid="sentence-translation"
+            lang="zh-CN"
+          >
+            {{ sentence.translation }}
+          </span>
+        </span>
       </p>
     </div>
   </article>
@@ -172,12 +306,35 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   gap: 1.4rem;
   padding-block: 1.75rem 2rem;
   font-family: var(--font-reading);
-  font-size: clamp(1.12rem, 2.4vw, 1.3rem);
+  font-size: var(--reader-body-font-size, clamp(1.12rem, 2.4vw, 1.3rem));
   line-height: 1.9;
 }
 
-.reader-article__sentence {
+.reader-article--font-90 {
+  --reader-body-font-size: clamp(1.01rem, 2.16vw, 1.17rem);
+}
+
+.reader-article--font-100 {
+  --reader-body-font-size: clamp(1.12rem, 2.4vw, 1.3rem);
+}
+
+.reader-article--font-115 {
+  --reader-body-font-size: clamp(1.29rem, 2.76vw, 1.5rem);
+}
+
+.reader-article--font-130 {
+  --reader-body-font-size: clamp(1.46rem, 3.12vw, 1.69rem);
+}
+
+.reader-article__sentence-cluster {
   display: inline;
+}
+
+.reader-article__sentence {
+  display: inline-block;
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+  max-inline-size: 100%;
   border: 0;
   border-radius: 0.18rem;
   padding: 0.08em 0.12em;
@@ -186,10 +343,11 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   font: inherit;
   line-height: inherit;
   text-align: start;
+  vertical-align: baseline;
   cursor: pointer;
 }
 
-.reader-article__sentence + .reader-article__sentence {
+.reader-article__sentence-cluster + .reader-article__sentence-cluster .reader-article__sentence {
   margin-inline-start: 0.18em;
 }
 
@@ -207,9 +365,92 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   outline-offset: 3px;
 }
 
+.reader-article__ipa,
+.reader-article__translation {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  margin-block: 0.55rem 0.85rem;
+  border-inline-start: 2px solid var(--reading-rule);
+  padding-inline-start: 0.8rem;
+}
+
+.reader-article__ipa {
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-family: var(--reading-font-mono);
+  font-size: 0.7em;
+  line-height: 1.65;
+}
+
+.reader-article__assist-label {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reader-article__token-ipa-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+}
+
+.reader-article__token-ipa {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.reader-article__ipa-word {
+  color: var(--text-primary);
+  font-family: var(--reading-font-body);
+}
+
+.reader-article__ipa-value {
+  color: var(--text-secondary);
+}
+
+.reader-article__translation-action {
+  display: inline-flex;
+  margin-inline-start: 0.16em;
+  vertical-align: baseline;
+}
+
+.reader-article__translation-toggle {
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding-inline: 0.55rem;
+  background: transparent;
+  color: var(--text-accent);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reader-article__translation {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.82em;
+  line-height: 1.75;
+}
+
+.reader-article__translation-toggle:focus-visible {
+  outline: 3px solid var(--focus-ring-color);
+  outline-offset: 2px;
+}
+
 @media (hover: hover) {
   .reader-article__sentence:hover {
     background: var(--surface-muted);
+  }
+
+  .reader-article__translation-toggle:hover {
+    background: var(--accent-soft);
   }
 }
 

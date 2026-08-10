@@ -1,3 +1,4 @@
+import { reconcileArticleCapabilities } from '@/data/articleCapabilities'
 import { diagnoseSnapshot } from '@/data/diagnostics'
 import {
   isArticleRecord,
@@ -266,12 +267,20 @@ function indexedDbArticleRepository(
   transaction: IDBTransaction,
   reportIssue: ReadIssueReporter,
 ): EntityRepository<ArticleRecord> {
-  return indexedDbEntityRepository(
+  const base = indexedDbEntityRepository(
     transaction,
     'articles',
     isArticleRecord,
     reportIssue,
   )
+  return {
+    ...base,
+    get: async (id) => {
+      const article = await base.get(id)
+      return article ? reconcileArticleCapabilities(article) : null
+    },
+    list: async () => (await base.list()).map(reconcileArticleCapabilities),
+  }
 }
 
 function indexedDbAttemptRepository(

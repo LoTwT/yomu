@@ -35,6 +35,7 @@ describe('platform services', () => {
     expect(networkEvents).toEqual([false])
     expect(backEvents).toEqual(['test'])
     expect(shared).toEqual(['Shared article'])
+    expect(harness.preferences.persistence).toBe('session')
     expect(await harness.services.shareInbox.takePending()).toEqual({ text: 'Shared article' })
     expect(await harness.services.shareInbox.takePending()).toBeNull()
 
@@ -87,6 +88,8 @@ describe('platform services', () => {
     }))
     const preferences = new WebPreferencesStore(window.localStorage)
     const secrets = new WebSecretStore(window.localStorage)
+
+    expect(preferences.persistence).toBe('device')
 
     window.localStorage.setItem('yomu:v2:preference:damaged', '{truncated')
     expect(await preferences.get('damaged')).toBeNull()
@@ -254,5 +257,17 @@ describe('platform services', () => {
     expect(hasCapability(result.services.capabilities, 'localPersistence')).toBe(false)
     expect(result.services.repositories.persistence).toBe('ephemeral')
     expect(getYomuBuildTarget()).toBe('web-pwa')
+  })
+
+  it('reports session-only preferences when browser storage is unavailable', async () => {
+    const result = await createWebPlatformServices({
+      repositories: createMemoryLocalRepositories(),
+      indexedDbFactory: null,
+      localStorage: null,
+      migrateLegacy: false,
+      fetchImpl: vi.fn(async () => new Response('{}')),
+    })
+
+    expect(result.services.preferences.persistence).toBe('session')
   })
 })

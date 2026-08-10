@@ -122,6 +122,30 @@ describe('legacy v1 to v2 migration', () => {
       }),
     ]))
   })
+
+  it('counts token IPA as migrated sentence IPA capability', () => {
+    const source = createLegacySource()
+    const article = JSON.parse(source.get('yomu:imported-article:legacy-article') ?? '{}')
+    delete article.sentences[0].annotations
+    article.sentences[0].tokens[0].ipa = 'ˈriːdər'
+    source.set('yomu:imported-article:legacy-article', JSON.stringify(article))
+
+    const plan = buildLegacyMigrationPlan(source)
+
+    expect(plan.articles[0]?.capabilities.sentenceIpa).toBe('complete')
+    expect(plan.articles[0]?.sentences[0]?.tokens[0]?.ipa).toBe('ˈriːdər')
+  })
+
+  it('does not count delimiter-only IPA as migrated content', () => {
+    const source = createLegacySource()
+    const article = JSON.parse(source.get('yomu:imported-article:legacy-article') ?? '{}')
+    article.sentences[0].annotations.ipa = ' // '
+    source.set('yomu:imported-article:legacy-article', JSON.stringify(article))
+
+    const plan = buildLegacyMigrationPlan(source)
+
+    expect(plan.articles[0]?.capabilities.sentenceIpa).toBe('none')
+  })
 })
 
 function createLegacySource(): InMemoryLegacySource {

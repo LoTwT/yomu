@@ -1,3 +1,4 @@
+export * from './articleCapabilities'
 export * from './diagnostics'
 export * from './entities'
 export * from './legacyMigration'
