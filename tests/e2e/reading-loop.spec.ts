@@ -550,11 +550,15 @@ test('continuous speech follows the reading sentence and stays paused after back
   await expect(page.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
   await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
 
-  await page.evaluate(() => {
-    const sentence = document.querySelectorAll<HTMLElement>('[data-sentence-id]')[2]
-    sentence?.click()
-    window.location.reload()
-  })
+  const mainFrame = page.mainFrame()
+  await Promise.all([
+    page.waitForEvent('framenavigated', frame => frame === mainFrame),
+    page.evaluate(() => {
+      const sentence = document.querySelectorAll<HTMLElement>('[data-sentence-id]')[2]
+      sentence?.click()
+      window.location.reload()
+    }),
+  ])
   await page.waitForLoadState('domcontentloaded')
   await expect(sentences.nth(2)).toHaveAttribute('aria-current', 'true')
   await expect(page.locator('[data-playing="true"]')).toHaveCount(0)
