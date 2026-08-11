@@ -1,4 +1,5 @@
 import {
+  onScopeDispose,
   shallowReadonly,
   shallowRef,
   toValue,
@@ -9,10 +10,17 @@ import {
 import { usePlatformServices } from '@/app/platformServices'
 import type { ArticleRecord, ReadingAttempt } from '@/data/entities'
 import { openOrCreateActiveAttempt } from '@/features/reader/attemptCommands'
+import type { VocabularyListItem } from '@/features/vocabulary/types'
+import {
+  toVocabularyListItems,
+  vocabularyItemsForArticle,
+} from '@/features/vocabulary/useVocabularyLibrary'
+import { listVocabulary } from '@/features/vocabulary/vocabularyQueries'
 
 export type ReadingReviewStatus = 'loading' | 'ready' | 'missing' | 'incomplete' | 'error'
 export type MissingReviewResource = 'attempt' | 'article'
 export type ReadingRereadState = 'idle' | 'starting' | 'error'
+export type ReviewVocabularyStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export type CompletedReadingAttempt = ReadingAttempt & {
   status: 'completed'
@@ -22,10 +30,11 @@ export type CompletedReadingAttempt = ReadingAttempt & {
 export interface ReadingReviewRecord {
   article: ArticleRecord
   attempt: CompletedReadingAttempt
+  vocabulary: readonly VocabularyListItem[]
 }
 
 export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
-  const { repositories } = usePlatformServices()
+  const { lifecycle, repositories } = usePlatformServices()
   const status = shallowRef<ReadingReviewStatus>('loading')
   const review = shallowRef<ReadingReviewRecord | null>(null)
   const attempt = shallowRef<ReadingAttempt | null>(null)
@@ -33,7 +42,12 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
   const errorMessage = shallowRef('')
   const rereadState = shallowRef<ReadingRereadState>('idle')
   const rereadErrorMessage = shallowRef('')
+  const vocabularyStatus = shallowRef<ReviewVocabularyStatus>('idle')
+  const vocabularyErrorMessage = shallowRef('')
   let loadVersion = 0
+  let vocabularyLoadVersion = 0
+  let currentVocabularyLoadVersion: number | null = null
+  let lifecycleVocabularyRefreshPending = false
   let rereadOperation: {
     sourceAttemptId: string
     promise: Promise<ReadingAttempt | null>
@@ -44,9 +58,24 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
     () => void reload(),
     { immediate: true },
   )
+  const unsubscribeLifecycle = lifecycle.subscribe((event) => {
+    if (event.state === 'active') {
+      void refreshVocabularyFromLifecycle()
+    }
+  })
+  onScopeDispose(() => {
+    loadVersion += 1
+    vocabularyLoadVersion += 1
+    currentVocabularyLoadVersion = null
+    lifecycleVocabularyRefreshPending = false
+    unsubscribeLifecycle()
+  })
 
   async function reload(): Promise<void> {
     const version = ++loadVersion
+    vocabularyLoadVersion += 1
+    currentVocabularyLoadVersion = null
+    lifecycleVocabularyRefreshPending = false
     const targetAttemptId = toValue(attemptId)
     status.value = 'loading'
     review.value = null
@@ -55,6 +84,8 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
     errorMessage.value = ''
     rereadState.value = 'idle'
     rereadErrorMessage.value = ''
+    vocabularyStatus.value = 'idle'
+    vocabularyErrorMessage.value = ''
 
     if (!targetAttemptId) {
       missingResource.value = 'attempt'
@@ -89,8 +120,9 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
         return
       }
 
-      review.value = { article, attempt: loadedAttempt }
+      review.value = { article, attempt: loadedAttempt, vocabulary: [] }
       status.value = 'ready'
+      await loadReviewVocabulary(version, targetAttemptId, article.id)
     }
     catch {
       if (!isCurrentLoad(version, targetAttemptId)) {
@@ -99,6 +131,108 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
       status.value = 'error'
       errorMessage.value = '这次阅读回顾暂时无法读取。Yomu 没有修改本机记录，请稍后重试。'
     }
+  }
+
+  async function reloadVocabulary(): Promise<void> {
+    await loadCurrentVocabulary(false)
+  }
+
+  async function refreshVocabularyFromLifecycle(): Promise<void> {
+    if (currentVocabularyLoadVersion !== null) {
+      lifecycleVocabularyRefreshPending = true
+      return
+    }
+    if (vocabularyStatus.value !== 'ready') {
+      return
+    }
+    await loadCurrentVocabulary(true)
+  }
+
+  async function loadCurrentVocabulary(silent: boolean): Promise<void> {
+    const currentReview = review.value
+    if (status.value !== 'ready' || !currentReview) {
+      return
+    }
+    await loadReviewVocabulary(
+      loadVersion,
+      currentReview.attempt.id,
+      currentReview.article.id,
+      silent,
+    )
+  }
+
+  async function loadReviewVocabulary(
+    parentLoadVersion: number,
+    targetAttemptId: string,
+    articleId: string,
+    silent = false,
+  ): Promise<void> {
+    const preserveReadySnapshot = silent && vocabularyStatus.value === 'ready'
+    const version = ++vocabularyLoadVersion
+    currentVocabularyLoadVersion = version
+    if (!preserveReadySnapshot) {
+      vocabularyStatus.value = 'loading'
+    }
+    vocabularyErrorMessage.value = ''
+    try {
+      const snapshot = await listVocabulary(repositories)
+      if (!isCurrentVocabularyLoad(
+        parentLoadVersion,
+        version,
+        targetAttemptId,
+        articleId,
+      )) {
+        return
+      }
+      const currentReview = review.value!
+      review.value = {
+        ...currentReview,
+        vocabulary: vocabularyItemsForArticle(
+          toVocabularyListItems(snapshot),
+          articleId,
+        ),
+      }
+      vocabularyStatus.value = 'ready'
+    }
+    catch {
+      if (!isCurrentVocabularyLoad(
+        parentLoadVersion,
+        version,
+        targetAttemptId,
+        articleId,
+      )) {
+        return
+      }
+      if (preserveReadySnapshot) {
+        return
+      }
+      vocabularyStatus.value = 'error'
+      vocabularyErrorMessage.value = '本文收藏词暂时无法读取。阅读回顾仍可使用，请稍后重试。'
+    }
+    finally {
+      if (currentVocabularyLoadVersion === version) {
+        currentVocabularyLoadVersion = null
+      }
+      if (version === vocabularyLoadVersion && lifecycleVocabularyRefreshPending) {
+        lifecycleVocabularyRefreshPending = false
+        if (status.value === 'ready' && vocabularyStatus.value === 'ready') {
+          void loadCurrentVocabulary(true)
+        }
+      }
+    }
+  }
+
+  function isCurrentVocabularyLoad(
+    parentLoadVersion: number,
+    version: number,
+    targetAttemptId: string,
+    articleId: string,
+  ): boolean {
+    return parentLoadVersion === loadVersion
+      && version === vocabularyLoadVersion
+      && targetAttemptId === toValue(attemptId)
+      && review.value?.attempt.id === targetAttemptId
+      && review.value.article.id === articleId
   }
 
   function isCurrentLoad(version: number, targetAttemptId: string): boolean {
@@ -150,7 +284,10 @@ export function useReadingReview(attemptId: MaybeRefOrGetter<string>) {
     errorMessage: shallowReadonly(errorMessage),
     rereadState: shallowReadonly(rereadState),
     rereadErrorMessage: shallowReadonly(rereadErrorMessage),
+    vocabularyStatus: shallowReadonly(vocabularyStatus),
+    vocabularyErrorMessage: shallowReadonly(vocabularyErrorMessage),
     reload,
+    reloadVocabulary,
     startRereading,
   }
 }

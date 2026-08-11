@@ -1,7 +1,9 @@
 import { createApp, defineComponent, h, nextTick, shallowRef } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import ReaderArticle from '@/components/reader/ReaderArticle.vue'
+import ReaderArticle, {
+  type ReaderWordCardRequest,
+} from '@/components/reader/ReaderArticle.vue'
 import type { ArticleRecord } from '@/data/entities'
 
 const mountedApps: Array<ReturnType<typeof createApp>> = []
@@ -9,6 +11,7 @@ const mountedApps: Array<ReturnType<typeof createApp>> = []
 afterEach(() => {
   mountedApps.splice(0).forEach(app => app.unmount())
   document.body.replaceChildren()
+  vi.unstubAllGlobals()
 })
 
 describe('ReaderArticle', () => {
@@ -284,10 +287,145 @@ describe('ReaderArticle', () => {
     expect(host.textContent).toContain('第二篇第 1 句译文。')
     expect(host.querySelectorAll('[data-testid="sentence-translation"]')).toHaveLength(2)
   })
+
+  it('emits a word-card request from a pointer-hit token without adding token Tab stops', async () => {
+    const article = createArticle(1)
+    article.sentences[0] = {
+      ...article.sentences[0]!,
+      original: 'Quiet readers pause.',
+      tokens: [
+        { id: 'token-quiet', text: 'Quiet', kind: 'word', meaning: '安静的' },
+        { id: 'token-readers', text: 'readers', kind: 'word' },
+        { id: 'token-pause', text: 'pause', kind: 'word' },
+        { id: 'token-period', text: '.', kind: 'punctuation' },
+      ],
+    }
+    const { host, selectedSentenceIds, wordCardRequests } = mountArticle(
+      article,
+      article.sentences[0]!.id,
+    )
+    const sentence = host.querySelector<HTMLButtonElement>('[data-sentence-id]')!
+    const token = host.querySelector<HTMLElement>('[data-word-token-id="token-readers"]')!
+
+    expect(sentence.textContent?.trim()).toBe('Quiet readers pause.')
+    expect(host.querySelectorAll('[data-word-token-id]')).toHaveLength(3)
+    expect(host.querySelectorAll('[data-word-token-id][tabindex]')).toHaveLength(0)
+    expect(host.querySelectorAll<HTMLButtonElement>('[data-sentence-id][tabindex="0"]'))
+      .toHaveLength(1)
+
+    token.click()
+    await nextTick()
+
+    expect(selectedSentenceIds).toEqual([article.sentences[0]!.id])
+    expect(document.activeElement).toBe(sentence)
+    expect(wordCardRequests).toHaveLength(1)
+    expect(wordCardRequests[0]).toEqual({
+      anchor: token,
+      articleId: article.id,
+      focusReturn: sentence,
+      sentenceId: article.sentences[0]!.id,
+      source: 'pointer',
+      tokenId: 'token-readers',
+    })
+  })
+
+  it('uses the current sentence as one keyboard entry for arrow-based word selection', async () => {
+    const article = createArticle(1)
+    article.sentences[0] = {
+      ...article.sentences[0]!,
+      original: 'Choose one word.',
+      tokens: [
+        { id: 'token-choose', text: 'Choose', kind: 'word' },
+        { id: 'token-one', text: 'one', kind: 'word' },
+        { id: 'token-word', text: 'word', kind: 'word' },
+        { id: 'token-period', text: '.', kind: 'punctuation' },
+      ],
+    }
+    const { host, selectedSentenceIds, wordCardRequests } = mountArticle(
+      article,
+      article.sentences[0]!.id,
+    )
+    const sentence = host.querySelector<HTMLButtonElement>('[data-sentence-id]')!
+    sentence.focus()
+
+    const enterSelection = dispatchKey(sentence, 'Enter')
+    await nextTick()
+    expect(enterSelection.defaultPrevented).toBe(true)
+    expect(wordCardRequests).toHaveLength(0)
+    expect(host.querySelector('.reader-article__token--selected')?.textContent).toBe('Choose')
+    expect(host.textContent).toContain('已选择 Choose')
+
+    const moveSelection = dispatchKey(sentence, 'ArrowRight')
+    await nextTick()
+    expect(moveSelection.defaultPrevented).toBe(true)
+    expect(host.querySelector('.reader-article__token--selected')?.textContent).toBe('one')
+    expect(document.activeElement).toBe(sentence)
+
+    const confirmSelection = dispatchKey(sentence, 'Enter')
+    await nextTick()
+    const selectedAnchor = host.querySelector<HTMLElement>('[data-word-token-id="token-one"]')!
+    expect(confirmSelection.defaultPrevented).toBe(true)
+    expect(wordCardRequests).toEqual([{
+      anchor: selectedAnchor,
+      articleId: article.id,
+      focusReturn: sentence,
+      sentenceId: article.sentences[0]!.id,
+      source: 'keyboard',
+      tokenId: 'token-one',
+    }])
+    expect(selectedSentenceIds).toEqual([])
+    expect(host.querySelector('.reader-article__token--selected')).toBeNull()
+    expect(host.querySelectorAll('[data-word-token-id][tabindex]')).toHaveLength(0)
+
+    dispatchKey(sentence, 'Enter')
+    await nextTick()
+    expect(host.querySelector('.reader-article__token--selected')).not.toBeNull()
+    const escapeSelection = dispatchKey(sentence, 'Escape')
+    await nextTick()
+    expect(escapeSelection.defaultPrevented).toBe(true)
+    expect(host.querySelector('.reader-article__token--selected')).toBeNull()
+  })
+
+  it('focuses, scrolls, and highlights a located sentence without changing reading selection', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+    } as MediaQueryList)))
+    const article = createArticle(4)
+    const { host, locatedSentenceId, selectedSentenceIds } = mountArticle(
+      article,
+      article.sentences[0]!.id,
+    )
+    const sentences = [...host.querySelectorAll<HTMLButtonElement>('[data-sentence-id]')]
+    const target = sentences[2]!
+    const scrollIntoView = vi.fn()
+    target.scrollIntoView = scrollIntoView
+
+    locatedSentenceId.value = article.sentences[2]!.id
+    await nextTick()
+    await nextTick()
+
+    expect(document.activeElement).toBe(target)
+    expect(target.classList).toContain('reader-article__sentence--located')
+    expect(target.tabIndex).toBe(-1)
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'auto',
+      block: 'center',
+      inline: 'nearest',
+    })
+    expect(selectedSentenceIds).toEqual([])
+
+    locatedSentenceId.value = 'missing-sentence'
+    await nextTick()
+    await nextTick()
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(selectedSentenceIds).toEqual([])
+  })
 })
 
 interface MountArticleOptions {
   defaultExpandTranslation?: boolean
+  locatedSentenceId?: string
   preferencesReady?: boolean
   showIpa?: boolean
 }
@@ -300,9 +438,11 @@ function mountArticle(
   const articleRef = shallowRef(article)
   const currentSentenceId = shallowRef(initialSentenceId)
   const defaultExpandTranslation = shallowRef(options.defaultExpandTranslation ?? false)
+  const locatedSentenceId = shallowRef(options.locatedSentenceId)
   const preferencesReady = shallowRef(options.preferencesReady ?? true)
   const showIpa = shallowRef(options.showIpa ?? false)
   const selectedSentenceIds: string[] = []
+  const wordCardRequests: ReaderWordCardRequest[] = []
   const Root = defineComponent({
     setup() {
       return () => h(ReaderArticle, {
@@ -310,8 +450,12 @@ function mountArticle(
         currentSentenceId: currentSentenceId.value,
         defaultExpandTranslation: defaultExpandTranslation.value,
         fontScale: 1,
+        locatedSentenceId: locatedSentenceId.value,
         playingSentenceId: null,
         preferencesReady: preferencesReady.value,
+        onRequestWordCard: (request: ReaderWordCardRequest) => {
+          wordCardRequests.push(request)
+        },
         showIpa: showIpa.value,
         onSelectSentence: (sentenceId: string) => {
           selectedSentenceIds.push(sentenceId)
@@ -330,10 +474,22 @@ function mountArticle(
     article: articleRef,
     defaultExpandTranslation,
     host,
+    locatedSentenceId,
     preferencesReady,
     selectedSentenceIds,
     showIpa,
+    wordCardRequests,
   }
+}
+
+function dispatchKey(target: HTMLElement, key: string): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key,
+  })
+  target.dispatchEvent(event)
+  return event
 }
 
 function createArticle(sentenceCount: number, articleId = 'reader-article'): ArticleRecord {

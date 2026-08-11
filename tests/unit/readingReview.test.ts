@@ -34,7 +34,11 @@ describe('useReadingReview', () => {
     const mounted = mountReadingReview(repositories, completed.id)
 
     await waitForStatus(mounted.result, 'ready')
-    expect(mounted.result.review.value).toEqual({ article, attempt: completed })
+    expect(mounted.result.review.value).toEqual({
+      article,
+      attempt: completed,
+      vocabulary: [],
+    })
 
     mounted.attemptId.value = active.id
     await waitForStatus(mounted.result, 'incomplete')

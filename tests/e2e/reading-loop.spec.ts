@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 
-import { isArticleRecord } from '../../src/data/entities'
+import { isArticleRecord, type ArticleRecord } from '../../src/data/entities'
 
 const importedSentences = [
   'A quiet reading habit gives the mind enough space to notice how an argument develops.',
@@ -16,7 +16,7 @@ const secondImportedBody = [
   'Clear local organization keeps both reading sessions independent while preserving a calm interface.',
 ].join(' ')
 
-const displayAssistanceArticle = {
+const displayAssistanceArticle: ArticleRecord = {
   id: 'stage-3c-display-assistance',
   schemaVersion: 2,
   contentHash: 'stage-3c-display-assistance-content',
@@ -88,7 +88,73 @@ const displayAssistanceArticle = {
   estimatedReadTimeMinutes: 1,
   createdAt: '2026-08-10T08:00:00.000Z',
   updatedAt: '2026-08-10T08:00:00.000Z',
-} as const
+}
+
+const vocabularyLoopArticle: ArticleRecord = {
+  id: 'stage-4b-vocabulary-loop',
+  schemaVersion: 2,
+  contentHash: 'stage-4b-vocabulary-loop-content',
+  title: 'A Durable Vocabulary Loop',
+  description: 'A local article with honest token meaning coverage.',
+  language: 'en',
+  level: 'unassessed',
+  source: {
+    kind: 'paste',
+    label: 'Vocabulary loop fixture',
+  },
+  rights: {
+    status: 'user-provided-unknown',
+    note: 'User-provided test content.',
+    ttsAllowed: true,
+    translationAllowed: true,
+    cacheAllowed: true,
+  },
+  capabilities: {
+    sentenceTranslation: 'none',
+    sentenceIpa: 'none',
+    tokenMeaning: 'partial',
+  },
+  sentences: [
+    {
+      id: 'stage-4b-vocabulary-loop:s1',
+      order: 0,
+      paragraphIndex: 0,
+      textHash: 'stage-4b-vocabulary-loop-sentence-1',
+      original: 'A lantern makes a quiet page feel welcoming.',
+      tokens: [{
+        id: 'stage-4b-vocabulary-loop:s1:t1',
+        text: 'lantern',
+        kind: 'word',
+        meaning: '灯笼；提灯',
+      }],
+    },
+    {
+      id: 'stage-4b-vocabulary-loop:s2',
+      order: 1,
+      paragraphIndex: 0,
+      textHash: 'stage-4b-vocabulary-loop-sentence-2',
+      original: 'Patience helps a reader notice how an argument develops.',
+      tokens: [{
+        id: 'stage-4b-vocabulary-loop:s2:t1',
+        text: 'Patience',
+        kind: 'word',
+      }],
+    },
+    {
+      id: 'stage-4b-vocabulary-loop:s3',
+      order: 2,
+      paragraphIndex: 0,
+      textHash: 'stage-4b-vocabulary-loop-sentence-3',
+      original: 'Returning to an exact sentence keeps later review grounded.',
+      tokens: [],
+    },
+  ],
+  factSources: [],
+  wordCount: 26,
+  estimatedReadTimeMinutes: 1,
+  createdAt: '2026-08-11T08:00:00.000Z',
+  updatedAt: '2026-08-11T08:00:00.000Z',
+}
 
 test('empty library becomes a persistent reading session and resumes the selected sentence', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
@@ -122,7 +188,7 @@ test('empty library becomes a persistent reading session and resumes the selecte
   const thirdSentence = page.locator('[data-sentence-id]').nth(2)
   const thirdSentenceId = await thirdSentence.getAttribute('data-sentence-id')
   await page.waitForTimeout(1_100)
-  await thirdSentence.click()
+  await thirdSentence.locator('[data-token-id]:not([data-word-token-id])').last().click()
   await expect(thirdSentence).toHaveAttribute('aria-current', 'true')
   await expect(thirdSentence).toHaveAttribute('tabindex', '0')
   await expect(thirdSentence).toBeFocused()
@@ -208,6 +274,160 @@ test('an imported reading completes into a durable review and rereads only on re
     expect.objectContaining({ status: 'completed' }),
     expect.objectContaining({ status: 'active' }),
   ])
+})
+
+test('saved vocabulary survives the complete reading loop without moving durable progress', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await seedArticleInIndexedDb(page, vocabularyLoopArticle)
+  const readerPath = `/read/${vocabularyLoopArticle.id}`
+  await page.goto(readerPath)
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: vocabularyLoopArticle.title,
+  })).toBeVisible()
+  await expect.poll(() => page.evaluate(() =>
+    matchMedia('(min-width: 768px) and (pointer: fine)').matches)).toBe(true)
+
+  const patienceToken = page.locator(
+    '[data-word-token-id="stage-4b-vocabulary-loop:s2:t1"]',
+  )
+  const savedSentence = vocabularyLoopArticle.sentences[0]!
+  const savedSentenceElement = page.locator(`[data-sentence-id="${savedSentence.id}"]`)
+  const savedToken = page.locator(
+    '[data-word-token-id="stage-4b-vocabulary-loop:s1:t1"]',
+  )
+  await patienceToken.click()
+  let wordCard = page.locator('dialog.reader-word-card-overlay')
+  await expect(wordCard).toBeVisible()
+  await expect(wordCard).not.toHaveAttribute('aria-modal', 'true')
+  await expect.poll(() => wordCard.evaluate(element => element.matches(':modal'))).toBe(false)
+  await expect(wordCard.getByText(
+    '暂无本地释义，仍可收藏这个词和当前原句。',
+    { exact: true },
+  )).toBeVisible()
+  await savedToken.click()
+  wordCard = page.locator('dialog.reader-word-card-overlay')
+  await expect(wordCard).toBeVisible()
+  await expect(wordCard).not.toHaveAttribute('aria-modal', 'true')
+  await expect(wordCard.getByRole('heading', { name: 'lantern', exact: true })).toBeFocused()
+  await expect(wordCard.getByText('灯笼；提灯', { exact: true })).toBeVisible()
+  const saveButton = wordCard.getByRole('button', { name: '收藏单词' })
+  await expect(saveButton).toBeEnabled()
+  await page.setViewportSize({ width: 1280, height: 300 })
+  await saveButton.scrollIntoViewIfNeeded()
+  await expect.poll(() => saveButton.evaluate((button) => {
+    const bounds = button.getBoundingClientRect()
+    const hit = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      bounds.top + bounds.height / 2,
+    )
+    return hit === button || button.contains(hit)
+  })).toBe(true)
+  await saveButton.click()
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await expect(wordCard.getByRole('button', { name: '取消收藏' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+  await expect.poll(async () => summarizeVocabulary(page)).toEqual({
+    contexts: [{
+      articleId: vocabularyLoopArticle.id,
+      sentenceId: savedSentence.id,
+    }],
+    terms: [{ normalizedTerm: 'lantern' }],
+  })
+  await wordCard.getByRole('button', { name: '关闭词卡' }).click()
+  await expect(wordCard).toHaveCount(0)
+  await expect(savedSentenceElement).toBeFocused()
+
+  await page.reload()
+  await expect(page.getByRole('heading', {
+    level: 2,
+    name: vocabularyLoopArticle.title,
+  })).toBeVisible()
+  await savedToken.click()
+  wordCard = page.locator('dialog.reader-word-card-overlay')
+  await expect(wordCard.getByRole('button', { name: '取消收藏' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  )
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(wordCard).toBeVisible()
+  await expect(wordCard).toHaveAttribute('aria-modal', 'true')
+  await expect.poll(() => wordCard.evaluate(element => element.matches(':modal'))).toBe(true)
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await expect(wordCard).not.toHaveAttribute('aria-modal', 'true')
+  await expect.poll(() => wordCard.evaluate(element => element.matches(':modal'))).toBe(false)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(wordCard).toHaveAttribute('aria-modal', 'true')
+  await expect.poll(() => wordCard.evaluate(element => element.matches(':modal'))).toBe(true)
+  await wordCard.getByRole('button', { name: '关闭词卡' }).click()
+
+  const durableSentence = vocabularyLoopArticle.sentences[2]!
+  const durableSentenceElement = page.locator(`[data-sentence-id="${durableSentence.id}"]`)
+  await durableSentenceElement.click()
+  await expect(durableSentenceElement).toHaveAttribute('aria-current', 'true')
+  await expect.poll(() => readActiveSentenceId(page, vocabularyLoopArticle.id))
+    .toBe(durableSentence.id)
+  const attemptsBeforeLocation = await readArticleAttempts(page, vocabularyLoopArticle.id)
+  expect(attemptsBeforeLocation).toHaveLength(1)
+  expect(attemptsBeforeLocation[0]).toMatchObject({ status: 'active' })
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await page.getByRole('link', { name: '收藏词', exact: true }).click()
+  await expect(page).toHaveURL(/\/words$/)
+  await page.getByLabel('搜索收藏词').fill('LANTERN')
+  await expect(page.getByText('找到 1 个词', { exact: true })).toBeVisible()
+  const vocabularyDetails = page.locator('.vocabulary-details')
+  await expect(vocabularyDetails.getByRole('heading', { name: 'lantern', exact: true }))
+    .toBeVisible()
+  await expect(vocabularyDetails.getByText('灯笼；提灯', { exact: true })).toBeVisible()
+  await expect(vocabularyDetails.getByText(savedSentence.original, { exact: true })).toBeVisible()
+  await vocabularyDetails.getByRole('button', { name: '回到原句' }).click()
+
+  await expect.poll(() => page.evaluate(() => ({
+    pathname: location.pathname,
+    sentence: new URLSearchParams(location.search).get('sentence'),
+  }))).toEqual({
+    pathname: `/read/${vocabularyLoopArticle.id}`,
+    sentence: savedSentence.id,
+  })
+  const locatedSentence = page.locator(`[data-sentence-id="${savedSentence.id}"]`)
+  await expect(locatedSentence).toHaveClass(/reader-article__sentence--located/)
+  await expect(locatedSentence).toBeFocused()
+  await expect(locatedSentence).not.toHaveAttribute('aria-current', 'true')
+  await expect(durableSentenceElement).toHaveAttribute('aria-current', 'true')
+  await expect.poll(() => readActiveSentenceId(page, vocabularyLoopArticle.id))
+    .toBe(durableSentence.id)
+  await expect.poll(async () => (await readArticleAttempts(page, vocabularyLoopArticle.id))
+    .map(attempt => ({ id: attempt.id, status: attempt.status }))).toEqual([{
+      id: attemptsBeforeLocation[0]!.id,
+      status: 'active',
+    }])
+
+  await page.getByRole('button', { name: '完成阅读' }).click()
+  await expect(page).toHaveURL(/\/review\/[0-9a-f-]+$/)
+  const reviewVocabulary = page.locator('.review-vocabulary')
+  await expect(reviewVocabulary.getByRole('heading', { name: '本文收藏词' })).toBeVisible()
+  await expect(reviewVocabulary.getByRole('heading', { name: 'lantern', exact: true }))
+    .toBeVisible()
+  await expect(reviewVocabulary.getByText('灯笼；提灯', { exact: true })).toBeVisible()
+  await expect(reviewVocabulary.getByText(savedSentence.original, { exact: true })).toBeVisible()
+  await reviewVocabulary.getByRole('button', { name: '撤销收藏' }).click()
+  await expect(reviewVocabulary.getByText('这篇文章还没有收藏词。回顾仍可完整使用。'))
+    .toBeVisible()
+  await expect.poll(async () => summarizeVocabulary(page)).toEqual({
+    contexts: [],
+    terms: [],
+  })
+
+  await page.getByRole('link', { name: '我的阅读' }).click()
+  await page.getByRole('link', { name: '收藏词', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '还没有收藏词' })).toBeVisible()
+  await expect(page.getByText('lantern', { exact: true })).toHaveCount(0)
 })
 
 test('completing in one tab stops the same attempt in another tab', async ({ page }) => {
@@ -1505,7 +1725,7 @@ test('library keeps one semantic list across the 1199 and 1200 pixel layout boun
 
 async function seedArticleInIndexedDb(
   page: Page,
-  article: typeof displayAssistanceArticle,
+  article: ArticleRecord,
 ): Promise<void> {
   expect(isArticleRecord(article)).toBe(true)
   await page.goto('/')
@@ -1533,6 +1753,55 @@ async function seedArticleInIndexedDb(
       database.close()
     }
   }, article)
+}
+
+async function summarizeVocabulary(page: Page): Promise<{
+  contexts: Array<{ articleId: string, sentenceId: string }>
+  terms: Array<{ normalizedTerm: string }>
+}> {
+  return page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      const transaction = database.transaction(
+        ['vocabularyTerms', 'vocabularyContexts'],
+        'readonly',
+      )
+      const readAll = (storeName: 'vocabularyTerms' | 'vocabularyContexts') =>
+        new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+          const request = transaction.objectStore(storeName).getAll()
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        })
+      const [terms, contexts] = await Promise.all([
+        readAll('vocabularyTerms'),
+        readAll('vocabularyContexts'),
+      ])
+      return {
+        contexts: contexts
+          .flatMap(context => typeof context.articleId === 'string'
+            && typeof context.sentenceId === 'string'
+            ? [{
+                articleId: context.articleId,
+                sentenceId: context.sentenceId,
+              }]
+            : [])
+          .sort((left, right) => left.articleId.localeCompare(right.articleId)
+            || left.sentenceId.localeCompare(right.sentenceId)),
+        terms: terms
+          .flatMap(term => typeof term.normalizedTerm === 'string'
+            ? [{ normalizedTerm: term.normalizedTerm }]
+            : [])
+          .sort((left, right) => left.normalizedTerm.localeCompare(right.normalizedTerm)),
+      }
+    }
+    finally {
+      database.close()
+    }
+  })
 }
 
 async function importAndReturnToLibrary(
