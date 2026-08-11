@@ -1,28 +1,62 @@
 <script setup lang="ts">
-import { computed, shallowRef, useId, watch } from 'vue'
+import { computed, nextTick, shallowRef, useId, useTemplateRef, watch } from 'vue'
 
 import {
   normalizeIpa,
   sentenceHasIpa,
   sentenceHasTranslation,
 } from '@/data/articleCapabilities'
-import type { ArticleRecord, ArticleSentenceRecord } from '@/data/entities'
+import type {
+  ArticleRecord,
+  ArticleSentenceRecord,
+  ArticleTokenRecord,
+} from '@/data/entities'
 import type { ReaderFontScale } from '@/features/preferences/useReaderDisplayPreferences'
 
-const props = defineProps<{
+export interface ReaderWordCardRequest {
+  articleId: string
+  sentenceId: string
+  tokenId: string
+  anchor: HTMLElement
+  focusReturn: HTMLElement
+  source: 'pointer' | 'keyboard'
+}
+
+interface RenderedSentenceToken {
+  leadingText: string
+  token: ArticleTokenRecord
+}
+
+interface RenderedSentenceText {
+  matched: boolean
+  tokens: RenderedSentenceToken[]
+  trailingText: string
+}
+
+interface KeyboardWordSelection {
+  sentenceId: string
+  tokenId: string
+}
+
+const props = withDefaults(defineProps<{
   article: ArticleRecord
   currentSentenceId: string
   defaultExpandTranslation: boolean
   fontScale: ReaderFontScale
+  locatedSentenceId?: string
   playingSentenceId: string | null
   preferencesReady: boolean
   showIpa: boolean
-}>()
+}>(), {
+  locatedSentenceId: undefined,
+})
 
 const emit = defineEmits<{
+  requestWordCard: [request: ReaderWordCardRequest]
   selectSentence: [sentenceId: string]
 }>()
 
+const articleRoot = useTemplateRef<HTMLElement>('articleRoot')
 const paragraphs = computed(() => {
   const grouped = new Map<number, ArticleSentenceRecord[]>()
   const orderedSentences = [...props.article.sentences]
@@ -37,8 +71,13 @@ const paragraphs = computed(() => {
     sentences,
   }))
 })
+const sentenceTextLayouts = computed(() => new Map(
+  props.article.sentences.map(sentence => [sentence.id, renderSentenceText(sentence)]),
+))
 const expandedTranslationIds = shallowRef<ReadonlySet<string>>(new Set())
+const keyboardWordSelection = shallowRef<KeyboardWordSelection | null>(null)
 const translationControlId = useId()
+const wordSelectionInstructionsId = useId()
 const translationPanelIds = computed(() => new Map(
   props.article.sentences.map((sentence, index) => [
     sentence.id,
@@ -48,9 +87,22 @@ const translationPanelIds = computed(() => new Map(
 const articleClasses = computed(() => ({
   [`reader-article--font-${Math.round(props.fontScale * 100)}`]: true,
 }))
+const selectedKeyboardWord = computed(() => {
+  const selection = keyboardWordSelection.value
+  if (!selection) {
+    return null
+  }
+  const sentence = props.article.sentences.find(candidate => candidate.id === selection.sentenceId)
+  return sentence?.tokens.find(token => token.id === selection.tokenId && token.kind === 'word')
+    ?? null
+})
+const wordSelectionAnnouncement = computed(() => selectedKeyboardWord.value
+  ? `已选择 ${selectedKeyboardWord.value.text}。使用方向键更改单词，按 Enter 打开词卡，按 Escape 退出选词。`
+  : '')
 let initializedArticleId: string | null = null
 let activeArticleId = props.article.id
 let translationStateTouched = false
+let locationRequestVersion = 0
 
 watch(
   [() => props.article.id, () => props.preferencesReady],
@@ -72,6 +124,45 @@ watch(
             .map(sentence => sentence.id))
         : new Set()
     }
+  },
+  { immediate: true },
+)
+
+watch(
+  [() => props.article.id, () => props.currentSentenceId],
+  ([articleId, sentenceId], [previousArticleId]) => {
+    const selection = keyboardWordSelection.value
+    if (selection
+      && (articleId !== previousArticleId || selection.sentenceId !== sentenceId)) {
+      keyboardWordSelection.value = null
+    }
+  },
+)
+
+watch(
+  [() => props.article, () => props.locatedSentenceId],
+  async ([, locatedSentenceId]) => {
+    const requestVersion = ++locationRequestVersion
+    if (!locatedSentenceId) {
+      return
+    }
+
+    await nextTick()
+    if (requestVersion !== locationRequestVersion
+      || locatedSentenceId !== props.locatedSentenceId) {
+      return
+    }
+
+    const sentence = findSentenceElement(locatedSentenceId)
+    if (!sentence) {
+      return
+    }
+    sentence.focus({ preventScroll: true })
+    sentence.scrollIntoView?.({
+      behavior: prefersReducedMotion(sentence.ownerDocument) ? 'auto' : 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    })
   },
   { immediate: true },
 )
@@ -106,6 +197,40 @@ function tokenIpaEntries(sentence: ArticleSentenceRecord) {
   })
 }
 
+function sentenceTextLayout(sentence: ArticleSentenceRecord): RenderedSentenceText {
+  return sentenceTextLayouts.value.get(sentence.id) ?? {
+    matched: false,
+    tokens: [],
+    trailingText: sentence.original,
+  }
+}
+
+function renderSentenceText(sentence: ArticleSentenceRecord): RenderedSentenceText {
+  if (sentence.tokens.length === 0) {
+    return { matched: false, tokens: [], trailingText: sentence.original }
+  }
+
+  let cursor = 0
+  const tokens: RenderedSentenceToken[] = []
+  for (const token of sentence.tokens) {
+    const tokenIndex = sentence.original.indexOf(token.text, cursor)
+    if (tokenIndex < 0) {
+      return { matched: false, tokens: [], trailingText: sentence.original }
+    }
+    tokens.push({
+      leadingText: sentence.original.slice(cursor, tokenIndex),
+      token,
+    })
+    cursor = tokenIndex + token.text.length
+  }
+
+  return {
+    matched: true,
+    tokens,
+    trailingText: sentence.original.slice(cursor),
+  }
+}
+
 function translationPanelId(sentenceId: string): string {
   return translationPanelIds.value.get(sentenceId) ?? `${translationControlId}-translation`
 }
@@ -115,13 +240,89 @@ function handleSentenceClick(sentenceId: string, event: MouseEvent): void {
   if (!sentence) {
     return
   }
+  const tokenAnchor = readWordTokenAnchor(event.target, sentence)
+  keyboardWordSelection.value = null
   selectAndFocusSentence(sentenceId, sentence)
+  if (tokenAnchor) {
+    requestWordCard(sentenceId, tokenAnchor.dataset.wordTokenId ?? '', tokenAnchor, sentence, 'pointer')
+  }
 }
 
-function handleSentenceKeydown(event: KeyboardEvent): void {
+function handleSentenceKeydown(sentenceRecord: ArticleSentenceRecord, event: KeyboardEvent): void {
   const currentSentence = event.currentTarget as HTMLButtonElement | null
   const articleBody = currentSentence?.closest('.reader-article__body')
   if (!currentSentence || !articleBody) {
+    return
+  }
+
+  const wordTokens = sentenceRecord.tokens.filter(token => token.kind === 'word')
+  const activeWordSelection = keyboardWordSelection.value?.sentenceId === sentenceRecord.id
+    ? keyboardWordSelection.value
+    : null
+
+  if (event.key === 'Escape' && activeWordSelection) {
+    event.preventDefault()
+    event.stopPropagation()
+    keyboardWordSelection.value = null
+    return
+  }
+
+  if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+    if (wordTokens.length === 0) {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    if (!activeWordSelection) {
+      keyboardWordSelection.value = {
+        sentenceId: sentenceRecord.id,
+        tokenId: wordTokens[0]!.id,
+      }
+      return
+    }
+
+    const tokenAnchor = findWordTokenAnchor(currentSentence, activeWordSelection.tokenId)
+    if (tokenAnchor) {
+      requestWordCard(
+        sentenceRecord.id,
+        activeWordSelection.tokenId,
+        tokenAnchor,
+        currentSentence,
+        'keyboard',
+      )
+    }
+    keyboardWordSelection.value = null
+    return
+  }
+
+  if (activeWordSelection) {
+    const currentWordIndex = wordTokens.findIndex(token => token.id === activeWordSelection.tokenId)
+    let targetWordIndex: number | null = null
+    switch (event.key) {
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        targetWordIndex = Math.max(0, currentWordIndex - 1)
+        break
+      case 'ArrowRight':
+      case 'ArrowDown':
+        targetWordIndex = Math.min(wordTokens.length - 1, currentWordIndex + 1)
+        break
+      case 'Home':
+        targetWordIndex = 0
+        break
+      case 'End':
+        targetWordIndex = wordTokens.length - 1
+        break
+    }
+    if (targetWordIndex === null) {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    keyboardWordSelection.value = {
+      sentenceId: sentenceRecord.id,
+      tokenId: wordTokens[targetWordIndex]!.id,
+    }
     return
   }
 
@@ -170,10 +371,51 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   emit('selectSentence', sentenceId)
   sentence.focus({ preventScroll: true })
 }
+
+function readWordTokenAnchor(target: EventTarget | null, sentence: HTMLButtonElement): HTMLElement | null {
+  const element = target instanceof Element
+    ? target.closest<HTMLElement>('[data-word-token-id]')
+    : null
+  return element && sentence.contains(element) ? element : null
+}
+
+function findWordTokenAnchor(sentence: HTMLButtonElement, tokenId: string): HTMLElement | null {
+  return [...sentence.querySelectorAll<HTMLElement>('[data-word-token-id]')]
+    .find(element => element.dataset.wordTokenId === tokenId) ?? null
+}
+
+function requestWordCard(
+  sentenceId: string,
+  tokenId: string,
+  anchor: HTMLElement,
+  focusReturn: HTMLElement,
+  source: ReaderWordCardRequest['source'],
+): void {
+  if (!tokenId) {
+    return
+  }
+  emit('requestWordCard', {
+    articleId: props.article.id,
+    sentenceId,
+    tokenId,
+    anchor,
+    focusReturn,
+    source,
+  })
+}
+
+function findSentenceElement(sentenceId: string): HTMLButtonElement | null {
+  return [...articleRoot.value?.querySelectorAll<HTMLButtonElement>('[data-sentence-id]') ?? []]
+    .find(sentence => sentence.dataset.sentenceId === sentenceId) ?? null
+}
+
+function prefersReducedMotion(ownerDocument: Document): boolean {
+  return ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+}
 </script>
 
 <template>
-  <article class="reader-article" :class="articleClasses">
+  <article ref="articleRoot" class="reader-article" :class="articleClasses">
     <header class="reader-article__header">
       <p class="reader-article__source">
         {{ props.article.source.label }} · {{ props.article.level === 'unassessed' ? '未评估' : props.article.level }}
@@ -201,6 +443,7 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
             class="reader-article__sentence"
             :class="{
               'reader-article__sentence--current': isCurrentSentence(sentence.id),
+              'reader-article__sentence--located': sentence.id === props.locatedSentenceId,
               'reader-article__sentence--playing': sentence.id === props.playingSentenceId,
             }"
             type="button"
@@ -208,10 +451,27 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
             :data-playing="sentence.id === props.playingSentenceId ? 'true' : undefined"
             :tabindex="isCurrentSentence(sentence.id) ? 0 : -1"
             :aria-current="isCurrentSentence(sentence.id) ? 'true' : undefined"
+            :aria-describedby="isCurrentSentence(sentence.id) ? wordSelectionInstructionsId : undefined"
             @click="handleSentenceClick(sentence.id, $event)"
-            @keydown="handleSentenceKeydown"
+            @keydown="handleSentenceKeydown(sentence, $event)"
           >
-            {{ sentence.original }}
+            <template v-if="sentenceTextLayout(sentence).matched">
+              <template
+                v-for="part in sentenceTextLayout(sentence).tokens"
+                :key="part.token.id"
+              >{{ part.leadingText }}<span
+                  class="reader-article__token"
+                  :class="{
+                    'reader-article__token--selectable': part.token.kind === 'word',
+                    'reader-article__token--selected': keyboardWordSelection?.tokenId === part.token.id,
+                  }"
+                  :data-token-id="part.token.id"
+                  :data-word-token-id="part.token.kind === 'word' ? part.token.id : undefined"
+                >{{ part.token.text }}</span></template>{{ sentenceTextLayout(sentence).trailingText }}
+            </template>
+            <template v-else>
+              {{ sentence.original }}
+            </template>
           </button>
 
           <span
@@ -264,6 +524,12 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
         </span>
       </p>
     </div>
+    <p :id="wordSelectionInstructionsId" class="reader-article__assistive-text">
+      按 Enter 进入当前句选词；使用方向键更改单词，再按 Enter 打开词卡，按 Escape 退出。
+    </p>
+    <p class="reader-article__assistive-text" aria-live="polite" aria-atomic="true">
+      {{ wordSelectionAnnouncement }}
+    </p>
   </article>
 </template>
 
@@ -360,6 +626,28 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   box-shadow: inset 0 -0.18em 0 var(--accent-primary-active);
 }
 
+.reader-article__sentence--located {
+  outline: 2px solid var(--reading-focus);
+  outline-offset: 0.18rem;
+}
+
+.reader-article__token {
+  border-radius: 0.16rem;
+}
+
+.reader-article__token--selectable {
+  text-decoration-color: transparent;
+  text-decoration-line: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
+}
+
+.reader-article__token--selected {
+  background: var(--accent-primary-active);
+  color: var(--accent-contrast-active);
+  text-decoration-color: currentColor;
+}
+
 .reader-article__sentence:focus-visible {
   outline: 3px solid var(--focus-ring-color);
   outline-offset: 3px;
@@ -444,9 +732,24 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
   outline-offset: 2px;
 }
 
+.reader-article__assistive-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 @media (hover: hover) {
   .reader-article__sentence:hover {
     background: var(--surface-muted);
+  }
+
+  .reader-article__token--selectable:hover {
+    text-decoration-color: currentColor;
   }
 
   .reader-article__translation-toggle:hover {
@@ -462,6 +765,7 @@ function selectAndFocusSentence(sentenceId: string, sentence: HTMLButtonElement)
 
 @media (forced-colors: active) {
   .reader-article__sentence--current,
+  .reader-article__sentence--located,
   .reader-article__sentence--playing {
     outline: 2px solid Highlight;
   }

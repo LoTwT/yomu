@@ -3,9 +3,18 @@ import { PhArrowLeft } from '@phosphor-icons/vue'
 import { computed, onUnmounted, shallowRef, watch } from 'vue'
 import { isNavigationFailure, RouterLink, useRouter } from 'vue-router'
 
+import { usePlatformServices } from '@/app/platformServices'
 import ReadingReviewSummary from '@/components/review/ReadingReviewSummary.vue'
+import ReviewVocabularySection from '@/components/review/ReviewVocabularySection.vue'
 import { requestLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
 import { useReadingReview } from '@/features/review/useReadingReview'
+import type {
+  ReviewVocabularyFocusRequest,
+  ReviewVocabularyFocusTarget,
+  VocabularyContextAction,
+  VocabularySourceLocation,
+} from '@/features/vocabulary/types'
+import { removeVocabularyContext } from '@/features/vocabulary/vocabularyCommands'
 import { usePageHeadingFocus } from './usePageHeadingFocus'
 
 const props = defineProps<{
@@ -13,6 +22,7 @@ const props = defineProps<{
 }>()
 
 const router = useRouter()
+const { repositories } = usePlatformServices()
 const currentAttemptId = computed(() => props.attemptId)
 const {
   status,
@@ -22,14 +32,23 @@ const {
   errorMessage,
   rereadState,
   rereadErrorMessage,
+  vocabularyStatus,
+  vocabularyErrorMessage,
   reload,
+  reloadVocabulary,
   startRereading,
 } = useReadingReview(currentAttemptId)
 const rereadNavigationError = shallowRef('')
 const rereadActionError = computed(() =>
   rereadNavigationError.value || rereadErrorMessage.value)
+const pendingVocabularyContextId = shallowRef<string | null>(null)
+const vocabularyActionError = shallowRef('')
+const vocabularyFocusRequest = shallowRef<ReviewVocabularyFocusRequest | null>(null)
 let viewUnmounted = false
 let rereadNavigationOperation: { sourceAttemptId: string } | null = null
+let vocabularyRemovalOperation: { sourceAttemptId: string, contextId: string } | null = null
+let vocabularyRetryOperation: { sourceAttemptId: string } | null = null
+let vocabularyFocusRequestId = 0
 const missingTitle = computed(() => missingResource.value === 'article'
   ? '找不到回顾对应的文章'
   : '找不到这次回顾')
@@ -44,6 +63,11 @@ const removeAfterEach = router.afterEach((to, from, failure) => {
 })
 watch(currentAttemptId, () => {
   rereadNavigationError.value = ''
+  vocabularyActionError.value = ''
+  pendingVocabularyContextId.value = null
+  vocabularyFocusRequest.value = null
+  vocabularyRemovalOperation = null
+  vocabularyRetryOperation = null
 })
 onUnmounted(() => {
   viewUnmounted = true
@@ -90,6 +114,115 @@ function handleReread(): void {
     })
 }
 
+function handleRemoveVocabularyContext(action: VocabularyContextAction): void {
+  const sourceReview = review.value
+  const sourceAttemptId = sourceReview?.attempt.id
+  if (!sourceAttemptId || vocabularyRemovalOperation) {
+    return
+  }
+  const sourceContextIds = sourceReview.vocabulary.flatMap(item =>
+    item.contexts.map(context => context.id))
+  const sourceContextIndex = sourceContextIds.indexOf(action.contextId)
+  const operation = { sourceAttemptId, contextId: action.contextId }
+  vocabularyRemovalOperation = operation
+  pendingVocabularyContextId.value = action.contextId
+  vocabularyActionError.value = ''
+  void removeVocabularyContext(repositories, { contextId: action.contextId })
+    .then(async () => {
+      if (!viewUnmounted) {
+        await reloadVocabulary()
+        if (review.value?.attempt.id === sourceAttemptId) {
+          if (vocabularyStatus.value === 'error') {
+            requestVocabularyFocus({ kind: 'retry' })
+          }
+          else if (vocabularyStatus.value === 'ready') {
+            const remainingContextIds = review.value.vocabulary.flatMap(item =>
+              item.contexts.map(context => context.id))
+            const nextContextId = remainingContextIds[
+              closestRemainingIndex(sourceContextIndex, remainingContextIds.length)
+            ]
+            requestVocabularyFocus(nextContextId
+              ? { kind: 'context', contextId: nextContextId }
+              : { kind: 'heading' })
+          }
+        }
+      }
+    })
+    .catch(() => {
+      if (!viewUnmounted && review.value?.attempt.id === sourceAttemptId) {
+        vocabularyActionError.value = '暂时无法撤销这条收藏，请稍后重试。'
+        requestVocabularyFocus({ kind: 'context', contextId: action.contextId })
+      }
+    })
+    .finally(() => {
+      if (vocabularyRemovalOperation === operation) {
+        vocabularyRemovalOperation = null
+        pendingVocabularyContextId.value = null
+      }
+    })
+}
+
+function closestRemainingIndex(sourceIndex: number, remainingCount: number): number {
+  return Math.min(Math.max(sourceIndex, 0), Math.max(remainingCount - 1, 0))
+}
+
+function requestVocabularyFocus(target: ReviewVocabularyFocusTarget): void {
+  vocabularyFocusRequest.value = {
+    id: ++vocabularyFocusRequestId,
+    target,
+  }
+}
+
+function handleVocabularyRetry(): void {
+  const sourceAttemptId = review.value?.attempt.id
+  if (!sourceAttemptId || vocabularyRemovalOperation || vocabularyRetryOperation) {
+    return
+  }
+  const operation = { sourceAttemptId }
+  vocabularyRetryOperation = operation
+  vocabularyActionError.value = ''
+  void reloadVocabulary().then(() => {
+    if (viewUnmounted
+      || vocabularyRetryOperation !== operation
+      || review.value?.attempt.id !== sourceAttemptId) {
+      return
+    }
+    if (vocabularyStatus.value === 'error') {
+      requestVocabularyFocus({ kind: 'retry' })
+      return
+    }
+    if (vocabularyStatus.value !== 'ready') {
+      return
+    }
+    const firstContextId = review.value.vocabulary
+      .flatMap(item => item.contexts.map(context => context.id))[0]
+    requestVocabularyFocus(firstContextId
+      ? { kind: 'context', contextId: firstContextId }
+      : { kind: 'heading' })
+  }).finally(() => {
+    if (vocabularyRetryOperation === operation) {
+      vocabularyRetryOperation = null
+    }
+  })
+}
+
+function handleOpenVocabularySource(location: VocabularySourceLocation): void {
+  vocabularyActionError.value = ''
+  void router.push({
+    name: 'reader',
+    params: { articleId: location.articleId },
+    query: { sentence: location.sentenceId },
+  }).then((failure) => {
+    if (failure && isNavigationFailure(failure) && !viewUnmounted) {
+      vocabularyActionError.value = '暂时无法打开这条来源原句，请重试。'
+    }
+  }).catch(() => {
+    if (!viewUnmounted) {
+      vocabularyActionError.value = '暂时无法打开这条来源原句，请重试。'
+    }
+  })
+}
+
 usePageHeadingFocus()
 </script>
 
@@ -116,16 +249,27 @@ usePageHeadingFocus()
         正在读取这次阅读回顾…
       </p>
 
-      <ReadingReviewSummary
-        v-else-if="status === 'ready' && review"
-        :article-title="review.article.title"
-        :active-duration-sec="review.attempt.activeDurationSec"
-        :completed-at="review.attempt.completedAt"
-        :reread-error-message="rereadActionError"
-        :reread-state="rereadState"
-        :source-label="review.article.source.label"
-        @reread="handleReread"
-      />
+      <div v-else-if="status === 'ready' && review" class="review-view__ready">
+        <ReadingReviewSummary
+          :article-title="review.article.title"
+          :active-duration-sec="review.attempt.activeDurationSec"
+          :completed-at="review.attempt.completedAt"
+          :reread-error-message="rereadActionError"
+          :reread-state="rereadState"
+          :source-label="review.article.source.label"
+          @reread="handleReread"
+        />
+        <ReviewVocabularySection
+          :items="review.vocabulary"
+          :status="vocabularyStatus"
+          :pending-context-id="pendingVocabularyContextId"
+          :error-message="vocabularyActionError || vocabularyErrorMessage"
+          :focus-request="vocabularyFocusRequest"
+          @remove-context="handleRemoveVocabularyContext"
+          @open-source="handleOpenVocabularySource"
+          @retry="handleVocabularyRetry"
+        />
+      </div>
 
       <section
         v-else-if="status === 'missing'"
@@ -264,9 +408,15 @@ usePageHeadingFocus()
 }
 
 .review-view__loading,
-.review-view__state {
+.review-view__state,
+.review-view__ready {
   inline-size: min(100%, 42rem);
   margin-inline: auto;
+}
+
+.review-view__ready {
+  display: grid;
+  gap: 1rem;
 }
 
 .review-view__loading {

@@ -6,26 +6,47 @@ import {
   onBeforeRouteLeave,
   onBeforeRouteUpdate,
   RouterLink,
+  useRoute,
   useRouter,
 } from 'vue-router'
 
 import { useInteractionLayer } from '@/app/interactionLayer'
+import { usePlatformServices } from '@/app/platformServices'
 import { getRouteLeaveCoordinator } from '@/app/routeLeaveCoordinator'
-import ReaderArticle from '@/components/reader/ReaderArticle.vue'
+import ReaderArticle, {
+  type ReaderWordCardRequest,
+} from '@/components/reader/ReaderArticle.vue'
 import ReaderCompletionAction from '@/components/reader/ReaderCompletionAction.vue'
 import ReaderPlaybackControls from '@/components/reader/ReaderPlaybackControls.vue'
 import ReaderSettingsOverlay from '@/components/reader/ReaderSettingsOverlay.vue'
+import ReaderWordCardOverlay from '@/components/reader/ReaderWordCardOverlay.vue'
+import type { ArticleTokenRecord } from '@/data/entities'
 import { requestLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
 import { useReaderDisplayPreferences } from '@/features/preferences/useReaderDisplayPreferences'
 import { deriveArticleCapabilities } from '@/features/reader/articleCapabilities'
 import { useReadingSession } from '@/features/reader/useReadingSession'
+import {
+  removeVocabularyContext,
+  saveVocabularyContext,
+} from '@/features/vocabulary/vocabularyCommands'
+import { findVocabularyContext } from '@/features/vocabulary/vocabularyQueries'
 import { usePageHeadingFocus } from './usePageHeadingFocus'
 
 const props = defineProps<{
   articleId: string
 }>()
 
+interface ReaderWordCardState {
+  actionState: 'idle' | 'loading' | 'saving'
+  contextId: string | null
+  errorMessage: string
+  request: ReaderWordCardRequest
+  token: ArticleTokenRecord
+}
+
+const route = useRoute()
 const router = useRouter()
+const { lifecycle, repositories } = usePlatformServices()
 const interactionLayer = useInteractionLayer()
 const routeLeaveCoordinator = getRouteLeaveCoordinator(router)
 const settingsButton = useTemplateRef<HTMLButtonElement>('settingsButton')
@@ -33,8 +54,16 @@ const settingsOpen = shallowRef(false)
 const showIpa = shallowRef(false)
 const preferencesReady = shallowRef(false)
 const reviewNavigationError = shallowRef('')
+const wordCard = shallowRef<ReaderWordCardState | null>(null)
 let viewUnmounted = false
 let reviewNavigationVersion = 0
+let wordCardVersion = 0
+let wordCardRefreshPending = false
+const unsubscribeVocabularyLifecycle = lifecycle.subscribe((event) => {
+  if (event.state === 'active') {
+    refreshOpenWordCard()
+  }
+})
 let reviewNavigationOperation: {
   articleId: string
   attemptId: string
@@ -45,6 +74,17 @@ const pendingRouteTransitions: Array<{
   to: string
 }> = []
 const currentArticleId = computed(() => props.articleId)
+const locatedSentenceId = computed(() => {
+  const value = route.query.sentence
+  return typeof value === 'string' && value.trim() ? value : undefined
+})
+const wordCardComponentKey = computed(() => wordCard.value
+  ? JSON.stringify([
+      wordCard.value.request.articleId,
+      wordCard.value.request.sentenceId,
+      wordCard.value.request.tokenId,
+    ])
+  : '')
 const {
   defaultExpandTranslation,
   fontScale,
@@ -112,6 +152,7 @@ void readerPreferencesReady.finally(() => {
 })
 
 watch(currentArticleId, () => {
+  closeWordCard()
   void settingsHistoryLayer.deactivate()
   showIpa.value = false
   reviewNavigationError.value = ''
@@ -161,6 +202,8 @@ const removeNavigationError = router.onError((_error, to, from) => {
 
 onUnmounted(() => {
   viewUnmounted = true
+  unsubscribeVocabularyLifecycle()
+  closeWordCard()
   settingsHistoryLayer.dispose()
   unregisterSettingsRouteBlocker()
   removeAfterEach()
@@ -216,6 +259,156 @@ usePageHeadingFocus()
 
 function handleTogglePlayback(): void {
   void togglePlayback()
+}
+
+function handleRequestWordCard(request: ReaderWordCardRequest): void {
+  const currentArticle = article.value
+  if (!currentArticle || request.articleId !== currentArticle.id) {
+    return
+  }
+  const sentence = currentArticle.sentences.find(candidate => candidate.id === request.sentenceId)
+  const token = sentence?.tokens.find(candidate => candidate.id === request.tokenId)
+  if (!sentence || !token || token.kind !== 'word') {
+    return
+  }
+
+  if (isPlaying.value) {
+    void togglePlayback()
+  }
+  wordCardRefreshPending = false
+  const version = ++wordCardVersion
+  wordCard.value = {
+    actionState: 'loading',
+    contextId: null,
+    errorMessage: '',
+    request,
+    token,
+  }
+  loadWordCardSelection(version, request)
+}
+
+function refreshOpenWordCard(): void {
+  const current = wordCard.value
+  if (!current) {
+    wordCardRefreshPending = false
+    return
+  }
+  if (current.actionState === 'saving') {
+    wordCardRefreshPending = true
+    return
+  }
+  wordCardRefreshPending = false
+  const version = ++wordCardVersion
+  wordCard.value = {
+    ...current,
+    actionState: 'loading',
+    errorMessage: '',
+  }
+  loadWordCardSelection(version, current.request)
+}
+
+function loadWordCardSelection(
+  version: number,
+  request: ReaderWordCardRequest,
+): void {
+  void findVocabularyContext(repositories, {
+    articleId: request.articleId,
+    sentenceId: request.sentenceId,
+    tokenId: request.tokenId,
+  }).then((savedSelection) => {
+    updateWordCard(version, {
+      actionState: 'idle',
+      contextId: savedSelection?.context.id ?? null,
+      errorMessage: '',
+    })
+  }).catch(() => {
+    updateWordCard(version, {
+      actionState: 'idle',
+      errorMessage: '暂时无法读取收藏状态。你可以关闭词卡后重试。',
+    })
+  })
+}
+
+function handleSaveWord(): void {
+  const current = wordCard.value
+  if (!current || current.actionState !== 'idle' || current.contextId) {
+    return
+  }
+  const version = wordCardVersion
+  wordCard.value = {
+    ...current,
+    actionState: 'saving',
+    errorMessage: '',
+  }
+  void saveVocabularyContext(repositories, {
+    articleId: current.request.articleId,
+    sentenceId: current.request.sentenceId,
+    tokenId: current.request.tokenId,
+  }).then((result) => {
+    settleWordCardAction(version, {
+      actionState: 'idle',
+      contextId: result.context.id,
+      errorMessage: '',
+    })
+  }).catch(() => {
+    settleWordCardAction(version, {
+      actionState: 'idle',
+      errorMessage: '暂时无法收藏这个词，原文与已有收藏没有被修改。',
+    })
+  })
+}
+
+function handleRemoveWord(): void {
+  const current = wordCard.value
+  if (!current || current.actionState !== 'idle' || !current.contextId) {
+    return
+  }
+  const version = wordCardVersion
+  wordCard.value = {
+    ...current,
+    actionState: 'saving',
+    errorMessage: '',
+  }
+  void removeVocabularyContext(repositories, {
+    contextId: current.contextId,
+  }).then(() => {
+    settleWordCardAction(version, {
+      actionState: 'idle',
+      contextId: null,
+      errorMessage: '',
+    })
+  }).catch(() => {
+    settleWordCardAction(version, {
+      actionState: 'idle',
+      errorMessage: '暂时无法撤销收藏，原有收藏仍然保留。',
+    })
+  })
+}
+
+function updateWordCard(
+  version: number,
+  patch: Partial<Pick<ReaderWordCardState, 'actionState' | 'contextId' | 'errorMessage'>>,
+): void {
+  if (version !== wordCardVersion || !wordCard.value) {
+    return
+  }
+  wordCard.value = { ...wordCard.value, ...patch }
+}
+
+function settleWordCardAction(
+  version: number,
+  patch: Partial<Pick<ReaderWordCardState, 'actionState' | 'contextId' | 'errorMessage'>>,
+): void {
+  updateWordCard(version, patch)
+  if (version === wordCardVersion && wordCardRefreshPending) {
+    refreshOpenWordCard()
+  }
+}
+
+function closeWordCard(): void {
+  wordCardRefreshPending = false
+  wordCardVersion += 1
+  wordCard.value = null
 }
 
 function handleCompleteReading(): void {
@@ -373,9 +566,11 @@ function closeSettings(): void {
           :current-sentence-id="currentSentenceId"
           :default-expand-translation="defaultExpandTranslation"
           :font-scale="fontScale"
+          :located-sentence-id="locatedSentenceId"
           :playing-sentence-id="playingSentenceId"
           :preferences-ready="preferencesReady"
           :show-ipa="showIpa"
+          @request-word-card="handleRequestWordCard"
           @select-sentence="selectSentence"
         />
         <ReaderCompletionAction
@@ -415,6 +610,20 @@ function closeSettings(): void {
       @update:default-expand-translation="setDefaultExpandTranslation"
       @update:font-scale="setFontScale"
       @update:show-ipa="showIpa = $event"
+    />
+
+    <ReaderWordCardOverlay
+      v-if="wordCard"
+      :key="wordCardComponentKey"
+      :action-state="wordCard.actionState"
+      :anchor="wordCard.request.anchor"
+      :error-message="wordCard.errorMessage"
+      :focus-return="wordCard.request.focusReturn"
+      :saved="wordCard.contextId !== null"
+      :token="wordCard.token"
+      @close="closeWordCard"
+      @remove="handleRemoveWord"
+      @save="handleSaveWord"
     />
   </div>
 </template>

@@ -8,6 +8,7 @@ import {
   type VocabularyContext,
   type VocabularyTerm,
 } from './entities'
+import { normalizeVocabularyTerm } from './normalizeVocabularyTerm'
 import type { LegacyMigrationPayload, LocalRepositories } from './repositories'
 
 const importedArticleIndexKey = 'yomu:imported-article:index'
@@ -140,10 +141,6 @@ function collectLegacyVocabulary(
     terms: [...termsByNormalized.values()].sort((left, right) => left.id.localeCompare(right.id)),
     contexts: contexts.sort((left, right) => left.id.localeCompare(right.id)),
   }
-}
-
-function normalizeVocabularyTerm(value: string): string {
-  return value.normalize('NFKC').trim().toLocaleLowerCase('en-US')
 }
 
 export async function migrateLegacyData(
