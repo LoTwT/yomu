@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { PhCaretRight, PhFileText } from '@phosphor-icons/vue'
-import { onMounted, useTemplateRef } from 'vue'
+import { PhCaretRight, PhDotsThree, PhFileText } from '@phosphor-icons/vue'
+import { nextTick, onMounted, useTemplateRef, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import type { LibraryArticleViewModel } from '@/features/library/libraryViewModel'
@@ -10,13 +10,44 @@ const props = defineProps<{
   restoreFocus?: boolean
 }>()
 
+export interface LibraryArticleManageRequest {
+  articleId: string
+  focusReturn: HTMLElement
+}
+
+const emit = defineEmits<{
+  manage: [request: LibraryArticleManageRequest]
+}>()
+
 const articleLink = useTemplateRef<HTMLAnchorElement>('articleLink')
 
 onMounted(() => {
   if (props.restoreFocus) {
-    articleLink.value?.focus({ preventScroll: true })
+    focusArticleLink()
   }
 })
+
+watch(
+  () => props.restoreFocus,
+  (restoreFocus) => {
+    if (restoreFocus) {
+      void nextTick(focusArticleLink)
+    }
+  },
+)
+
+function focusArticleLink(): void {
+  if (articleLink.value?.isConnected) {
+    articleLink.value.focus({ preventScroll: true })
+  }
+}
+
+function requestManagement(event: MouseEvent): void {
+  emit('manage', {
+    articleId: props.article.id,
+    focusReturn: event.currentTarget as HTMLButtonElement,
+  })
+}
 </script>
 
 <template>
@@ -34,6 +65,7 @@ onMounted(() => {
               ref="articleLink"
               class="article-object__link"
               :href="href"
+              data-article-open
               @click="navigate"
             >
               <span lang="en">{{ article.title }}</span>
@@ -43,6 +75,17 @@ onMounted(() => {
         </h3>
         <span class="article-object__level">{{ article.levelLabel }}</span>
       </div>
+
+      <button
+        class="article-object__action"
+        type="button"
+        :aria-label="`管理《${article.title}》`"
+        aria-haspopup="dialog"
+        :data-article-manage="article.id"
+        @click="requestManagement"
+      >
+        <PhDotsThree aria-hidden="true" :size="24" weight="bold" />
+      </button>
 
       <p v-if="article.summary" class="article-object__summary" lang="en">
         {{ article.summary }}
@@ -95,6 +138,7 @@ onMounted(() => {
   align-items: start;
   justify-content: space-between;
   min-inline-size: 0;
+  padding-inline-end: 3.25rem;
 }
 
 .article-object__title {
@@ -133,6 +177,30 @@ onMounted(() => {
   border-radius: 0.2rem;
   outline: 3px solid var(--focus-ring-color);
   outline-offset: 3px;
+}
+
+.article-object__action {
+  position: absolute;
+  inset-block-start: 0.35rem;
+  inset-inline-end: 0;
+  z-index: 2;
+  display: inline-grid;
+  place-items: center;
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.article-object__action:focus-visible {
+  border-color: var(--border-strong);
+  outline: 3px solid var(--focus-ring-color);
+  outline-offset: 2px;
 }
 
 .article-object__level {
@@ -202,6 +270,12 @@ onMounted(() => {
 @media (hover: hover) {
   .article-object__inner:has(.article-object__link:hover) {
     background: var(--accent-soft);
+  }
+
+  .article-object__action:hover {
+    border-color: var(--border-subtle);
+    background: var(--surface-subtle);
+    color: var(--text-primary);
   }
 }
 
@@ -282,6 +356,11 @@ onMounted(() => {
     background: var(--surface-elevated);
   }
 
+  .article-object__action {
+    inset-block-start: 0.75rem;
+    inset-inline-end: 0.75rem;
+  }
+
   .article-object__heading {
     grid-row: 1;
   }
@@ -309,6 +388,13 @@ onMounted(() => {
     grid-column: 2;
     grid-row: 4;
     padding-inline-end: 1.5rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .article-object__action {
+    border-color: ButtonBorder;
+    color: ButtonText;
   }
 }
 </style>

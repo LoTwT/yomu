@@ -10,7 +10,7 @@ defineProps<{
 </script>
 
 <template>
-  <article class="continue-card">
+  <article class="continue-card" :data-continue-article-id="article.id">
     <div class="continue-card__content">
       <h3 class="continue-card__title" lang="en">
         {{ article.title }}
@@ -33,6 +33,7 @@ defineProps<{
       />
       <RouterLink
         class="continue-card__button"
+        data-continue-open
         :to="{ name: 'reader', params: { articleId: article.id } }"
       >
         继续阅读

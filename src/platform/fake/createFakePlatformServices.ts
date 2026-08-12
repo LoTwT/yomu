@@ -7,6 +7,8 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type ArticleDeletedEvent,
+  type ArticleEventsAdapter,
   type ArticleContentExtractor,
   type BackNavigationAdapter,
   type BackNavigationEvent,
@@ -15,6 +17,7 @@ import {
   type FileImportAdapter,
   type FileImportOptions,
   type ImportedTextFile,
+  type LegacyImportedContentAdapter,
   type NetworkStatusAdapter,
   type PlatformKind,
   type PlatformServices,
@@ -58,8 +61,10 @@ export interface FakePlatformHarness {
   articleExtractor: FakeArticleContentExtractor
   externalNavigation: FakeExternalNavigationAdapter
   backNavigation: FakeBackNavigationAdapter
+  articleEvents: FakeArticleEventsAdapter
   readingAttemptEvents: FakeReadingAttemptEventsAdapter
   shareInbox: FakeShareImportAdapter
+  legacyImportedContent: FakeLegacyImportedContentAdapter
   preferences: MemoryPreferencesStore
   secrets: MemorySecretStore
 }
@@ -80,8 +85,10 @@ export function createFakePlatformServices(
   )
   const externalNavigation = new FakeExternalNavigationAdapter()
   const backNavigation = new FakeBackNavigationAdapter()
+  const articleEvents = new FakeArticleEventsAdapter()
   const readingAttemptEvents = new FakeReadingAttemptEventsAdapter()
   const shareInbox = new FakeShareImportAdapter()
+  const legacyImportedContent = new FakeLegacyImportedContentAdapter()
   const preferences = new MemoryPreferencesStore()
   const secrets = new MemorySecretStore()
   const capabilities = createCapabilitySnapshot({
@@ -121,8 +128,10 @@ export function createFakePlatformServices(
       articleExtractor,
       externalNavigation,
       backNavigation,
+      articleEvents,
       readingAttemptEvents,
       shareInbox,
+      legacyImportedContent,
     },
     lifecycle,
     network,
@@ -132,8 +141,10 @@ export function createFakePlatformServices(
     articleExtractor,
     externalNavigation,
     backNavigation,
+    articleEvents,
     readingAttemptEvents,
     shareInbox,
+    legacyImportedContent,
     preferences,
     secrets,
   }
@@ -392,6 +403,28 @@ export class FakeBackNavigationAdapter implements BackNavigationAdapter {
   }
 }
 
+export class FakeArticleEventsAdapter implements ArticleEventsAdapter {
+  private readonly deletedListeners = new Set<(
+    event: ArticleDeletedEvent,
+  ) => void>()
+
+  publishDeleted(event: ArticleDeletedEvent): void {
+    this.deletedListeners.forEach((listener) => {
+      try {
+        listener({ ...event })
+      }
+      catch {}
+    })
+  }
+
+  subscribeDeleted(
+    listener: (event: ArticleDeletedEvent) => void,
+  ): () => void {
+    this.deletedListeners.add(listener)
+    return () => this.deletedListeners.delete(listener)
+  }
+}
+
 export class FakeReadingAttemptEventsAdapter implements ReadingAttemptEventsAdapter {
   private readonly listeners = new Set<(
     event: ReadingAttemptCompletedEvent,
@@ -432,5 +465,13 @@ export class FakeShareImportAdapter implements ShareImportAdapter {
   emit(payload: SharedImportPayload): void {
     this.pending = { ...payload }
     this.listeners.forEach(listener => listener({ ...payload }))
+  }
+}
+
+export class FakeLegacyImportedContentAdapter implements LegacyImportedContentAdapter {
+  readonly deletedArticleIds: string[] = []
+
+  async deleteArticle(articleId: string): Promise<void> {
+    this.deletedArticleIds.push(articleId)
   }
 }

@@ -5,7 +5,7 @@ import {
   type RepositoryMode,
 } from './repositories'
 
-const mutationOperations = new Set(['put', 'delete', 'clear'])
+const mutationOperations = new Set(['put', 'delete', 'deleteByArticle', 'clear'])
 
 export function guardTransactionRepository<T extends object>(
   store: DataStoreName,
@@ -22,7 +22,7 @@ export function guardTransactionRepository<T extends object>(
       if (mode === 'readonly'
         && typeof property === 'string'
         && mutationOperations.has(property)) {
-        const operation = property as 'put' | 'delete' | 'clear'
+        const operation = property as 'put' | 'delete' | 'deleteByArticle' | 'clear'
         return async (): Promise<never> => {
           throw new DataReadonlyTransactionError(store, operation)
         }

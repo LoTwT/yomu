@@ -307,6 +307,7 @@ function createAttemptRepository(state: MemoryState): AttemptRepository {
       )
       return value ? clone(value) : null
     },
+    deleteByArticle: async articleId => deleteMapEntriesByArticle(state.attempts, articleId),
   }
 }
 
@@ -352,6 +353,10 @@ function createVocabularyContextRepository(state: MemoryState): VocabularyContex
         .filter(context => context.articleId === articleId)
         .map(clone),
     ),
+    deleteByArticle: async articleId => deleteMapEntriesByArticle(
+      state.vocabularyContexts,
+      articleId,
+    ),
   }
 }
 
@@ -367,6 +372,8 @@ function topLevelAttemptRepository(owner: MemoryLocalRepositories): AttemptRepos
       scope.attempts.listByArticle(articleId)),
     getActiveByArticle: articleId => owner.transaction(['attempts'], 'readonly', scope =>
       scope.attempts.getActiveByArticle(articleId)),
+    deleteByArticle: articleId => owner.transaction(['attempts'], 'readwrite', scope =>
+      scope.attempts.deleteByArticle(articleId)),
   }
 }
 
@@ -387,7 +394,27 @@ function topLevelVocabularyContextRepository(owner: MemoryLocalRepositories): Vo
       scope.vocabularyContexts.listByTerm(termId)),
     listByArticle: articleId => owner.transaction(['vocabularyContexts'], 'readonly', scope =>
       scope.vocabularyContexts.listByArticle(articleId)),
+    deleteByArticle: articleId => owner.transaction(
+      ['vocabularyContexts'],
+      'readwrite',
+      scope => scope.vocabularyContexts.deleteByArticle(articleId),
+    ),
   }
+}
+
+function deleteMapEntriesByArticle<T extends { articleId: string }>(
+  records: Map<string, T>,
+  articleId: string,
+): number {
+  let deletedCount = 0
+  for (const [recordId, record] of records) {
+    if (record.articleId !== articleId) {
+      continue
+    }
+    records.delete(recordId)
+    deletedCount += 1
+  }
+  return deletedCount
 }
 
 function topLevelEntityRepository<T extends { id: string }>(

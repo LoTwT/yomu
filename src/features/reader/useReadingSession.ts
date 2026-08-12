@@ -142,6 +142,8 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
 
   let loadVersion = 0
   let playbackVersion = 0
+  let articlePresenceValidationVersion = 0
+  let activeArticleRevalidationPending = false
   let lifecycleState: AppLifecycleState = services.lifecycle.currentState()
   let playbackHandle: SpeechPlaybackHandle | null = null
   let playbackStartAbortController: AbortController | null = null
@@ -170,9 +172,11 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   const unsubscribeLifecycle = services.lifecycle.subscribe((event) => {
     lifecycleState = event.state
     if (event.state === 'active') {
-      startTiming()
+      void revalidateActiveArticle()
       return
     }
+    articlePresenceValidationVersion += 1
+    activeArticleRevalidationPending = false
     if (event.reason === 'pagehide'
       || event.reason === 'system'
       || event.reason === 'window-close') {
@@ -189,6 +193,9 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
       presentCompletedAttempt(article.value, event.attempt)
     }
   }) ?? (() => {})
+  const unsubscribeArticleEvents = services.articleEvents?.subscribeDeleted((event) => {
+    presentMissingArticle(event.articleId)
+  }) ?? (() => {})
 
   watch(
     () => toValue(articleId),
@@ -199,14 +206,18 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   onUnmounted(() => {
     disposed = true
     loadVersion += 1
+    articlePresenceValidationVersion += 1
     unsubscribeLifecycle()
     unsubscribeAttemptEvents()
+    unsubscribeArticleEvents()
     cancelScheduledFlush()
     void suspend().catch(() => {})
   })
 
   async function load(): Promise<void> {
     const version = ++loadVersion
+    articlePresenceValidationVersion += 1
+    activeArticleRevalidationPending = false
     const targetArticleId = toValue(articleId)
     status.value = 'loading'
     await suspend()
@@ -267,7 +278,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         return
       }
       if (error instanceof ArticleNotFoundError) {
-        status.value = 'missing'
+        presentMissingArticle(targetArticleId)
         return
       }
       status.value = 'error'
@@ -585,8 +596,85 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   }
 
   function allowsReadingInteraction(): boolean {
-    return attempt.value?.status === 'active'
+    return !activeArticleRevalidationPending
+      && attempt.value?.status === 'active'
       && (completionState.value === 'idle' || completionState.value === 'error')
+  }
+
+  async function revalidateActiveArticle(): Promise<void> {
+    const targetArticleId = toValue(articleId)
+    if (disposed
+      || lifecycleState !== 'active'
+      || status.value !== 'ready'
+      || article.value?.id !== targetArticleId) {
+      startTiming()
+      return
+    }
+
+    const version = ++articlePresenceValidationVersion
+    activeArticleRevalidationPending = true
+    checkpointActiveDuration(false)
+    try {
+      const persistedArticle = await services.repositories.articles.get(targetArticleId)
+      if (!isCurrentArticlePresenceValidation(version, targetArticleId)) {
+        return
+      }
+      activeArticleRevalidationPending = false
+      if (!persistedArticle) {
+        presentMissingArticle(targetArticleId)
+        return
+      }
+      startTiming()
+    }
+    catch {
+      if (!isCurrentArticlePresenceValidation(version, targetArticleId)) {
+        return
+      }
+      activeArticleRevalidationPending = false
+      stopSpeech()
+      activeSinceMs = null
+      status.value = 'error'
+      errorMessage.value = '暂时无法确认这篇文章是否仍保存在本机。请重试后再继续阅读。'
+    }
+  }
+
+  function isCurrentArticlePresenceValidation(
+    version: number,
+    targetArticleId: string,
+  ): boolean {
+    return !disposed
+      && version === articlePresenceValidationVersion
+      && lifecycleState === 'active'
+      && targetArticleId === toValue(articleId)
+  }
+
+  function presentMissingArticle(targetArticleId: string): void {
+    if (disposed || targetArticleId !== toValue(articleId)) {
+      return
+    }
+    loadVersion += 1
+    articlePresenceValidationVersion += 1
+    activeArticleRevalidationPending = false
+    cancelScheduledFlush()
+    stopSpeech()
+    activeSinceMs = null
+    article.value = null
+    attempt.value = null
+    currentSentenceId.value = ''
+    furthestSentenceOrdinal.value = 0
+    activeDurationMs = 0
+    cursorDirty = false
+    errorMessage.value = ''
+    completionState.value = 'idle'
+    completionErrorMessage.value = ''
+    completionOperation = null
+    routeTransitionSuspended = false
+    observedCompletedAttempts.forEach((completedAttempt, attemptId) => {
+      if (completedAttempt.articleId === targetArticleId) {
+        observedCompletedAttempts.delete(attemptId)
+      }
+    })
+    status.value = 'missing'
   }
 
   function isCurrentLoad(version: number, targetArticleId: string): boolean {

@@ -6,6 +6,8 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type ArticleDeletedEvent,
+  type ArticleEventsAdapter,
   type ArticleContentExtractor,
   type BackNavigationAdapter,
   type ExternalNavigationAdapter,
@@ -265,6 +267,56 @@ export class WebBackNavigationAdapter implements BackNavigationAdapter {
   }
 }
 
+export class WebArticleEventsAdapter implements ArticleEventsAdapter {
+  private readonly deletedListeners = new Set<(
+    event: ArticleDeletedEvent,
+  ) => void>()
+  private readonly channel: BroadcastChannel | null
+
+  constructor(runtime: Window) {
+    try {
+      const BroadcastChannelConstructor = (runtime as Window & {
+        BroadcastChannel?: typeof BroadcastChannel
+      }).BroadcastChannel
+      this.channel = typeof BroadcastChannelConstructor === 'function'
+        ? new BroadcastChannelConstructor('yomu-articles-v1')
+        : null
+      this.channel?.addEventListener('message', (event) => {
+        if (isArticleDeletedEvent(event.data)) {
+          this.deliverDeleted(event.data)
+        }
+      })
+    }
+    catch {
+      this.channel = null
+    }
+  }
+
+  publishDeleted(event: ArticleDeletedEvent): void {
+    this.deliverDeleted(event)
+    try {
+      this.channel?.postMessage(event)
+    }
+    catch {}
+  }
+
+  subscribeDeleted(
+    listener: (event: ArticleDeletedEvent) => void,
+  ): () => void {
+    this.deletedListeners.add(listener)
+    return () => this.deletedListeners.delete(listener)
+  }
+
+  private deliverDeleted(event: ArticleDeletedEvent): void {
+    this.deletedListeners.forEach((listener) => {
+      try {
+        listener({ ...event })
+      }
+      catch {}
+    })
+  }
+}
+
 export class WebReadingAttemptEventsAdapter implements ReadingAttemptEventsAdapter {
   private readonly listeners = new Set<(
     event: ReadingAttemptCompletedEvent,
@@ -409,6 +461,7 @@ export function createDefaultWebRuntimeAdapters(options: {
   articleExtractor: ArticleContentExtractor
   externalNavigation: WebExternalNavigationAdapter
   backNavigation: WebBackNavigationAdapter
+  articleEvents: WebArticleEventsAdapter
   readingAttemptEvents: WebReadingAttemptEventsAdapter
   shareInbox: EmptyShareImportAdapter
 } {
@@ -425,6 +478,7 @@ export function createDefaultWebRuntimeAdapters(options: {
     articleExtractor: new WebArticleContentExtractor(documentRef.defaultView?.DOMParser ?? null),
     externalNavigation: new WebExternalNavigationAdapter(windowRef),
     backNavigation: new WebBackNavigationAdapter(windowRef),
+    articleEvents: new WebArticleEventsAdapter(windowRef),
     readingAttemptEvents: new WebReadingAttemptEventsAdapter(windowRef),
     shareInbox: new EmptyShareImportAdapter(),
   }
@@ -440,4 +494,14 @@ function isReadingAttemptCompletedEvent(
   return isReadingAttempt(attempt)
     && attempt.status === 'completed'
     && typeof attempt.completedAt === 'string'
+}
+
+function isArticleDeletedEvent(value: unknown): value is ArticleDeletedEvent {
+  if (typeof value !== 'object' || value === null || !('articleId' in value)) {
+    return false
+  }
+  const articleId = value.articleId
+  return typeof articleId === 'string'
+    && articleId.trim().length > 0
+    && articleId.length <= 512
 }

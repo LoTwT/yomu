@@ -7,6 +7,7 @@ import { getYomuBuildTarget } from '@/platform/createPlatformServices'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import { platformInitializationPreferenceKeys } from '@/platform/initialization'
 import {
+  WebArticleEventsAdapter,
   WebLifecycleAdapter,
   WebRemoteServicesAdapter,
 } from '@/platform/web/runtimeAdapters'
@@ -74,6 +75,38 @@ describe('platform services', () => {
     windowTarget.dispatchEvent(new Event('pagehide'))
     windowTarget.dispatchEvent(new Event('pageshow'))
     expect(events).toHaveLength(3)
+  })
+
+  it('broadcasts terminal article deletion events across Web adapter instances', () => {
+    class TestBroadcastChannel extends EventTarget {
+      private static readonly channels = new Map<string, Set<TestBroadcastChannel>>()
+
+      constructor(private readonly name: string) {
+        super()
+        TestBroadcastChannel.channels.get(name)?.add(this)
+          ?? TestBroadcastChannel.channels.set(name, new Set([this]))
+      }
+
+      postMessage(data: unknown): void {
+        TestBroadcastChannel.channels.get(this.name)?.forEach((channel) => {
+          if (channel !== this) {
+            channel.dispatchEvent(new MessageEvent('message', { data }))
+          }
+        })
+      }
+    }
+    const runtime = { BroadcastChannel: TestBroadcastChannel } as unknown as Window
+    const publisher = new WebArticleEventsAdapter(runtime)
+    const subscriber = new WebArticleEventsAdapter(runtime)
+    const localArticleIds: string[] = []
+    const remoteArticleIds: string[] = []
+    publisher.subscribeDeleted(event => localArticleIds.push(event.articleId))
+    subscriber.subscribeDeleted(event => remoteArticleIds.push(event.articleId))
+
+    publisher.publishDeleted({ articleId: 'article-cross-tab-delete' })
+
+    expect(localArticleIds).toEqual(['article-cross-tab-delete'])
+    expect(remoteArticleIds).toEqual(['article-cross-tab-delete'])
   })
 
   it('keeps browser preferences and remembered secrets in separate namespaces', async () => {

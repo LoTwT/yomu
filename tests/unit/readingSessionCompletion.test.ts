@@ -70,11 +70,13 @@ describe('useReadingSession completion', () => {
     expect(mounted.session.currentSentenceId.value).toBe(`${article.id}:s3`)
     expect(mounted.harness.speech.spoken).toHaveLength(spokenCount)
 
-    const transactionCount = vi.spyOn(mounted.repositories, 'transaction')
+    const transactionSpy = vi.spyOn(mounted.repositories, 'transaction')
     mounted.harness.lifecycle.emit('background')
     mounted.harness.lifecycle.emit('active')
     await Promise.resolve()
-    expect(transactionCount).not.toHaveBeenCalled()
+    expect(transactionSpy).toHaveBeenCalledTimes(1)
+    expect(transactionSpy.mock.calls[0]?.[0]).toEqual(['articles'])
+    expect(transactionSpy.mock.calls[0]?.[1]).toBe('readonly')
   })
 
   it('keeps a failed completion readable and lets a later retry finish it', async () => {

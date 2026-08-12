@@ -105,10 +105,13 @@ function resolveLastActivity(
   article: ArticleRecord,
   attempts: readonly ReadingAttempt[] | undefined,
 ): string {
-  return attempts?.reduce(
+  if (!attempts?.length) {
+    return article.createdAt
+  }
+  return attempts.reduce(
     (latest, attempt) => attempt.lastOpenedAt > latest ? attempt.lastOpenedAt : latest,
-    article.updatedAt,
-  ) ?? article.updatedAt
+    attempts[0]!.lastOpenedAt,
+  )
 }
 
 function formatRelativeTime(timestamp: string, now: Date): string {

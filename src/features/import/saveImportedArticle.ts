@@ -5,6 +5,7 @@ import {
   type ReadingAttempt,
 } from '@/data/entities'
 import type { LocalRepositories } from '@/data/repositories'
+import { normalizeArticleTitle } from '@/features/article/articleMetadata'
 import type { ImportedArticleDraft } from './importArticle'
 
 export interface SaveImportedArticleDependencies {
@@ -50,7 +51,7 @@ export async function saveImportedArticle(
       id: articleId,
       schemaVersion: YOMU_ENTITY_SCHEMA_VERSION,
       contentHash: draft.contentHash,
-      title: normalizeTitle(draft.title),
+      title: normalizeArticleTitle(draft.title),
       description: createDescription(sentences),
       language: 'en',
       level: 'unassessed',
@@ -116,16 +117,6 @@ function namespaceSentences(
       })),
     }
   })
-}
-
-function normalizeTitle(title: string): string {
-  const normalized = title.trim().replace(/\s+/g, ' ')
-  if (!normalized) {
-    throw new Error('文章标题不能为空。')
-  }
-  return normalized.length > 120
-    ? `${normalized.slice(0, 117).trimEnd()}...`
-    : normalized
 }
 
 function normalizeSourceLabel(sourceLabel: string): string {

@@ -1,6 +1,12 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
-import { isArticleRecord, type ArticleRecord } from '../../src/data/entities'
+import {
+  isArticleRecord,
+  type ArticleRecord,
+  type ReadingAttempt,
+  type VocabularyContext,
+  type VocabularyTerm,
+} from '../../src/data/entities'
 
 const importedSentences = [
   'A quiet reading habit gives the mind enough space to notice how an argument develops.',
@@ -154,6 +160,107 @@ const vocabularyLoopArticle: ArticleRecord = {
   estimatedReadTimeMinutes: 1,
   createdAt: '2026-08-11T08:00:00.000Z',
   updatedAt: '2026-08-11T08:00:00.000Z',
+}
+
+const managedArticle: ArticleRecord = {
+  id: 'stage-4c-managed-article',
+  schemaVersion: 2,
+  contentHash: 'stage-4c-managed-article-content',
+  title: 'A Manageable Reading Record',
+  description: 'A local article covering the complete article management loop.',
+  language: 'en',
+  level: 'B1',
+  source: {
+    kind: 'url',
+    label: 'Stage 4C source',
+    url: 'https://source.example/stage-4c-reading',
+    author: 'Local Reader',
+    publicationYear: '2026',
+  },
+  rights: {
+    status: 'user-provided-unknown',
+    note: 'User-provided article retained for local reading.',
+    ttsAllowed: true,
+    translationAllowed: true,
+    cacheAllowed: true,
+  },
+  capabilities: {
+    sentenceTranslation: 'none',
+    sentenceIpa: 'none',
+    tokenMeaning: 'partial',
+  },
+  sentences: [{
+    id: 'stage-4c-managed-article:s1',
+    order: 0,
+    paragraphIndex: 0,
+    textHash: 'stage-4c-managed-article-sentence-1',
+    original: 'A durable library keeps every reading choice understandable.',
+    tokens: [{
+      id: 'stage-4c-managed-article:s1:t1',
+      text: 'durable',
+      kind: 'word',
+      meaning: '持久的',
+    }],
+  }],
+  factSources: [],
+  wordCount: 9,
+  estimatedReadTimeMinutes: 1,
+  createdAt: '2026-08-11T08:00:00.000Z',
+  updatedAt: '2026-08-11T08:00:00.000Z',
+}
+
+const articleRemainingAfterManagement: ArticleRecord = {
+  ...managedArticle,
+  id: 'stage-4c-remaining-article',
+  contentHash: 'stage-4c-remaining-article-content',
+  title: 'The Next Library Article',
+  description: 'A second article that receives focus after deletion.',
+  source: {
+    kind: 'paste',
+    label: 'Remaining local article',
+  },
+  sentences: [{
+    id: 'stage-4c-remaining-article:s1',
+    order: 0,
+    paragraphIndex: 0,
+    textHash: 'stage-4c-remaining-article-sentence-1',
+    original: 'The next article stays ready for another focused session.',
+    tokens: [],
+  }],
+  wordCount: 9,
+  createdAt: '2026-08-10T08:00:00.000Z',
+  updatedAt: '2026-08-10T08:00:00.000Z',
+}
+
+const managedArticleAttempt: ReadingAttempt = {
+  id: 'stage-4c-managed-attempt',
+  articleId: managedArticle.id,
+  currentSentenceId: managedArticle.sentences[0]!.id,
+  furthestSentenceOrdinal: 0,
+  activeDurationSec: 17,
+  status: 'active',
+  startedAt: '2026-08-11T08:01:00.000Z',
+  lastOpenedAt: '2026-08-11T08:05:00.000Z',
+}
+
+const managedVocabularyTerm: VocabularyTerm = {
+  id: 'stage-4c-managed-term',
+  normalizedTerm: 'durable',
+  displayTerm: 'durable',
+  meaning: '持久的',
+  orphanedContextCount: 2,
+  savedAt: '2026-08-11T08:02:00.000Z',
+  updatedAt: '2026-08-11T08:02:00.000Z',
+}
+
+const managedVocabularyContext: VocabularyContext = {
+  id: 'stage-4c-managed-context',
+  termId: managedVocabularyTerm.id,
+  articleId: managedArticle.id,
+  sentenceId: managedArticle.sentences[0]!.id,
+  sentenceText: managedArticle.sentences[0]!.original,
+  displayTerm: managedVocabularyTerm.displayTerm,
+  savedAt: '2026-08-11T08:02:00.000Z',
 }
 
 test('empty library becomes a persistent reading session and resumes the selected sentence', async ({ page }) => {
@@ -428,6 +535,237 @@ test('saved vocabulary survives the complete reading loop without moving durable
   await page.getByRole('link', { name: '收藏词', exact: true }).click()
   await expect(page.getByRole('heading', { name: '还没有收藏词' })).toBeVisible()
   await expect(page.getByText('lantern', { exact: true })).toHaveCount(0)
+})
+
+test('article management renames, traces its source, and deletes every dependent record', async ({
+  page,
+}) => {
+  await seedArticleManagementScenario(page)
+  await installExternalNavigationProbe(page)
+
+  const managedItem = page.locator(`[data-article-id="${managedArticle.id}"]`)
+  const remainingItem = page.locator(
+    `[data-article-id="${articleRemainingAfterManagement.id}"]`,
+  )
+  await expect(managedItem).toBeVisible()
+  await expect(remainingItem).toBeVisible()
+
+  const initialManageButton = managedItem.getByRole('button', {
+    name: `管理《${managedArticle.title}》`,
+  })
+  await initialManageButton.click()
+  let managementDialog = page.getByRole('dialog', { name: '管理文章' })
+  await expect(managementDialog).toBeVisible()
+  await managementDialog.getByRole('button', { name: '重命名' }).click()
+
+  managementDialog = page.getByRole('dialog', { name: '重命名文章' })
+  const renameInput = managementDialog.getByLabel('文章名称')
+  await expect(renameInput).toBeFocused()
+  await renameInput.fill('A Renamed Durable Record')
+  await managementDialog.getByRole('button', { name: '保存名称' }).click()
+
+  await expect(managementDialog).toHaveCount(0)
+  await expect(managedItem.getByRole('link', {
+    name: 'A Renamed Durable Record',
+    exact: true,
+  })).toBeVisible()
+  const renamedManageButton = managedItem.getByRole('button', {
+    name: '管理《A Renamed Durable Record》',
+  })
+  await expect(renamedManageButton).toBeFocused()
+  await expect.poll(() => readArticleTitle(page, managedArticle.id))
+    .toBe('A Renamed Durable Record')
+
+  await renamedManageButton.click()
+  managementDialog = page.getByRole('dialog', { name: '管理文章' })
+  await managementDialog.getByRole('button', { name: '来源详情' }).click()
+  managementDialog = page.getByRole('dialog', { name: '来源详情' })
+  await expect(managementDialog.getByText(managedArticle.source.label, { exact: true }))
+    .toBeVisible()
+  await expect(managementDialog.getByText(managedArticle.source.url!, { exact: true }))
+    .toBeVisible()
+  await expect(managementDialog.getByText('Local Reader', { exact: true })).toBeVisible()
+  await managementDialog.getByRole('button', { name: '打开来源' }).click()
+  await expect.poll(() => readExternalNavigationProbe(page)).toEqual([
+    managedArticle.source.url,
+  ])
+
+  await managementDialog.getByRole('button', { name: '返回', exact: true }).click()
+  managementDialog = page.getByRole('dialog', { name: '管理文章' })
+  await managementDialog.getByRole('button', { name: '删除文章' }).click()
+  managementDialog = page.getByRole('dialog', { name: '删除文章' })
+  await expect(managementDialog).toContainText('1 条阅读记录')
+  await expect(managementDialog).toContainText('1 条收藏词原句上下文')
+  const deleteContextlessTerms = managementDialog.getByRole('checkbox', {
+    name: /同时删除 1 个将失去全部上下文的词条/,
+  })
+  await expect(deleteContextlessTerms).not.toBeChecked()
+  await managementDialog.getByRole('button', { name: '永久删除' }).click()
+
+  await expect(managedItem).toHaveCount(0)
+  await expect(managementDialog).toHaveCount(0)
+  const remainingArticleLink = remainingItem.getByRole('link', {
+    name: articleRemainingAfterManagement.title,
+    exact: true,
+  })
+  await expect(remainingArticleLink).toBeFocused()
+  await expect.poll(() => readArticleManagementState(page)).toEqual({
+    articleIds: [articleRemainingAfterManagement.id],
+    attemptIds: [],
+    contextIds: [],
+    terms: [{
+      id: managedVocabularyTerm.id,
+      orphanedContextCount: 3,
+    }],
+    legacyArticlePresent: false,
+    legacyIndex: [{
+      articleId: articleRemainingAfterManagement.id,
+      title: articleRemainingAfterManagement.title,
+    }],
+    matchingPracticePresent: false,
+    aliasedPracticePresent: false,
+    unrelatedPracticePresent: true,
+  })
+
+  await page.reload()
+  await expect(page.locator(`[data-article-id="${managedArticle.id}"]`)).toHaveCount(0)
+  await expect(page.getByRole('link', {
+    name: articleRemainingAfterManagement.title,
+    exact: true,
+  })).toBeVisible()
+  await expect.poll(() => readArticleManagementState(page)).toEqual({
+    articleIds: [articleRemainingAfterManagement.id],
+    attemptIds: [],
+    contextIds: [],
+    terms: [{
+      id: managedVocabularyTerm.id,
+      orphanedContextCount: 3,
+    }],
+    legacyArticlePresent: false,
+    legacyIndex: [{
+      articleId: articleRemainingAfterManagement.id,
+      title: articleRemainingAfterManagement.title,
+    }],
+    matchingPracticePresent: false,
+    aliasedPracticePresent: false,
+    unrelatedPracticePresent: true,
+  })
+})
+
+test('article management remains scrollable inside compact and safe-area viewports', async ({
+  page,
+}) => {
+  await seedArticleManagementScenario(page)
+  await page.locator(`[data-article-id="${managedArticle.id}"]`).getByRole('button', {
+    name: `管理《${managedArticle.title}》`,
+  }).click()
+  let managementDialog = page.getByRole('dialog', { name: '管理文章' })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await setArticleManagementSafeArea(managementDialog, {
+    top: 47,
+    right: 0,
+    bottom: 34,
+    left: 0,
+  })
+  await expectDialogInsideSafeArea(managementDialog, {
+    top: 47,
+    right: 0,
+    bottom: 34,
+    left: 0,
+  })
+
+  await page.setViewportSize({ width: 844, height: 390 })
+  await setArticleManagementSafeArea(managementDialog, {
+    top: 0,
+    right: 20,
+    bottom: 21,
+    left: 59,
+  })
+  await expectDialogInsideSafeArea(managementDialog, {
+    top: 0,
+    right: 20,
+    bottom: 21,
+    left: 59,
+  })
+  const closeButton = managementDialog.getByRole('button', { name: '关闭文章管理' })
+  await expectControlInsideSafeArea(closeButton, {
+    top: 0,
+    right: 20,
+    bottom: 21,
+    left: 59,
+  })
+
+  await managementDialog.getByRole('button', { name: '删除文章' }).click()
+  managementDialog = page.getByRole('dialog', { name: '删除文章' })
+  await page.setViewportSize({ width: 390, height: 240 })
+  const zoomedSafeArea = {
+    top: 18,
+    right: 0,
+    bottom: 24,
+    left: 0,
+  }
+  await setArticleManagementSafeArea(managementDialog, zoomedSafeArea)
+  await expectDialogInsideSafeArea(managementDialog, zoomedSafeArea)
+  const scrollMetrics = await managementDialog.evaluate(element => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }))
+  expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight)
+  expect(scrollMetrics.scrollWidth).toBeLessThanOrEqual(scrollMetrics.clientWidth + 1)
+
+  const permanentDelete = managementDialog.getByRole('button', { name: '永久删除' })
+  await permanentDelete.scrollIntoViewIfNeeded()
+  await expectControlInsideSafeArea(permanentDelete, zoomedSafeArea)
+})
+
+test('deleting an article clears its active Reader in another tab', async ({ page }) => {
+  await seedArticleManagementScenario(page)
+  const readerPage = await page.context().newPage()
+  try {
+    await installReaderSpeechProbe(readerPage)
+    await readerPage.goto(`/read/${managedArticle.id}`)
+    await expect(readerPage.getByRole('heading', {
+      level: 2,
+      name: managedArticle.title,
+    })).toBeVisible()
+    await readerPage.getByRole('button', { name: '朗读当前句' }).click()
+    await expect(readerPage.getByRole('button', { name: '暂停朗读' })).toBeVisible()
+    const cancelCountBeforeDeletion = await readSpeechProbe(readerPage, 'cancelCount')
+    await readerPage.getByRole('button', { name: '阅读设置', exact: true }).click()
+    await expect(readerPage.getByRole('dialog', { name: '调整当前阅读' })).toBeVisible()
+
+    const managedItem = page.locator(`[data-article-id="${managedArticle.id}"]`)
+    await managedItem.getByRole('button', {
+      name: `管理《${managedArticle.title}》`,
+    }).click()
+    let managementDialog = page.getByRole('dialog', { name: '管理文章' })
+    await managementDialog.getByRole('button', { name: '删除文章' }).click()
+    managementDialog = page.getByRole('dialog', { name: '删除文章' })
+    await managementDialog.getByRole('button', { name: '永久删除' }).click()
+
+    await expect(readerPage.getByRole('heading', { name: '找不到这篇文章' })).toBeVisible()
+    await expect(readerPage.getByText(
+      managedArticle.sentences[0]!.original,
+      { exact: true },
+    )).toHaveCount(0)
+    await expect(readerPage.getByRole('button', { name: '暂停朗读' })).toHaveCount(0)
+    await expect.poll(() => readSpeechProbe(readerPage, 'cancelCount'))
+      .toBeGreaterThan(cancelCountBeforeDeletion)
+
+    await readerPage.reload()
+    await expect(readerPage.getByRole('heading', { name: '找不到这篇文章' })).toBeVisible()
+    await readerPage.evaluate(() => history.forward())
+    await expect(readerPage.getByRole('dialog', { name: '调整当前阅读' })).toHaveCount(0)
+    await readerPage.getByRole('link', { name: '返回我的阅读' }).click()
+    await expect(readerPage).toHaveURL(/\/$/)
+    await expect(readerPage.getByRole('heading', { level: 1, name: '我的阅读' })).toBeVisible()
+  }
+  finally {
+    await readerPage.close()
+  }
 })
 
 test('completing in one tab stops the same attempt in another tab', async ({ page }) => {
@@ -1063,6 +1401,7 @@ test('a multi-step Forward guard redirect replaces the Reader settings marker', 
   await expect(settingsDialog).toHaveCount(0)
   await page.goBack()
   await expect(page).toHaveURL('/import')
+  await expect(page.getByRole('heading', { level: 1, name: '导入内容' })).toBeVisible()
 
   await page.evaluate((path) => {
     const appRoot = document.querySelector('#app') as HTMLElement & {
@@ -1726,6 +2065,249 @@ test('library keeps one semantic list across the 1199 and 1200 pixel layout boun
     getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(2)
   await expect(firstArticleLink).toBeFocused()
 })
+
+interface SafeAreaInsets {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
+async function setArticleManagementSafeArea(
+  dialog: Locator,
+  insets: SafeAreaInsets,
+): Promise<void> {
+  await dialog.evaluate((element, safeArea) => {
+    const dialogElement = element as HTMLElement
+    dialogElement.style.setProperty('--article-management-safe-top', `${safeArea.top}px`)
+    dialogElement.style.setProperty('--article-management-safe-right', `${safeArea.right}px`)
+    dialogElement.style.setProperty('--article-management-safe-bottom', `${safeArea.bottom}px`)
+    dialogElement.style.setProperty('--article-management-safe-left', `${safeArea.left}px`)
+  }, insets)
+}
+
+async function expectDialogInsideSafeArea(
+  dialog: Locator,
+  insets: SafeAreaInsets,
+): Promise<void> {
+  await expect.poll(() => dialog.evaluate((element, safeArea) => {
+    const rect = element.getBoundingClientRect()
+    const minimumGutter = 16
+    const safeTop = Math.max(minimumGutter, safeArea.top)
+    const safeRight = Math.max(minimumGutter, safeArea.right)
+    const safeBottom = Math.max(minimumGutter, safeArea.bottom)
+    const safeLeft = Math.max(minimumGutter, safeArea.left)
+    return rect.width > 0
+      && rect.height > 0
+      && rect.top >= safeTop - 0.5
+      && rect.right <= window.innerWidth - safeRight + 0.5
+      && rect.bottom <= window.innerHeight - safeBottom + 0.5
+      && rect.left >= safeLeft - 0.5
+  }, insets)).toBe(true)
+}
+
+async function expectControlInsideSafeArea(
+  control: Locator,
+  insets: SafeAreaInsets,
+): Promise<void> {
+  await expect.poll(() => control.evaluate((element, safeArea) => {
+    const rect = element.getBoundingClientRect()
+    const minimumGutter = 16
+    return rect.height >= 44
+      && rect.top >= Math.max(minimumGutter, safeArea.top) - 0.5
+      && rect.right <= window.innerWidth - Math.max(minimumGutter, safeArea.right) + 0.5
+      && rect.bottom <= window.innerHeight - Math.max(minimumGutter, safeArea.bottom) + 0.5
+      && rect.left >= Math.max(minimumGutter, safeArea.left) - 0.5
+  }, insets)).toBe(true)
+}
+
+async function seedArticleManagementScenario(page: Page): Promise<void> {
+  expect(isArticleRecord(managedArticle)).toBe(true)
+  expect(isArticleRecord(articleRemainingAfterManagement)).toBe(true)
+  await page.goto('/')
+  await expect(page.getByTestId('library-empty-state')).toBeVisible()
+  await page.evaluate(async (scenario) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(
+          ['articles', 'attempts', 'vocabularyTerms', 'vocabularyContexts'],
+          'readwrite',
+        )
+        transaction.oncomplete = () => resolve()
+        transaction.onabort = () => reject(
+          transaction.error ?? new Error('Article management seed was aborted.'),
+        )
+        transaction.onerror = () => reject(
+          transaction.error ?? new Error('Article management seed failed.'),
+        )
+        transaction.objectStore('articles').put(scenario.managedArticle)
+        transaction.objectStore('articles').put(scenario.remainingArticle)
+        transaction.objectStore('attempts').put(scenario.attempt)
+        transaction.objectStore('vocabularyTerms').put(scenario.term)
+        transaction.objectStore('vocabularyContexts').put(scenario.context)
+      })
+    }
+    finally {
+      database.close()
+    }
+  }, {
+    managedArticle,
+    remainingArticle: articleRemainingAfterManagement,
+    attempt: managedArticleAttempt,
+    term: managedVocabularyTerm,
+    context: managedVocabularyContext,
+  })
+  await page.reload()
+  await expect(page.locator(`[data-article-id="${managedArticle.id}"]`)).toBeVisible()
+
+  await page.evaluate(({ managedId, managedTitle, remainingId, remainingTitle }) => {
+    localStorage.setItem(
+      `yomu:imported-article:${managedId}`,
+      JSON.stringify({ id: managedId, title: managedTitle, text: 'legacy private text' }),
+    )
+    localStorage.setItem('yomu:imported-article:index', JSON.stringify([
+      { articleId: managedId, title: managedTitle },
+      { articleId: remainingId, title: remainingTitle },
+    ]))
+    localStorage.setItem(
+      `yomu:practice-session:${managedId}`,
+      JSON.stringify({ articleId: managedId, activeSentenceId: `${managedId}:s1` }),
+    )
+    localStorage.setItem(
+      'yomu:practice-session:stage-4c-alias',
+      JSON.stringify({ articleId: managedId, completedAt: '2026-08-11T08:06:00.000Z' }),
+    )
+    localStorage.setItem(
+      'yomu:practice-session:stage-4c-keep',
+      JSON.stringify({ articleId: remainingId }),
+    )
+  }, {
+    managedId: managedArticle.id,
+    managedTitle: managedArticle.title,
+    remainingId: articleRemainingAfterManagement.id,
+    remainingTitle: articleRemainingAfterManagement.title,
+  })
+}
+
+async function installExternalNavigationProbe(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const openedUrls: string[] = []
+    Object.defineProperty(window, '__stage4cOpenedUrls', {
+      configurable: true,
+      value: openedUrls,
+    })
+    Object.defineProperty(window, 'open', {
+      configurable: true,
+      value: ((url?: string | URL) => {
+        openedUrls.push(String(url ?? ''))
+        return null
+      }) as typeof window.open,
+    })
+  })
+}
+
+async function readExternalNavigationProbe(page: Page): Promise<string[]> {
+  return page.evaluate(() => (
+    window as typeof window & { __stage4cOpenedUrls?: string[] }
+  ).__stage4cOpenedUrls ?? [])
+}
+
+async function readArticleTitle(page: Page, articleId: string): Promise<string | null> {
+  return page.evaluate(async (targetArticleId) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      const article = await new Promise<{ title?: unknown } | undefined>((resolve, reject) => {
+        const transaction = database.transaction('articles', 'readonly')
+        const request = transaction.objectStore('articles').get(targetArticleId)
+        request.onsuccess = () => resolve(request.result)
+        request.onerror = () => reject(request.error)
+      })
+      return typeof article?.title === 'string' ? article.title : null
+    }
+    finally {
+      database.close()
+    }
+  }, articleId)
+}
+
+async function readArticleManagementState(page: Page): Promise<{
+  articleIds: string[]
+  attemptIds: string[]
+  contextIds: string[]
+  terms: Array<{ id: string, orphanedContextCount: number }>
+  legacyArticlePresent: boolean
+  legacyIndex: unknown
+  matchingPracticePresent: boolean
+  aliasedPracticePresent: boolean
+  unrelatedPracticePresent: boolean
+}> {
+  return page.evaluate(async ({ managedId, termId }) => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('yomu-v2')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    try {
+      const transaction = database.transaction(
+        ['articles', 'attempts', 'vocabularyTerms', 'vocabularyContexts'],
+        'readonly',
+      )
+      const readAll = (storeName: string) =>
+        new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+          const request = transaction.objectStore(storeName).getAll()
+          request.onsuccess = () => resolve(request.result)
+          request.onerror = () => reject(request.error)
+        })
+      const [articles, attempts, terms, contexts] = await Promise.all([
+        readAll('articles'),
+        readAll('attempts'),
+        readAll('vocabularyTerms'),
+        readAll('vocabularyContexts'),
+      ])
+      const legacyIndexRaw = localStorage.getItem('yomu:imported-article:index')
+      return {
+        articleIds: articles
+          .flatMap(article => typeof article.id === 'string' ? [article.id] : [])
+          .sort(),
+        attemptIds: attempts
+          .flatMap(attempt => typeof attempt.id === 'string' ? [attempt.id] : [])
+          .sort(),
+        contextIds: contexts
+          .flatMap(context => typeof context.id === 'string' ? [context.id] : [])
+          .sort(),
+        terms: terms
+          .flatMap(term => term.id === termId
+            && typeof term.orphanedContextCount === 'number'
+            ? [{ id: termId, orphanedContextCount: term.orphanedContextCount }]
+            : []),
+        legacyArticlePresent:
+          localStorage.getItem(`yomu:imported-article:${managedId}`) !== null,
+        legacyIndex: legacyIndexRaw === null ? null : JSON.parse(legacyIndexRaw),
+        matchingPracticePresent:
+          localStorage.getItem(`yomu:practice-session:${managedId}`) !== null,
+        aliasedPracticePresent:
+          localStorage.getItem('yomu:practice-session:stage-4c-alias') !== null,
+        unrelatedPracticePresent:
+          localStorage.getItem('yomu:practice-session:stage-4c-keep') !== null,
+      }
+    }
+    finally {
+      database.close()
+    }
+  }, {
+    managedId: managedArticle.id,
+    termId: managedVocabularyTerm.id,
+  })
+}
 
 async function seedArticleInIndexedDb(
   page: Page,
