@@ -17,6 +17,7 @@ import {
   DataValidationError,
   dataStoreNames,
   type AttemptRepository,
+  type ArticleRepository,
   type DataDiagnosticIssue,
   type DataStoreName,
   type EntityRepository,
@@ -53,7 +54,7 @@ class IndexedDbLocalRepositories implements LocalRepositories {
 
   constructor(private readonly database: IDBDatabase) {}
 
-  get articles(): EntityRepository<ArticleRecord> {
+  get articles(): ArticleRepository {
     return topLevelArticleRepository(this)
   }
 
@@ -266,7 +267,7 @@ function createIndexedDbScope(
 function indexedDbArticleRepository(
   transaction: IDBTransaction,
   reportIssue: ReadIssueReporter,
-): EntityRepository<ArticleRecord> {
+): ArticleRepository {
   const base = indexedDbEntityRepository(
     transaction,
     'articles',
@@ -275,6 +276,21 @@ function indexedDbArticleRepository(
   )
   return {
     ...base,
+    add: async (article) => {
+      const value: unknown = article
+      if (!isArticleRecord(value)) {
+        throw new DataValidationError('articles', article.id)
+      }
+      try {
+        await requestToPromise(transaction.objectStore('articles').add(clone(article)))
+      }
+      catch (error) {
+        if (isIndexedDbConstraintError(error)) {
+          throw new DataConstraintError(`Article ${article.id} already exists.`)
+        }
+        throw error
+      }
+    },
     get: async (id) => {
       const article = await base.get(id)
       return article ? reconcileArticleCapabilities(article) : null
@@ -581,8 +597,13 @@ function isIndexedDbConstraintError(error: unknown): boolean {
     && error.name === 'ConstraintError'
 }
 
-function topLevelArticleRepository(owner: IndexedDbLocalRepositories): EntityRepository<ArticleRecord> {
-  return topLevelEntityRepository(owner, 'articles', scope => scope.articles)
+function topLevelArticleRepository(owner: IndexedDbLocalRepositories): ArticleRepository {
+  const base = topLevelEntityRepository(owner, 'articles', scope => scope.articles)
+  return {
+    ...base,
+    add: article => owner.transaction(['articles'], 'readwrite', scope =>
+      scope.articles.add(article)),
+  }
 }
 
 function topLevelAttemptRepository(owner: IndexedDbLocalRepositories): AttemptRepository {

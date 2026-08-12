@@ -269,7 +269,7 @@ test('empty library becomes a persistent reading session and resumes the selecte
 
   const emptyState = page.getByTestId('library-empty-state')
   await expect(emptyState).toBeVisible()
-  await expect(page.getByRole('link', { name: /Today/ })).toHaveCount(1)
+  await expect(emptyState.getByRole('button', { name: /加入并阅读/ })).toBeVisible()
   await expect(page.getByRole('link', { name: '粘贴英文内容' })).toBeInViewport()
   await page.getByRole('link', { name: '粘贴英文内容' }).click()
 

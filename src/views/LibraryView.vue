@@ -7,8 +7,14 @@ import {
   useTemplateRef,
   watch,
 } from 'vue'
+import { isNavigationFailure, useRouter } from 'vue-router'
 
 import { usePlatformServices } from '@/app/platformServices'
+import {
+  BundledSampleDeletionPendingError,
+  BundledSampleIdentityConflictError,
+  startBundledSampleReading,
+} from '@/features/article/startBundledSampleReading'
 import {
   ArticleDeletionCleanupPendingError,
   ArticleDeletionPendingRetryError,
@@ -28,7 +34,7 @@ import type { LibraryArticleManageRequest } from './library/LibraryArticleItem.v
 import ContinueReadingCard from './library/ContinueReadingCard.vue'
 import LibraryEmptyState from './library/LibraryEmptyState.vue'
 import RecommendationCard from './library/RecommendationCard.vue'
-import { todayRecommendation } from './library/libraryRecommendations'
+import { bundledSampleRecommendation } from './library/libraryRecommendations'
 import { usePageHeadingFocus } from './usePageHeadingFocus'
 
 const {
@@ -41,7 +47,9 @@ const {
   refresh,
 } = useLibraryPage()
 const services = usePlatformServices()
+const router = useRouter()
 const isEmpty = computed(() => status.value === 'ready' && library.value.articles.length === 0)
+const sampleSessionOnly = !persistenceAvailable
 const restoreFocusArticleId = shallowRef<string | null>(takeLibraryArticleFocus())
 const libraryRoot = useTemplateRef<HTMLElement>('libraryRoot')
 const managementDetails = shallowRef<ArticleManagementDetails | null>(null)
@@ -51,7 +59,11 @@ const managementPreviousIndex = shallowRef(-1)
 const managementBusy = shallowRef(false)
 const managementErrorMessage = shallowRef('')
 const articleActionMessage = shallowRef('')
+const sampleBusy = shallowRef(false)
+const sampleErrorMessage = shallowRef('')
 let operationVersion = 0
+let sampleOperationVersion = 0
+let sampleFocusReturn: HTMLButtonElement | null = null
 let viewUnmounted = false
 
 usePageHeadingFocus()
@@ -120,7 +132,86 @@ watch(
 onUnmounted(() => {
   viewUnmounted = true
   operationVersion += 1
+  sampleOperationVersion += 1
+  sampleFocusReturn = null
 })
+
+async function handleStartSample(focusReturn: HTMLButtonElement): Promise<void> {
+  if (sampleBusy.value) {
+    return
+  }
+  const version = ++sampleOperationVersion
+  sampleFocusReturn = focusReturn
+  sampleBusy.value = true
+  sampleErrorMessage.value = ''
+  let samplePersisted = false
+  try {
+    const result = await startBundledSampleReading(services)
+    samplePersisted = true
+    if (!isCurrentSampleOperation(version)) {
+      return
+    }
+    const navigationFailure = await router.push({
+      name: 'reader',
+      params: { articleId: result.article.id },
+    })
+    const readerOpened = router.currentRoute.value.name === 'reader'
+      && router.currentRoute.value.params.articleId === result.article.id
+    if (
+      isCurrentSampleOperation(version)
+      && (isNavigationFailure(navigationFailure) || !readerOpened)
+    ) {
+      sampleErrorMessage.value = sampleNavigationErrorMessage
+    }
+  }
+  catch (error) {
+    if (!isCurrentSampleOperation(version)) {
+      return
+    }
+    sampleErrorMessage.value = samplePersisted
+      ? sampleNavigationErrorMessage
+      : error instanceof BundledSampleDeletionPendingError
+        ? '内置样例正在删除或清理旧进度，请稍后重试。'
+        : error instanceof BundledSampleIdentityConflictError
+          ? '无法加入内置样例：该本机文章标识已被其他内容占用。现有内容没有被修改。'
+          : '暂时无法加入内置样例。没有留下不完整的阅读记录，请重试。'
+  }
+  finally {
+    if (isCurrentSampleOperation(version)) {
+      sampleBusy.value = false
+      if (sampleErrorMessage.value) {
+        await restoreSampleActionFocus(version)
+      }
+    }
+  }
+}
+
+const sampleNavigationErrorMessage = '样例已加入，但暂时无法打开。请再次点击“加入并阅读”继续。'
+
+async function restoreSampleActionFocus(version: number): Promise<void> {
+  await nextTick()
+  if (!isCurrentSampleOperation(version)) {
+    return
+  }
+  const originalAction = sampleFocusReturn
+  const target = originalAction?.isConnected && !originalAction.disabled
+    ? originalAction
+    : libraryRoot.value?.querySelector<HTMLButtonElement>('[data-sample-start]:not(:disabled)')
+  sampleFocusReturn = null
+  if (!target) {
+    return
+  }
+  const ownerDocument = target.ownerDocument
+  const activeElement = ownerDocument.activeElement
+  if (
+    activeElement
+    && activeElement !== ownerDocument.body
+    && activeElement !== ownerDocument.documentElement
+  ) {
+    return
+  }
+  target.focus({ preventScroll: true })
+}
 
 async function openManagement(request: LibraryArticleManageRequest): Promise<void> {
   if (managementBusy.value) {
@@ -342,6 +433,10 @@ function isCurrentOperation(version: number): boolean {
   return !viewUnmounted && version === operationVersion
 }
 
+function isCurrentSampleOperation(version: number): boolean {
+  return !viewUnmounted && version === sampleOperationVersion
+}
+
 function reportManagementError(message: string): void {
   if (managementDetails.value) {
     managementErrorMessage.value = message
@@ -412,7 +507,7 @@ async function focusArticleAfterRemoval(
   <div
     ref="libraryRoot"
     class="library-view"
-    :aria-busy="status === 'loading' || managementBusy"
+    :aria-busy="status === 'loading' || managementBusy || sampleBusy"
   >
     <div class="library-view__content">
       <h1 ref="pageHeading" class="library-view__page-title" data-page-heading tabindex="-1">
@@ -435,7 +530,7 @@ async function focusArticleAfterRemoval(
 
       <template v-else>
         <p v-if="!persistenceAvailable" class="library-notice" role="alert">
-          此安装当前只能使用临时存储。为避免刷新后丢失内容，Yomu 已暂停保存新文章。
+          此安装当前只能使用临时存储。Yomu 已暂停导入新文章；你仍可在本次使用期间加入内置样例，刷新或关闭后内容可能丢失。
         </p>
         <p v-if="ignoredRecordCount > 0" class="library-notice" role="status">
           已隔离 {{ ignoredRecordCount }} 条无法读取的记录，其余阅读库仍可使用。
@@ -443,8 +538,21 @@ async function focusArticleAfterRemoval(
         <p v-if="articleActionMessage" class="library-notice" role="alert">
           {{ articleActionMessage }}
         </p>
+        <p
+          v-if="sampleErrorMessage"
+          class="library-notice"
+          data-sample-error
+          role="alert"
+        >
+          {{ sampleErrorMessage }}
+        </p>
 
-        <LibraryEmptyState v-if="isEmpty" />
+        <LibraryEmptyState
+          v-if="isEmpty"
+          :busy="sampleBusy"
+          :session-only="sampleSessionOnly"
+          @start-sample="handleStartSample"
+        />
 
         <section
           v-if="library.continueReading"
@@ -482,8 +590,10 @@ async function focusArticleAfterRemoval(
             推荐阅读
           </h2>
           <RecommendationCard
-            :article="todayRecommendation"
-            :to="{ name: 'legacy' }"
+            :article="bundledSampleRecommendation"
+            :busy="sampleBusy"
+            :session-only="sampleSessionOnly"
+            @start-sample="handleStartSample"
           />
         </section>
       </template>

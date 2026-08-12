@@ -6,20 +6,22 @@ import {
 import {
   clearRetiredReadingProgressJournals,
   markReadingProgressArticleRetired,
+  readingProgressArticleIsRetired,
+  rollbackReadingProgressArticleRetirement,
   retryRetiredReadingProgressJournalCleanup,
 } from '@/features/reader/progressJournal'
 import type { PlatformServices, PreferencesStore } from '@/platform/contracts'
-
-const articleDeletionIntentPrefix = 'article-deletion-intent:v1:'
+import {
+  articleDeletionIntentKey,
+  articleDeletionIntentPrefix,
+  isArticleDeletionIntent,
+  isBoundedArticleIdentifier,
+  type ArticleDeletionIntent,
+} from '@/features/article/articleDeletionFence'
 
 export interface ArticleDeletionInput {
   articleId: string
   deleteContextlessTerms: boolean
-}
-
-interface ArticleDeletionIntent extends ArticleDeletionInput {
-  schemaVersion: 1
-  kind: 'article-deletion-intent'
 }
 
 export class ArticleDeletionCleanupPendingError extends Error {
@@ -50,13 +52,29 @@ export type DeleteArticleFromDeviceResult =
   | { kind: 'deleted', result: DeleteArticleResult }
   | { kind: 'already-deleted' }
 
+const articleDeletionQueues = new WeakMap<
+  PreferencesStore,
+  Map<string, Promise<void>>
+>()
+
 export async function deleteArticleFromDevice(
   services: PlatformServices,
   input: ArticleDeletionInput,
 ): Promise<DeleteArticleFromDeviceResult> {
-  if (!isBoundedIdentifier(input.articleId)) {
+  if (!isBoundedArticleIdentifier(input.articleId)) {
     throw new Error('Article deletion requires a valid article identifier.')
   }
+  return serializeArticleDeletion(
+    services.preferences,
+    input.articleId,
+    () => deleteArticleFromDeviceSerialized(services, input),
+  )
+}
+
+async function deleteArticleFromDeviceSerialized(
+  services: PlatformServices,
+  input: ArticleDeletionInput,
+): Promise<DeleteArticleFromDeviceResult> {
   await services.legacyImportedContent.deleteArticle(input.articleId)
   const intent = await storeArticleDeletionIntent(
     services.preferences,
@@ -69,6 +87,18 @@ export async function deleteArticleFromDevice(
     )
   }
   catch (error) {
+    if (usesSplitSessionDeletionState(services)) {
+      const rollback = await rollbackSessionDeletionFence(
+        services.preferences,
+        intent,
+      )
+      throw new ArticleDeletionPendingRetryError(
+        intent.articleId,
+        rollback.progressRetired,
+        false,
+        { cause: combineDeletionAndRollbackErrors(error, rollback.error) },
+      )
+    }
     throw new ArticleDeletionPendingRetryError(
       intent.articleId,
       false,
@@ -96,6 +126,18 @@ export async function deleteArticleFromDevice(
         )
       }
       return { kind: 'already-deleted' }
+    }
+    if (usesSplitSessionDeletionState(services)) {
+      const rollback = await rollbackSessionDeletionFence(
+        services.preferences,
+        intent,
+      )
+      throw new ArticleDeletionPendingRetryError(
+        intent.articleId,
+        rollback.progressRetired,
+        false,
+        { cause: combineDeletionAndRollbackErrors(error, rollback.error) },
+      )
     }
     throw new ArticleDeletionPendingRetryError(
       intent.articleId,
@@ -132,31 +174,58 @@ export async function recoverPendingArticleDeletions(
       || key !== articleDeletionIntentKey(value.articleId)) {
       continue
     }
-    try {
-      await markReadingProgressArticleRetired(
-        services.preferences,
-        value.articleId,
-      )
-      try {
-        await deleteArticle(services.repositories, value)
-      }
-      catch (error) {
-        if (!(error instanceof ArticleManagementNotFoundError)) {
-          continue
+    await serializeArticleDeletion(
+      services.preferences,
+      value.articleId,
+      async () => {
+        if (usesSplitSessionDeletionState(services)) {
+          await recoverSessionDeletionFence(services, value)
+          return
         }
-      }
-      publishArticleDeleted(services, value.articleId)
-      recoveredArticleIds.add(value.articleId)
-      try {
-        await clearRetiredReadingProgressJournals(services.preferences, value.articleId)
-        await services.preferences.compareAndRemove(key, value)
-      }
-      catch {}
-    }
-    catch {}
+        try {
+          await markReadingProgressArticleRetired(
+            services.preferences,
+            value.articleId,
+          )
+          try {
+            await deleteArticle(services.repositories, value)
+          }
+          catch (error) {
+            if (!(error instanceof ArticleManagementNotFoundError)) {
+              return
+            }
+          }
+          publishArticleDeleted(services, value.articleId)
+          recoveredArticleIds.add(value.articleId)
+          try {
+            await clearRetiredReadingProgressJournals(services.preferences, value.articleId)
+            await services.preferences.compareAndRemove(key, value)
+          }
+          catch {}
+        }
+        catch {}
+      },
+    )
   }
-  await retryRetiredReadingProgressJournalCleanup(services.preferences).catch(() => {})
+  if (!usesSplitSessionDeletionState(services)) {
+    await retryRetiredReadingProgressJournalCleanup(services.preferences).catch(() => {})
+  }
   return [...recoveredArticleIds]
+}
+
+async function recoverSessionDeletionFence(
+  services: Pick<PlatformServices, 'preferences' | 'repositories' | 'articleEvents'>,
+  intent: ArticleDeletionIntent,
+): Promise<void> {
+  try {
+    if (await services.repositories.articles.get(intent.articleId)) {
+      await rollbackSessionDeletionFence(services.preferences, intent)
+      return
+    }
+    publishArticleDeleted(services, intent.articleId)
+    await finalizeArticleDeletion(services.preferences, intent)
+  }
+  catch {}
 }
 
 function publishArticleDeleted(
@@ -203,23 +272,79 @@ async function storeArticleDeletionIntent(
   return next
 }
 
-function articleDeletionIntentKey(articleId: string): string {
-  return `${articleDeletionIntentPrefix}${encodeURIComponent(articleId)}`
-}
-
-function isArticleDeletionIntent(value: unknown): value is ArticleDeletionIntent {
-  if (!value || typeof value !== 'object') {
-    return false
+async function rollbackSessionDeletionFence(
+  preferences: PreferencesStore,
+  intent: ArticleDeletionIntent,
+): Promise<{ progressRetired: boolean, error?: unknown }> {
+  try {
+    const removedIntent = await preferences.compareAndRemove(
+      articleDeletionIntentKey(intent.articleId),
+      intent,
+    )
+    if (removedIntent) {
+      await rollbackReadingProgressArticleRetirement(
+        preferences,
+        intent.articleId,
+      )
+    }
+    return {
+      progressRetired: await readingProgressArticleIsRetired(
+        preferences,
+        intent.articleId,
+      ),
+    }
   }
-  const record = value as Record<string, unknown>
-  return record.schemaVersion === 1
-    && record.kind === 'article-deletion-intent'
-    && isBoundedIdentifier(record.articleId)
-    && typeof record.deleteContextlessTerms === 'boolean'
+  catch (error) {
+    return {
+      progressRetired: await readingProgressArticleIsRetired(
+        preferences,
+        intent.articleId,
+      ).catch(() => true),
+      error,
+    }
+  }
 }
 
-function isBoundedIdentifier(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.trim().length > 0
-    && value.length <= 512
+function combineDeletionAndRollbackErrors(
+  deletionError: unknown,
+  rollbackError: unknown,
+): unknown {
+  return rollbackError === undefined
+    ? deletionError
+    : new AggregateError(
+        [deletionError, rollbackError],
+        'Article deletion failed and its session fence could not be fully rolled back.',
+      )
+}
+
+function serializeArticleDeletion<T>(
+  preferences: PreferencesStore,
+  articleId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let queues = articleDeletionQueues.get(preferences)
+  if (!queues) {
+    queues = new Map()
+    articleDeletionQueues.set(preferences, queues)
+  }
+  const preceding = queues.get(articleId) ?? Promise.resolve()
+  const result = preceding.then(operation, operation)
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  )
+  queues.set(articleId, tail)
+  void tail.then(() => {
+    if (queues?.get(articleId) === tail) {
+      queues.delete(articleId)
+    }
+  })
+  return result
+}
+
+function usesSplitSessionDeletionState(
+  services: Pick<PlatformServices, 'preferences' | 'repositories'>,
+): boolean {
+  return services.preferences.persistence === 'session'
+    && services.repositories.persistence === 'persistent'
 }

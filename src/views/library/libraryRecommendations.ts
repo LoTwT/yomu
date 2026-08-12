@@ -1,3 +1,5 @@
+import { publicDomainSampleArticle } from '@/features/article/publicDomainSample'
+
 export interface LibraryRecommendation {
   id: string
   title: string
@@ -9,11 +11,11 @@ export interface LibraryRecommendation {
 
 export const LEGACY_TODAY_ARTICLE_ID = 'daily-en-2026-05-25-why-the-brain-loves-sleep'
 
-export const todayRecommendation: LibraryRecommendation = {
-  id: LEGACY_TODAY_ARTICLE_ID,
-  title: 'Why the Brain Loves Sleep',
-  summary: '用一篇内置英文样例体验逐句阅读和朗读。',
-  sourceLabel: 'Today 示例',
-  levelLabel: 'B1',
-  estimatedMinutes: 5,
+export const bundledSampleRecommendation: LibraryRecommendation = {
+  id: publicDomainSampleArticle.id,
+  title: publicDomainSampleArticle.title,
+  summary: publicDomainSampleArticle.deck,
+  sourceLabel: publicDomainSampleArticle.publicDomainMetadata?.sourceName ?? '公共领域样例',
+  levelLabel: publicDomainSampleArticle.level,
+  estimatedMinutes: publicDomainSampleArticle.estimatedReadTimeMinutes,
 }

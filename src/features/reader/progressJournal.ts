@@ -563,11 +563,24 @@ export async function markReadingProgressArticleRetired(
     retiredArticleKey(articleId),
     current => isRetiredReadingProgressArticle(current, articleId)
       ? current
-      : {
-          schemaVersion: 1,
-          kind: 'retired-reading-progress-article',
-          articleId,
-        },
+      : retiredReadingProgressArticle(articleId),
+  )
+}
+
+/**
+ * Removes only the exact v1 marker written by `markReadingProgressArticleRetired`.
+ * Callers must serialize this with every deletion operation for the same article.
+ */
+export async function rollbackReadingProgressArticleRetirement(
+  preferences: PreferencesStore,
+  articleId: string,
+): Promise<boolean> {
+  if (!isBoundedId(articleId)) {
+    throw new Error('Reading progress journal retirement rollback requires a valid article ID.')
+  }
+  return preferences.compareAndRemove(
+    retiredArticleKey(articleId),
+    retiredReadingProgressArticle(articleId),
   )
 }
 
@@ -2136,6 +2149,16 @@ function retiredArticleKey(articleId: string): string {
   return `${retiredArticleKeyPrefix}${encodeURIComponent(articleId)}`
 }
 
+function retiredReadingProgressArticle(
+  articleId: string,
+): RetiredReadingProgressArticle {
+  return {
+    schemaVersion: 1,
+    kind: 'retired-reading-progress-article',
+    articleId,
+  }
+}
+
 function isRetiredReadingProgressArticle(
   value: unknown,
   articleId?: string,
@@ -2147,7 +2170,7 @@ function isRetiredReadingProgressArticle(
     && (articleId === undefined || value.articleId === articleId)
 }
 
-async function readingProgressArticleIsRetired(
+export async function readingProgressArticleIsRetired(
   preferences: PreferencesStore,
   articleId: string,
 ): Promise<boolean> {

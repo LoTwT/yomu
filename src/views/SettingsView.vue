@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
-import { RouterLink } from 'vue-router'
 
 import { usePlatformInitialization } from '@/app/platformInitialization'
 import { usePlatformServices } from '@/app/platformServices'
@@ -229,9 +228,6 @@ usePageHeadingFocus()
         </p>
       </section>
     </div>
-    <RouterLink class="settings-view__legacy-link" :to="{ name: 'legacy' }">
-      打开 Today 阅读
-    </RouterLink>
   </div>
 </template>
 
@@ -412,12 +408,4 @@ usePageHeadingFocus()
   font-size: 0.9rem;
 }
 
-.settings-view__legacy-link {
-  display: inline-flex;
-  align-items: center;
-  min-block-size: 2.75rem;
-  margin-block-start: 1.5rem;
-  color: var(--text-accent);
-  font-weight: 700;
-}
 </style>

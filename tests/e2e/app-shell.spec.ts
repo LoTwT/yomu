@@ -16,7 +16,7 @@ for (const viewport of responsiveViewports) {
       const actions = [...document.querySelectorAll<HTMLAnchorElement>('.shell-actions__link')]
       const touchTargets = [
         ...document.querySelectorAll<HTMLElement>(
-          '.brand-link, .primary-nav__link, .shell-actions__link, [data-testid="library-empty-state"] a, .recommendation-card__link',
+          '.brand-link, .primary-nav__link, .shell-actions__link, [data-testid="library-empty-state"] a, [data-testid="library-empty-state"] button, .recommendation-card__action',
         ),
       ]
 

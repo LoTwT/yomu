@@ -303,6 +303,11 @@ function defineRepositoryConformance(label: string, factory: RepositoryFactory):
 
       const operations = [
         {
+          name: 'add' as const,
+          run: () => repositories.transaction(['articles'], 'readonly', scope =>
+            scope.articles.add(createArticle('article-created-readonly'))),
+        },
+        {
           name: 'put' as const,
           run: () => repositories.transaction(['articles'], 'readonly', scope =>
             scope.articles.put(createArticle('article-b'))),
@@ -328,6 +333,32 @@ function defineRepositoryConformance(label: string, factory: RepositoryFactory):
       }
 
       expect(await repositories.articles.list()).toEqual([article])
+    })
+
+    it('creates articles without replacing an existing physical primary key', async () => {
+      const article = createArticle('article-create-only')
+      const replacement = { ...article, title: 'Replacement must not win' }
+
+      await repositories.articles.add(article)
+      await expect(repositories.articles.add(replacement))
+        .rejects.toBeInstanceOf(DataConstraintError)
+
+      expect(await repositories.articles.get(article.id)).toEqual(article)
+    })
+
+    it('validates create-only articles before writing them', async () => {
+      const malformed = {
+        ...createArticle('article-create-only-invalid'),
+        sentences: [],
+      }
+
+      await expect(repositories.articles.add(malformed))
+        .rejects.toMatchObject({
+          name: 'DataValidationError',
+          store: 'articles',
+          recordId: malformed.id,
+        })
+      expect(await repositories.articles.count()).toBe(0)
     })
 
     it('enforces repository-level natural-key constraints', async () => {
