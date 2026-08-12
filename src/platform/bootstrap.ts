@@ -53,7 +53,17 @@ export async function createYomuApp(
   )
   app.provide(themeControllerKey, themeController)
   if (appRouter) {
-    app.use(appRouter)
+    try {
+      app.use(appRouter)
+      // Keep the shell non-interactive until the initial route owns its history entry.
+      await appRouter.isReady()
+    }
+    catch (error) {
+      if (ownsThemeController) {
+        themeController.dispose()
+      }
+      throw error
+    }
   }
 
   return app
