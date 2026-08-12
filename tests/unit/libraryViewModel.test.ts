@@ -57,6 +57,41 @@ describe('library view model', () => {
       status: '已完成',
     })
   })
+
+  it('sorts by reading activity instead of treating a metadata edit as a recent open', () => {
+    const renamed = {
+      ...createArticle('renamed', 'Renamed article'),
+      createdAt: '2026-08-01T08:00:00.000Z',
+      updatedAt: '2026-08-10T08:00:00.000Z',
+    }
+    const recentlyRead = createArticle('recently-read', 'Recently read article')
+    const result = createLibraryViewModel(
+      [renamed, recentlyRead],
+      [
+        createAttempt('renamed', '2026-08-02T08:00:00.000Z', 1),
+        createAttempt('recently-read', '2026-08-04T08:00:00.000Z', 1),
+      ],
+    )
+
+    expect(result.articles.map(article => article.id))
+      .toEqual(['recently-read', 'renamed'])
+  })
+
+  it('uses creation time for articles that have never been opened', () => {
+    const olderEdited = {
+      ...createArticle('older-edited', 'Older edited article'),
+      createdAt: '2026-08-01T08:00:00.000Z',
+      updatedAt: '2026-08-10T08:00:00.000Z',
+    }
+    const newer = {
+      ...createArticle('newer', 'Newer article'),
+      createdAt: '2026-08-03T08:00:00.000Z',
+      updatedAt: '2026-08-03T08:00:00.000Z',
+    }
+
+    expect(createLibraryViewModel([olderEdited, newer], []).articles.map(article => article.id))
+      .toEqual(['newer', 'older-edited'])
+  })
 })
 
 function createArticle(id: string, title: string): ArticleRecord {

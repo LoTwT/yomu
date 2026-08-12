@@ -160,6 +160,17 @@ export interface BackNavigationAdapter {
   subscribe: (listener: (event: BackNavigationEvent) => void) => () => void
 }
 
+export interface ArticleDeletedEvent {
+  articleId: string
+}
+
+export interface ArticleEventsAdapter {
+  publishDeleted: (event: ArticleDeletedEvent) => void
+  subscribeDeleted: (
+    listener: (event: ArticleDeletedEvent) => void,
+  ) => () => void
+}
+
 export interface ReadingAttemptCompletedEvent {
   attempt: ReadingAttempt & {
     status: 'completed'
@@ -185,6 +196,10 @@ export interface ShareImportAdapter {
   subscribe: (listener: (payload: SharedImportPayload) => void) => () => void
 }
 
+export interface LegacyImportedContentAdapter {
+  deleteArticle: (articleId: string) => Promise<void>
+}
+
 export interface PlatformServices {
   kind: PlatformKind
   capabilities: Readonly<CapabilitySnapshot>
@@ -199,8 +214,10 @@ export interface PlatformServices {
   articleExtractor: ArticleContentExtractor
   externalNavigation: ExternalNavigationAdapter
   backNavigation: BackNavigationAdapter
+  articleEvents?: ArticleEventsAdapter
   readingAttemptEvents?: ReadingAttemptEventsAdapter
   shareInbox: ShareImportAdapter
+  legacyImportedContent: LegacyImportedContentAdapter
 }
 
 export class PlatformCapabilityError extends Error {

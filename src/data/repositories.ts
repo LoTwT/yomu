@@ -38,7 +38,7 @@ export class DataConstraintError extends Error {
 export class DataReadonlyTransactionError extends DataConstraintError {
   constructor(
     readonly store: DataStoreName,
-    readonly operation: 'put' | 'delete' | 'clear',
+    readonly operation: 'put' | 'delete' | 'deleteByArticle' | 'clear',
   ) {
     super(`Cannot ${operation} ${store} records inside a readonly transaction.`)
     this.name = 'DataReadonlyTransactionError'
@@ -57,6 +57,8 @@ export interface EntityRepository<T extends { id: string }> {
 export interface AttemptRepository extends EntityRepository<ReadingAttempt> {
   listByArticle: (articleId: string) => Promise<ReadingAttempt[]>
   getActiveByArticle: (articleId: string) => Promise<ReadingAttempt | null>
+  /** Deletes every indexed physical record, even when entity validation fails. */
+  deleteByArticle: (articleId: string) => Promise<number>
 }
 
 export interface VocabularyTermRepository extends EntityRepository<VocabularyTerm> {
@@ -66,6 +68,8 @@ export interface VocabularyTermRepository extends EntityRepository<VocabularyTer
 export interface VocabularyContextRepository extends EntityRepository<VocabularyContext> {
   listByTerm: (termId: string) => Promise<VocabularyContext[]>
   listByArticle: (articleId: string) => Promise<VocabularyContext[]>
+  /** Deletes every indexed physical record, even when entity validation fails. */
+  deleteByArticle: (articleId: string) => Promise<number>
 }
 
 export interface RepositoryScope {

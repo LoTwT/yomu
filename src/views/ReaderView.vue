@@ -164,6 +164,21 @@ watch(articleCapabilities, (capabilities) => {
   }
 })
 
+watch(status, (nextStatus) => {
+  if (nextStatus !== 'missing' && nextStatus !== 'error') {
+    return
+  }
+  closeWordCard()
+  void settingsHistoryLayer.retire()
+  showIpa.value = false
+})
+
+watch(settingsOpen, (isOpen) => {
+  if (isOpen && (status.value === 'missing' || status.value === 'error')) {
+    void settingsHistoryLayer.retire()
+  }
+})
+
 function takePendingRouteTransition(to: string, from: string) {
   const transitionIndex = pendingRouteTransitions.findIndex(transition =>
     transition.from === from && transition.to === to)

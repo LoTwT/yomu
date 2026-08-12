@@ -28,6 +28,8 @@ export interface RouteHistoryLayerRegistration {
 export interface RouteHistoryLayerController {
   activate: () => boolean
   deactivate: () => Promise<void>
+  /** Closes the layer and prevents its current marker from reopening it. */
+  retire: () => Promise<void>
   dispose: () => void
 }
 
@@ -69,6 +71,7 @@ interface RouteHistoryLayerRegistrationState extends RouteHistoryLayerRegistrati
   notifyOnDeactivate: boolean
   phase: 'closed' | 'closing' | 'open'
   resolveClose: (() => void) | null
+  retiredMarkers: RouteHistoryLayerMarker[]
   token: symbol
 }
 
@@ -397,6 +400,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
         notifyOnDeactivate: true,
         phase: 'closed',
         resolveClose: null,
+        retiredMarkers: [],
         token: Symbol(`route-history-layer:${registration.id}`),
       }
       historyLayers.push(layer)
@@ -405,6 +409,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
       return {
         activate: () => activateHistoryLayer(layer),
         deactivate: () => deactivateHistoryLayer(layer),
+        retire: () => retireHistoryLayer(layer),
         dispose: () => disposeHistoryLayer(layer),
       }
     },
@@ -516,6 +521,20 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
     return closePromise
   }
 
+  async function retireHistoryLayer(
+    layer: RouteHistoryLayerRegistrationState,
+  ): Promise<void> {
+    const marker = layer.marker
+    if (marker && !layer.retiredMarkers.some(candidate =>
+      historyLayerMarkersMatch(candidate, marker))) {
+      layer.retiredMarkers.push(marker)
+    }
+    await deactivateHistoryLayer(layer)
+    if (marker && layer.marker && historyLayerMarkersMatch(layer.marker, marker)) {
+      layer.marker = null
+    }
+  }
+
   function disposeHistoryLayer(layer: RouteHistoryLayerRegistrationState): void {
     if (layer.disposed) {
       return
@@ -564,6 +583,7 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
     }
     const marker = readCurrentHistoryLayerMarker()
     if (!marker
+      || historyLayerMarkerWasRetired(layer, marker)
       || sourceHistory.location !== layer.origin()
       || !historyLayerMarkerBelongsTo(layer, marker)
       || historyLayers.some(candidate => candidate !== layer && candidate.phase !== 'closed')) {
@@ -601,6 +621,14 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
 
     const marker = readCurrentHistoryLayerMarker()
     if (!marker) {
+      return false
+    }
+    const retiredOwner = historyLayers.find(candidate =>
+      !candidate.disposed && historyLayerMarkerWasRetired(candidate, marker))
+    if (retiredOwner) {
+      retiredOwner.retiredMarkers = retiredOwner.retiredMarkers.filter(candidate =>
+        !historyLayerMarkersMatch(candidate, marker))
+      stripCurrentHistoryLayerMarker(to, marker)
       return false
     }
     const layer = historyLayers.find(candidate =>
@@ -952,6 +980,13 @@ export function createCoordinatedRouterHistory(sourceHistory: RouterHistory): {
     marker: RouteHistoryLayerMarker,
   ): boolean {
     return layer.id === marker.id && layer.origin() === marker.origin
+  }
+
+  function historyLayerMarkerWasRetired(
+    layer: RouteHistoryLayerRegistrationState,
+    marker: RouteHistoryLayerMarker,
+  ): boolean {
+    return layer.retiredMarkers.some(candidate => historyLayerMarkersMatch(candidate, marker))
   }
 
   function historyLayerMarkersMatch(

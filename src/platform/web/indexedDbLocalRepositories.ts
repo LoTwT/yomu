@@ -324,6 +324,10 @@ function indexedDbAttemptRepository(
       )
       return values[0] ?? null
     },
+    deleteByArticle: articleId => deleteIndexedEntriesByPrimaryKey(
+      transaction.objectStore('attempts').index('byArticleId'),
+      articleId,
+    ),
   }
 }
 
@@ -416,6 +420,10 @@ function indexedDbVocabularyContextRepository(
       isVocabularyContext,
       reportIssue,
     )),
+    deleteByArticle: articleId => deleteIndexedEntriesByPrimaryKey(
+      transaction.objectStore('vocabularyContexts').index('byArticleId'),
+      articleId,
+    ),
   }
 }
 
@@ -528,6 +536,31 @@ function readCursorEntries(
   })
 }
 
+function deleteIndexedEntriesByPrimaryKey(
+  index: IDBIndex,
+  query: IDBValidKey | IDBKeyRange,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let deletedCount = 0
+    const request = index.openKeyCursor(query)
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) {
+        resolve(deletedCount)
+        return
+      }
+
+      const deletion = index.objectStore.delete(cursor.primaryKey)
+      deletion.onsuccess = () => {
+        deletedCount += 1
+        cursor.continue()
+      }
+      deletion.onerror = () => reject(deletion.error ?? new Error('IndexedDB deletion failed.'))
+    }
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB cursor read failed.'))
+  })
+}
+
 function formatIndexedDbKey(key: IDBValidKey): string {
   if (Array.isArray(key)) {
     return JSON.stringify(key)
@@ -560,6 +593,8 @@ function topLevelAttemptRepository(owner: IndexedDbLocalRepositories): AttemptRe
       scope.attempts.listByArticle(articleId)),
     getActiveByArticle: articleId => owner.transaction(['attempts'], 'readonly', scope =>
       scope.attempts.getActiveByArticle(articleId)),
+    deleteByArticle: articleId => owner.transaction(['attempts'], 'readwrite', scope =>
+      scope.attempts.deleteByArticle(articleId)),
   }
 }
 
@@ -580,6 +615,11 @@ function topLevelVocabularyContextRepository(owner: IndexedDbLocalRepositories):
       scope.vocabularyContexts.listByTerm(termId)),
     listByArticle: articleId => owner.transaction(['vocabularyContexts'], 'readonly', scope =>
       scope.vocabularyContexts.listByArticle(articleId)),
+    deleteByArticle: articleId => owner.transaction(
+      ['vocabularyContexts'],
+      'readwrite',
+      scope => scope.vocabularyContexts.deleteByArticle(articleId),
+    ),
   }
 }
 

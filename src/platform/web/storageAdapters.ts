@@ -2,6 +2,7 @@ import type {
   MutableLegacyKeyValueSource,
 } from '@/data/legacyMigration'
 import type {
+  LegacyImportedContentAdapter,
   PreferencesStore,
   SecretPersistence,
   SecretStore,
@@ -9,6 +10,9 @@ import type {
 
 const preferencePrefix = 'yomu:v2:preference:'
 const secretPrefix = 'yomu:v2:secret:'
+const legacyImportedArticleIndexKey = 'yomu:imported-article:index'
+const legacyImportedArticlePrefix = 'yomu:imported-article:'
+const legacyPracticeSessionPrefix = 'yomu:practice-session:'
 
 export class WebPreferencesStore implements PreferencesStore {
   readonly persistence = 'device' as const
@@ -224,6 +228,29 @@ export class WebLegacyStorageSource implements MutableLegacyKeyValueSource {
   }
 }
 
+export class WebLegacyImportedContentAdapter implements LegacyImportedContentAdapter {
+  constructor(private readonly storage: Storage | null) {}
+
+  async deleteArticle(articleId: string): Promise<void> {
+    const storage = this.storage
+    if (!storage) {
+      return
+    }
+
+    const indexUpdate = readLegacyIndexWithoutArticle(storage, articleId)
+    const practiceSessionKeys = readLegacyPracticeSessionKeys(storage, articleId)
+
+    storage.removeItem(`${legacyImportedArticlePrefix}${articleId}`)
+    if (indexUpdate.kind === 'replace') {
+      storage.setItem(legacyImportedArticleIndexKey, JSON.stringify(indexUpdate.value))
+    }
+    else if (indexUpdate.kind === 'remove') {
+      storage.removeItem(legacyImportedArticleIndexKey)
+    }
+    practiceSessionKeys.forEach(key => storage.removeItem(key))
+  }
+}
+
 export function isStorageUsable(storage: Storage | null | undefined): storage is Storage {
   if (!storage) {
     return false
@@ -248,6 +275,67 @@ function removeNamespacedKeys(storage: Storage, prefix: string): void {
     }
   }
   keys.forEach(key => storage.removeItem(key))
+}
+
+function readLegacyIndexWithoutArticle(
+  storage: Storage,
+  articleId: string,
+):
+  | { kind: 'unchanged' }
+  | { kind: 'remove' }
+  | { kind: 'replace', value: unknown[] } {
+  const raw = storage.getItem(legacyImportedArticleIndexKey)
+  if (raw === null) {
+    return { kind: 'unchanged' }
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) {
+      return { kind: 'remove' }
+    }
+    const filtered = parsed.filter((item) => {
+      const record = isRecord(item) ? item : null
+      return record?.articleId !== articleId
+    })
+    return filtered.length === parsed.length
+      ? { kind: 'unchanged' }
+      : { kind: 'replace', value: filtered }
+  }
+  catch {
+    // A corrupt index cannot be safely filtered. It is derived metadata, so
+    // remove it instead of claiming permanent deletion while retaining an
+    // unreadable record that may still identify the deleted article.
+    return { kind: 'remove' }
+  }
+}
+
+function readLegacyPracticeSessionKeys(storage: Storage, articleId: string): string[] {
+  const exactKey = `${legacyPracticeSessionPrefix}${articleId}`
+  const keys: string[] = []
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index)
+    if (key?.startsWith(legacyPracticeSessionPrefix)) {
+      keys.push(key)
+    }
+  }
+  return keys.filter((key) => {
+    if (key === exactKey) {
+      // This is the canonical key produced by the legacy writer. Delete it by
+      // identity even if a partial write left its JSON unreadable.
+      return true
+    }
+    const raw = storage.getItem(key)
+    if (raw === null) {
+      return false
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      return isRecord(parsed) && parsed.articleId === articleId
+    }
+    catch {
+      return false
+    }
+  })
 }
 
 function scrubLegacyProviderKey(storage: Storage, storageKey: string, path: readonly string[]): void {

@@ -43,6 +43,89 @@ afterEach(() => {
 })
 
 describe('ReaderView lifecycle navigation', () => {
+  it('clears article interaction layers when another context deletes the article', async () => {
+    const article = createArticle()
+    article.capabilities.tokenMeaning = 'partial'
+    article.sentences[0]!.tokens = [{
+      id: `${article.id}:s1:t1`,
+      text: 'route',
+      kind: 'word',
+      meaning: '路线',
+    }]
+    const { harness, host, interactionLayer, router } = await mountReaderHistory(article)
+
+    host.querySelector<HTMLElement>('[data-word-token-id]')?.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('dialog.reader-word-card-overlay[open]'),
+    ).not.toBeNull())
+
+    harness.articleEvents.publishDeleted({ articleId: article.id })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('找不到这篇文章'))
+    expect(host.querySelector('dialog.reader-word-card-overlay')).toBeNull()
+    expect(interactionLayer.activeLayerId.value).toBeNull()
+
+    await expect(router.push({ name: 'library' })).resolves.toBeUndefined()
+    expect(router.currentRoute.value.name).toBe('library')
+  })
+
+  it('retires the Reader settings history layer when the article is deleted', async () => {
+    const { article, harness, host, repositories, router } = await mountReaderHistory()
+    host.querySelector<HTMLButtonElement>('[aria-label="阅读设置"]')?.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('#reader-settings[open]'),
+    ).not.toBeNull())
+
+    harness.articleEvents.publishDeleted({ articleId: article.id })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('找不到这篇文章'))
+    await settleMicrotasks()
+    expect(host.querySelector('#reader-settings')).toBeNull()
+
+    router.forward()
+    await settleMicrotasks()
+    expect(router.currentRoute.value.fullPath).toBe(`/read/${article.id}`)
+    expect(host.querySelector('#reader-settings')).toBeNull()
+
+    const nextArticle = createArticle('article-route-after-deletion')
+    await repositories.articles.put(nextArticle)
+    await expect(router.push(`/read/${nextArticle.id}`)).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(host.querySelector(
+      `[data-sentence-id="${nextArticle.id}:s1"]`,
+    )).not.toBeNull())
+    host.querySelector<HTMLButtonElement>('[aria-label="阅读设置"]')?.click()
+    await vi.waitFor(() => expect(host.querySelector('#reader-settings[open]')).not.toBeNull())
+  })
+
+  it('closes cached word UI when active article revalidation fails', async () => {
+    const article = createArticle()
+    article.capabilities.tokenMeaning = 'partial'
+    article.sentences[0]!.tokens = [{
+      id: `${article.id}:s1:t1`,
+      text: 'route',
+      kind: 'word',
+      meaning: '路线',
+    }]
+    const { harness, host, repositories } = await mountReaderHistory(article)
+    host.querySelector<HTMLElement>('[data-word-token-id]')?.click()
+    await vi.waitFor(() => expect(
+      host.querySelector('dialog.reader-word-card-overlay[open]'),
+    ).not.toBeNull())
+
+    const originalTransaction = repositories.transaction.bind(repositories)
+    repositories.transaction = async (...args) => {
+      if (args[1] === 'readonly' && args[0].length === 1 && args[0][0] === 'articles') {
+        throw new Error('article presence could not be checked')
+      }
+      return originalTransaction(...args)
+    }
+    harness.lifecycle.emit('background')
+    harness.lifecycle.emit('active')
+
+    await vi.waitFor(() => expect(host.textContent).toContain('暂时无法打开'))
+    expect(host.querySelector('dialog.reader-word-card-overlay')).toBeNull()
+  })
+
   it('keeps the latest same-target transition latched until it succeeds', async () => {
     const article = createArticle()
     const repositories = createMemoryLocalRepositories({ articles: [article] })
@@ -1001,8 +1084,7 @@ function createReaderTestRouter(routes: RouteRecordRaw[]) {
   return router
 }
 
-async function mountReaderHistory() {
-  const article = createArticle()
+async function mountReaderHistory(article = createArticle()) {
   const repositories = createMemoryLocalRepositories({ articles: [article] })
   const harness = createFakePlatformServices({ repositories })
   const interactionLayer = createInteractionLayerController()
@@ -1047,7 +1129,7 @@ async function mountReaderHistory() {
     host.querySelector('[data-sentence-id="article-route:s1"]'),
   ).not.toBeNull())
 
-  return { app, article, host, interactionLayer, router }
+  return { app, article, harness, host, interactionLayer, repositories, router }
 }
 
 async function settleMicrotasks(): Promise<void> {

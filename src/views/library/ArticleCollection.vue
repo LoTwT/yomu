@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import LibraryArticleItem from './LibraryArticleItem.vue'
+import LibraryArticleItem, {
+  type LibraryArticleManageRequest,
+} from './LibraryArticleItem.vue'
 import type { LibraryArticleViewModel } from '@/features/library/libraryViewModel'
 
 defineProps<{
   articles: readonly LibraryArticleViewModel[]
   restoreFocusArticleId?: string | null
+}>()
+
+const emit = defineEmits<{
+  manage: [request: LibraryArticleManageRequest]
 }>()
 </script>
 
@@ -15,6 +21,7 @@ defineProps<{
       :key="article.id"
       :article="article"
       :restore-focus="article.id === restoreFocusArticleId"
+      @manage="emit('manage', $event)"
     />
   </ol>
 </template>

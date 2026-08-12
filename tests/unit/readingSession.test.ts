@@ -333,7 +333,20 @@ describe('useReadingSession', () => {
       activeDurationSec: 2,
     })
 
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let markValidationSettled!: () => void
+    const validationSettled = new Promise<void>(resolve => markValidationSettled = resolve)
+    repositories.transaction = async (...args) => {
+      const result = await originalTransaction(...args)
+      if (args[1] === 'readonly'
+        && args[0].length === 1
+        && args[0][0] === 'articles') {
+        markValidationSettled()
+      }
+      return result
+    }
     harness.lifecycle.emit('active')
+    await validationSettled
     await Promise.resolve()
     expect(session.isPlaying.value).toBe(false)
     expect(session.playingSentenceId.value).toBeNull()
@@ -343,6 +356,162 @@ describe('useReadingSession', () => {
     await session.suspend()
     expect(await repositories.attempts.getActiveByArticle(article.id))
       .toMatchObject({ activeDurationSec: 4 })
+  })
+
+  it('drops the active article and cancels a late speech handle after a deletion event', async () => {
+    const article = createArticle('article-deleted-event')
+    const { session, harness } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+
+    let resolveHandle!: (handle: SpeechPlaybackHandle) => void
+    let lateCancelCount = 0
+    harness.speech.speak = (request) => {
+      request.onStart?.()
+      return new Promise((resolve) => {
+        resolveHandle = resolve
+      })
+    }
+    const pendingPlayback = session.togglePlayback()
+    await vi.waitFor(() => expect(session.isPlaying.value).toBe(true))
+
+    harness.articleEvents.publishDeleted({ articleId: article.id })
+    resolveHandle({
+      pause: () => {},
+      resume: () => {},
+      cancel: () => {
+        lateCancelCount += 1
+      },
+    })
+    await pendingPlayback
+
+    expect(session.status.value).toBe('missing')
+    expect(session.article.value).toBeNull()
+    expect(session.attempt.value).toBeNull()
+    expect(session.currentSentenceId.value).toBe('')
+    expect(session.orderedSentences.value).toEqual([])
+    expect(session.isPlaying.value).toBe(false)
+    expect(lateCancelCount).toBe(1)
+  })
+
+  it('invalidates an older article load when deletion arrives before it settles', async () => {
+    const article = createArticle('article-deleted-during-load')
+    const repositories = createMemoryLocalRepositories({ articles: [article] })
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseLoad!: () => void
+    let markLoadReady!: () => void
+    const loadGate = new Promise<void>(resolve => releaseLoad = resolve)
+    const loadReady = new Promise<void>(resolve => markLoadReady = resolve)
+    let blockFirstLoad = true
+    repositories.transaction = async (...args) => {
+      const result = await originalTransaction(...args)
+      if (blockFirstLoad && args[0].includes('articles') && args[0].includes('attempts')) {
+        blockFirstLoad = false
+        markLoadReady()
+        await loadGate
+      }
+      return result
+    }
+    const { session, harness } = mountReadingSession({ articles: [article], repositories })
+    await loadReady
+
+    harness.articleEvents.publishDeleted({ articleId: article.id })
+    releaseLoad()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(session.status.value).toBe('missing')
+    expect(session.article.value).toBeNull()
+    expect(session.orderedSentences.value).toEqual([])
+  })
+
+  it('revalidates the mounted article against durable storage when becoming active', async () => {
+    const article = createArticle('article-deleted-while-backgrounded')
+    const { session, harness, repositories } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+
+    harness.lifecycle.emit('background')
+    await repositories.transaction(['articles'], 'readwrite', async scope => {
+      await scope.articles.delete(article.id)
+    })
+    harness.lifecycle.emit('active')
+
+    await vi.waitFor(() => expect(session.status.value).toBe('missing'))
+    expect(session.article.value).toBeNull()
+    expect(session.attempt.value).toBeNull()
+    expect(session.orderedSentences.value).toEqual([])
+  })
+
+  it('does not restart Reader interaction until active storage revalidation settles', async () => {
+    const article = createArticle('article-active-revalidation-gate')
+    const repositories = createMemoryLocalRepositories({ articles: [article] })
+    const { session, harness } = mountReadingSession({ articles: [article], repositories })
+    await expectReady(session)
+
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseValidation!: () => void
+    let markValidationStarted!: () => void
+    let markValidationSettled!: () => void
+    const validationGate = new Promise<void>(resolve => releaseValidation = resolve)
+    const validationStarted = new Promise<void>(resolve => markValidationStarted = resolve)
+    const validationSettled = new Promise<void>(resolve => markValidationSettled = resolve)
+    repositories.transaction = async (...args) => {
+      const result = await originalTransaction(...args)
+      if (args[1] === 'readonly'
+        && args[0].length === 1
+        && args[0][0] === 'articles') {
+        markValidationStarted()
+        await validationGate
+        markValidationSettled()
+      }
+      return result
+    }
+
+    harness.lifecycle.emit('background')
+    harness.lifecycle.emit('active')
+    await validationStarted
+    await session.togglePlayback()
+
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.isPlaying.value).toBe(false)
+
+    releaseValidation()
+    await validationSettled
+    await Promise.resolve()
+    await session.togglePlayback()
+    expect(harness.speech.spoken).toHaveLength(1)
+  })
+
+  it('keeps cached article content non-interactive when active revalidation fails', async () => {
+    const article = createArticle('article-active-revalidation-failure')
+    const repositories = createMemoryLocalRepositories({ articles: [article] })
+    const { session, harness } = mountReadingSession({ articles: [article], repositories })
+    await expectReady(session)
+
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let rejectArticleValidation = true
+    repositories.transaction = async (...args) => {
+      if (rejectArticleValidation
+        && args[1] === 'readonly'
+        && args[0].length === 1
+        && args[0][0] === 'articles') {
+        throw new Error('article presence could not be checked')
+      }
+      return originalTransaction(...args)
+    }
+
+    harness.lifecycle.emit('background')
+    harness.lifecycle.emit('active')
+
+    await vi.waitFor(() => expect(session.status.value).toBe('error'))
+    expect(session.errorMessage.value).toContain('无法确认这篇文章是否仍保存在本机')
+    await session.togglePlayback()
+    expect(harness.speech.spoken).toEqual([])
+
+    rejectArticleValidation = false
+    await session.load()
+    await expectReady(session)
+    await session.togglePlayback()
+    expect(harness.speech.spoken).toHaveLength(1)
   })
 
   it('compacts an older retired writer slot after durable progress settles', async () => {
@@ -621,8 +790,10 @@ describe('useReadingSession', () => {
     harness.lifecycle.emit('background')
     now = 3_000
     harness.lifecycle.emit('active')
-    await session.togglePlayback()
-    expect(session.isPlaying.value).toBe(true)
+    await vi.waitFor(async () => {
+      await session.togglePlayback()
+      expect(session.isPlaying.value).toBe(true)
+    })
     const cancelCountBeforeSecondBackground = harness.speech.cancelCount
 
     now = 5_000
@@ -638,7 +809,11 @@ describe('useReadingSession', () => {
     expect(stoppedOnSecondBackground).toBe(true)
     expect(cancelCountAfterSecondBackground)
       .toBeGreaterThan(cancelCountBeforeSecondBackground)
-    expect(transactionSpy).toHaveBeenCalledTimes(2)
+    expect(transactionSpy.mock.calls.filter(call => call[1] === 'readwrite'))
+      .toHaveLength(2)
+    expect(transactionSpy.mock.calls.filter(call =>
+      call[1] === 'readonly' && call[0].length === 1 && call[0][0] === 'articles'))
+      .toHaveLength(1)
     expect(await repositories.attempts.getActiveByArticle(article.id))
       .toMatchObject({ activeDurationSec: 3 })
   })

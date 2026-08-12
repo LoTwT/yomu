@@ -24,6 +24,7 @@ import { createIndexedDbLocalRepositories } from './indexedDbLocalRepositories'
 import { createDefaultWebRuntimeAdapters } from './runtimeAdapters'
 import {
   isStorageUsable,
+  WebLegacyImportedContentAdapter,
   WebLegacyStorageSource,
   WebPreferencesStore,
   WebSecretStore,
@@ -78,6 +79,7 @@ export async function createWebPlatformServices(
     : new MemoryPreferencesStore()
   const webSecrets = storage ? new WebSecretStore(storage) : null
   const secrets = webSecrets ?? new MemorySecretStore()
+  const legacyImportedContent = new WebLegacyImportedContentAdapter(storage)
   const runtime = createDefaultWebRuntimeAdapters({
     apiBaseUrl: options.apiBaseUrl,
     windowRef: options.windowRef,
@@ -185,6 +187,7 @@ export async function createWebPlatformServices(
       repositories,
       preferences,
       secrets,
+      legacyImportedContent,
       ...runtime,
     },
     migration,

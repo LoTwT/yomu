@@ -15,6 +15,7 @@ const supersededWriterPruneDeadlineMs = 25
 const journalKeyPrefix = 'reader-progress-journal:v3:'
 const journalOperationKeyPrefix = 'reader-progress-journal:v4:'
 const writerTombstoneKeyPrefix = 'reader-progress-journal-tombstone:v3:'
+const retiredArticleKeyPrefix = 'reader-progress-journal-retired-article:v1:'
 const aggregateJournalKeyPrefix = 'reader-progress-journal:v2:'
 const legacyJournalKeyPrefix = 'reader-progress-journal:v1:'
 
@@ -114,6 +115,12 @@ interface WriterReadingProgressJournalTombstone {
   generation: number
 }
 
+interface RetiredReadingProgressArticle {
+  schemaVersion: 1
+  kind: 'retired-reading-progress-article'
+  articleId: string
+}
+
 interface AggregateReadingProgressJournalSlot {
   schemaVersion: typeof aggregateSlotSchemaVersion
   epochId: string
@@ -158,6 +165,13 @@ export class ReadingProgressJournalAttemptConflictError extends Error {
   constructor(readonly attemptId: string) {
     super(`Reading progress belongs to another active attempt, not ${attemptId}.`)
     this.name = 'ReadingProgressJournalAttemptConflictError'
+  }
+}
+
+export class ReadingProgressJournalArticleRetiredError extends Error {
+  constructor(readonly articleId: string) {
+    super(`Reading progress cannot be written for retired article ${articleId}.`)
+    this.name = 'ReadingProgressJournalArticleRetiredError'
   }
 }
 
@@ -223,7 +237,9 @@ export async function storeReadingProgressJournal(
     previousValue,
     legacyValue,
   )
-  const next = await preferences.update<WriterReadingProgressJournalOperationSlot>(
+  const next = await updateActiveArticleJournal<WriterReadingProgressJournalOperationSlot>(
+    preferences,
+    journal.articleId,
     key,
     current => updateWriterJournalOperationSlot(current, prepared),
   )
@@ -265,7 +281,9 @@ export function storeReadingProgressJournalImmediately(
       journal.writerId,
     )),
   )
-  const next = preferences.updateImmediately<WriterReadingProgressJournalOperationSlot>(
+  const next = updateActiveArticleJournalImmediately<WriterReadingProgressJournalOperationSlot>(
+    preferences,
+    journal.articleId,
     key,
     current => updateWriterJournalOperationSlot(current, prepared),
   )
@@ -381,7 +399,9 @@ export async function adoptReadingProgressJournal(
     previousValue,
     legacySlotValue,
   )
-  const next = await preferences.update<WriterReadingProgressJournalOperationSlot>(
+  const next = await updateActiveArticleJournal<WriterReadingProgressJournalOperationSlot>(
+    preferences,
+    recovered.articleId,
     key,
     current => updateWriterJournalOperationSlot(current, prepared),
   )
@@ -420,6 +440,9 @@ export async function readReadingProgressJournal(
   attemptId: string,
   attemptRevision = 0,
 ): Promise<ReadingProgressJournal | null> {
+  if (await readingProgressArticleIsRetired(preferences, articleId)) {
+    return null
+  }
   const aggregateJournal = await readAggregateProgressJournal(
     preferences,
     articleId,
@@ -438,8 +461,15 @@ export async function readReadingProgressJournal(
       await clearJournalSources(preferences, aggregateJournal).catch(() => {})
     }
     catch {
+      if (await readingProgressArticleIsRetired(preferences, articleId)) {
+        return null
+      }
       migratedAggregate = aggregateJournal
     }
+  }
+
+  if (await readingProgressArticleIsRetired(preferences, articleId)) {
+    return null
   }
 
   const {
@@ -457,15 +487,22 @@ export async function readReadingProgressJournal(
       causalIndex,
     )))
   if (journals.length > 0) {
-    return mergeWriterJournals(journals)
+    return await readingProgressArticleIsRetired(preferences, articleId)
+      ? null
+      : mergeWriterJournals(journals)
   }
-  return fallbackLegacy
+  return await readingProgressArticleIsRetired(preferences, articleId)
+    ? null
+    : fallbackLegacy
 }
 
 export async function clearReadingProgressJournal(
   preferences: PreferencesStore,
   expected: ReadingProgressJournal,
 ): Promise<void> {
+  if (await readingProgressArticleIsRetired(preferences, expected.articleId)) {
+    return
+  }
   if (expected.schemaVersion === legacyJournalSchemaVersion) {
     await preferences.compareAndRemove(
       legacyJournalKey(expected.articleId),
@@ -480,6 +517,9 @@ export async function clearSelectedReadingProgressJournal(
   preferences: PreferencesStore,
   expected: ReadingProgressJournal,
 ): Promise<void> {
+  if (await readingProgressArticleIsRetired(preferences, expected.articleId)) {
+    return
+  }
   if (expected.schemaVersion === legacyJournalSchemaVersion) {
     const removed = await preferences.compareAndRemove(
       legacyJournalKey(expected.articleId),
@@ -502,6 +542,67 @@ export async function clearSelectedReadingProgressJournal(
   )) {
     throw new Error('The selected reading progress journal could not be retired.')
   }
+}
+
+export async function retireReadingProgressJournalsForArticle(
+  preferences: PreferencesStore,
+  articleId: string,
+): Promise<void> {
+  await markReadingProgressArticleRetired(preferences, articleId)
+  await clearRetiredReadingProgressJournals(preferences, articleId)
+}
+
+export async function markReadingProgressArticleRetired(
+  preferences: PreferencesStore,
+  articleId: string,
+): Promise<void> {
+  if (!isBoundedId(articleId)) {
+    throw new Error('Reading progress journal retirement requires a valid article ID.')
+  }
+  await preferences.update<RetiredReadingProgressArticle>(
+    retiredArticleKey(articleId),
+    current => isRetiredReadingProgressArticle(current, articleId)
+      ? current
+      : {
+          schemaVersion: 1,
+          kind: 'retired-reading-progress-article',
+          articleId,
+        },
+  )
+}
+
+export async function retryRetiredReadingProgressJournalCleanup(
+  preferences: PreferencesStore,
+): Promise<void> {
+  const markers = await preferences.listByPrefix<unknown>(retiredArticleKeyPrefix)
+  for (const { value } of markers) {
+    if (isRetiredReadingProgressArticle(value)) {
+      await clearRetiredReadingProgressJournals(preferences, value.articleId)
+    }
+  }
+}
+
+export async function clearRetiredReadingProgressJournals(
+  preferences: PreferencesStore,
+  articleId: string,
+): Promise<void> {
+  if (!isBoundedId(articleId)) {
+    throw new Error('Reading progress journal cleanup requires a valid article ID.')
+  }
+  if (!await readingProgressArticleIsRetired(preferences, articleId)) {
+    return
+  }
+  const entries = await Promise.all([
+    preferences.listByPrefix<unknown>(journalPrefix(articleId)),
+    preferences.listByPrefix<unknown>(journalOperationPrefix(articleId)),
+    preferences.listByPrefix<unknown>(writerTombstonePrefix(articleId)),
+  ])
+  const keys = new Set([
+    aggregateJournalKey(articleId),
+    legacyJournalKey(articleId),
+    ...entries.flatMap(values => values.map(({ key }) => key)),
+  ])
+  await Promise.all([...keys].map(key => preferences.remove(key)))
 }
 
 export async function compactReadingProgressJournalSlots(
@@ -745,7 +846,9 @@ async function readAggregateProgressJournal(
   let migratedLegacy = false
 
   try {
-    const slot = await preferences.update<AggregateReadingProgressJournalSlot>(
+    const slot = await updateActiveArticleJournal<AggregateReadingProgressJournalSlot>(
+      preferences,
+      articleId,
       key,
       (current) => {
         const currentSlot = isAggregateJournalSlot(current) ? current : null
@@ -783,6 +886,9 @@ async function readAggregateProgressJournal(
     return restoreAggregateJournal(slot, slot.journal, key)
   }
   catch {
+    if (await readingProgressArticleIsRetired(preferences, articleId)) {
+      return null
+    }
     const current = await preferences.get<unknown>(key)
     if (isAggregateJournalSlot(current) && current.attemptId === attemptId) {
       return current.journal
@@ -812,7 +918,9 @@ async function migrateAggregateJournal(
   if (writerJournalIsRetired(tombstone, journal)) {
     return null
   }
-  const next = await preferences.update<WriterReadingProgressJournalOperationSlot>(
+  const next = await updateActiveArticleJournal<WriterReadingProgressJournalOperationSlot>(
+    preferences,
+    journal.articleId,
     key,
     (current) => {
       if (isWriterJournalOperationSlot(current)) {
@@ -1513,7 +1621,9 @@ async function clearWriterJournalSource(
   settlesCausalClosure: boolean,
 ): Promise<void> {
   const key = writerTombstoneKey(expected.articleId, expected.writerId)
-  await preferences.update<WriterReadingProgressJournalTombstone>(
+  await updateActiveArticleJournal<WriterReadingProgressJournalTombstone>(
+    preferences,
+    expected.articleId,
     key,
     (current) => {
       const tombstone = isWriterJournalTombstone(current) ? current : null
@@ -1557,7 +1667,9 @@ async function markWriterCausalClosureSettled(
   attemptId: string,
   lineage: ReadingProgressJournalWriterGapLineage,
 ): Promise<void> {
-  await preferences.update<WriterReadingProgressJournalTombstone>(
+  await updateActiveArticleJournal<WriterReadingProgressJournalTombstone>(
+    preferences,
+    articleId,
     writerTombstoneKey(articleId, lineage.writerId),
     (current) => {
       if (!isWriterJournalTombstone(current)
@@ -1582,7 +1694,9 @@ async function clearAggregateJournalSource(
   preferences: PreferencesStore,
   expected: ReadingProgressJournalSource,
 ): Promise<void> {
-  await preferences.update<AggregateReadingProgressJournalSlot>(
+  await updateActiveArticleJournal<AggregateReadingProgressJournalSlot>(
+    preferences,
+    expected.articleId,
     expected.key,
     (current) => {
       if (!isAggregateJournalSlot(current)
@@ -2016,6 +2130,77 @@ function nextSequenceAfter(current: number): number {
 
 function journalPrefix(articleId: string): string {
   return `${journalKeyPrefix}${encodeURIComponent(articleId)}:`
+}
+
+function retiredArticleKey(articleId: string): string {
+  return `${retiredArticleKeyPrefix}${encodeURIComponent(articleId)}`
+}
+
+function isRetiredReadingProgressArticle(
+  value: unknown,
+  articleId?: string,
+): value is RetiredReadingProgressArticle {
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && value.kind === 'retired-reading-progress-article'
+    && isBoundedId(value.articleId)
+    && (articleId === undefined || value.articleId === articleId)
+}
+
+async function readingProgressArticleIsRetired(
+  preferences: PreferencesStore,
+  articleId: string,
+): Promise<boolean> {
+  return isRetiredReadingProgressArticle(
+    await preferences.get<unknown>(retiredArticleKey(articleId)),
+    articleId,
+  )
+}
+
+function readingProgressArticleIsRetiredImmediately(
+  preferences: PreferencesStore,
+  articleId: string,
+): boolean {
+  return isRetiredReadingProgressArticle(
+    preferences.getImmediately<unknown>(retiredArticleKey(articleId)),
+    articleId,
+  )
+}
+
+async function updateActiveArticleJournal<T>(
+  preferences: PreferencesStore,
+  articleId: string,
+  key: string,
+  updater: (current: unknown | null) => T | null,
+): Promise<T | null> {
+  if (await readingProgressArticleIsRetired(preferences, articleId)) {
+    throw new ReadingProgressJournalArticleRetiredError(articleId)
+  }
+  const next = await preferences.update(key, updater)
+  if (!await readingProgressArticleIsRetired(preferences, articleId)) {
+    return next
+  }
+  if (next !== null) {
+    await preferences.compareAndRemove(key, next)
+  }
+  throw new ReadingProgressJournalArticleRetiredError(articleId)
+}
+
+function updateActiveArticleJournalImmediately<T>(
+  preferences: PreferencesStore,
+  articleId: string,
+  key: string,
+  updater: (current: unknown | null) => T | null,
+): T | null {
+  if (readingProgressArticleIsRetiredImmediately(preferences, articleId)) {
+    throw new ReadingProgressJournalArticleRetiredError(articleId)
+  }
+  const next = preferences.updateImmediately(key, updater)
+  if (!readingProgressArticleIsRetiredImmediately(preferences, articleId)) {
+    return next
+  }
+  preferences.updateImmediately(key, () => null)
+  throw new ReadingProgressJournalArticleRetiredError(articleId)
 }
 
 function journalKey(articleId: string, writerId: string): string {

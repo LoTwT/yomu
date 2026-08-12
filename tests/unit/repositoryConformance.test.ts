@@ -100,6 +100,58 @@ function defineRepositoryConformance(label: string, factory: RepositoryFactory):
       expect(await repositories.vocabularyContexts.listByArticle(article.id)).toEqual([context])
     })
 
+    it('deletes every attempt and context belonging to one article through indexed operations', async () => {
+      const article = createArticle('article-delete-target')
+      const otherArticle = createArticle('article-delete-other')
+      const term = createTerm('term-delete')
+      const attempt = createAttempt(article.id, 'attempt-delete-target')
+      const otherAttempt = createAttempt(otherArticle.id, 'attempt-delete-other')
+      const context = createContext(article, term)
+      const otherContext = {
+        ...createContext(otherArticle, term),
+        id: 'context-delete-other',
+      }
+
+      await repositories.transaction(
+        ['attempts', 'vocabularyContexts'],
+        'readwrite',
+        async (scope) => {
+          await scope.attempts.put(attempt)
+          await scope.attempts.put(otherAttempt)
+          await scope.vocabularyContexts.put(context)
+          await scope.vocabularyContexts.put(otherContext)
+        },
+      )
+
+      const result = await repositories.transaction(
+        ['attempts', 'vocabularyContexts'],
+        'readwrite',
+        async scope => ({
+          attempts: await scope.attempts.deleteByArticle(article.id),
+          contexts: await scope.vocabularyContexts.deleteByArticle(article.id),
+        }),
+      )
+
+      expect(result).toEqual({ attempts: 1, contexts: 1 })
+      expect(await repositories.attempts.list()).toEqual([otherAttempt])
+      expect(await repositories.vocabularyContexts.list()).toEqual([otherContext])
+    })
+
+    it('rejects indexed article deletion in readonly transactions', async () => {
+      const attempt = createAttempt('article-readonly-delete', 'attempt-readonly-delete')
+      await repositories.attempts.put(attempt)
+
+      await expect(repositories.transaction(['attempts'], 'readonly', scope =>
+        scope.attempts.deleteByArticle(attempt.articleId)))
+        .rejects.toMatchObject({
+          name: 'DataReadonlyTransactionError',
+          store: 'attempts',
+          operation: 'deleteByArticle',
+        } satisfies Partial<DataReadonlyTransactionError>)
+
+      expect(await repositories.attempts.list()).toEqual([attempt])
+    })
+
     it('rolls back failed writes and rejects undeclared or empty scopes', async () => {
       const article = createArticle('article-a')
 
