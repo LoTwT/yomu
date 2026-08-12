@@ -1,6 +1,25 @@
 <script setup lang="ts">
 import { PhBookOpenText, PhTextAlignLeft } from '@phosphor-icons/vue'
 import { RouterLink } from 'vue-router'
+
+withDefaults(defineProps<{
+  busy?: boolean
+  sessionOnly?: boolean
+}>(), {
+  busy: false,
+  sessionOnly: false,
+})
+
+const emit = defineEmits<{
+  startSample: [focusReturn: HTMLButtonElement]
+}>()
+
+function handleStartSample(event: MouseEvent): void {
+  const focusReturn = event.currentTarget
+  if (focusReturn instanceof HTMLButtonElement) {
+    emit('startSample', focusReturn)
+  }
+}
 </script>
 
 <template>
@@ -19,15 +38,25 @@ import { RouterLink } from 'vue-router'
       <p class="library-empty__description">
         文章和阅读进度只保存在此设备；无需账号，也不会自动同步到其他安装。
       </p>
+      <p v-if="sessionOnly" class="library-empty__session-note">
+        内置样例和相关进度仅在本次使用期间保留，刷新或关闭后可能丢失。
+      </p>
     </div>
     <div class="library-empty__actions">
       <RouterLink class="library-empty__primary" :to="{ name: 'import' }">
         <PhTextAlignLeft aria-hidden="true" :size="20" />
         粘贴英文内容
       </RouterLink>
-      <RouterLink class="library-empty__secondary" :to="{ name: 'legacy' }">
-        阅读 Today 示例
-      </RouterLink>
+      <button
+        class="library-empty__secondary"
+        data-sample-start
+        type="button"
+        :disabled="busy"
+        :aria-busy="busy"
+        @click="handleStartSample"
+      >
+        {{ busy ? '正在加入…' : '加入并阅读' }}
+      </button>
     </div>
   </section>
 </template>
@@ -58,11 +87,17 @@ import { RouterLink } from 'vue-router'
   font-size: clamp(1.35rem, 5vw, 1.75rem);
 }
 
-.library-empty__description {
+.library-empty__description,
+.library-empty__session-note {
   max-inline-size: 38rem;
   margin: 0.5rem 0 0;
   color: var(--text-secondary);
   line-height: 1.65;
+}
+
+.library-empty__session-note {
+  color: var(--status-warning-fg);
+  font-size: 0.9rem;
 }
 
 .library-empty__actions {
@@ -90,7 +125,15 @@ import { RouterLink } from 'vue-router'
 
 .library-empty__secondary {
   border: 1px solid var(--border-subtle);
+  background: transparent;
   color: var(--text-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.library-empty__secondary:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .library-empty__primary:focus-visible,

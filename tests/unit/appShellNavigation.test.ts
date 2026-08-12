@@ -129,14 +129,19 @@ describe('responsive app shell', () => {
       .toBe(`/read/${article.id}`)
     expect(host.textContent).toContain('未评估')
     expect(host.textContent).toContain('第 2 / 3 句')
-    expect(host.querySelector('.recommendation-card__link')?.getAttribute('href'))
-      .toBe('/legacy')
+    const sampleAction = host.querySelector<HTMLButtonElement>('.recommendation-card__action')
+    expect(sampleAction?.textContent).toContain('加入并阅读')
+    expect(sampleAction?.hasAttribute('disabled')).toBe(false)
+    expect(host.querySelector('a[href="/legacy"], a[href="/today"]')).toBeNull()
   })
 
-  it('shows an honest empty library and keeps Today behind the explicit legacy route', async () => {
+  it('shows an honest empty library while retaining the direct legacy compatibility route', async () => {
     const { host, router } = await mountAt('/')
     expect(host.querySelector('[data-testid="library-empty-state"]')).not.toBeNull()
     expect(host.textContent).toContain('导入一段英文即可开始')
+    expect(host.querySelector<HTMLButtonElement>('.library-empty__secondary')?.textContent)
+      .toContain('加入并阅读')
+    expect(host.querySelector('a[href="/legacy"], a[href="/today"]')).toBeNull()
 
     await router.push('/legacy')
     expect(router.currentRoute.value.name).toBe('legacy')

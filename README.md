@@ -11,9 +11,10 @@ The v2 implementation currently includes:
 - responsive Paper / Ink application shell built with `@ayingott/theme`;
 - IndexedDB-backed `ArticleRecord`, `ReadingAttempt`, and vocabulary repositories;
 - pasted text, UTF-8 TXT / Markdown, and URL Beta import through one editable preview, atomic save, body-hash deduplication, and a real local library;
+- bundled public-domain sample onboarding through the canonical local reader;
 - canonical reader routing with sentence position and active-time persistence;
 - Web/PWA, desktop-shell, and mobile-shell target builds behind `PlatformServices` boundaries;
-- explicit `/legacy` access to the Today compatibility reader while Reader v2 is developed.
+- compatibility-only `/legacy` and `/today` routes retained temporarily for existing links.
 
 URL Beta uses a rate-limited, controlled Worker fetch plus local, detached-DOM Readability extraction. Per-hop DNS checks reduce SSRF exposure but cannot eliminate DNS TOCTOU risk. Accounts, cloud sync, SRS, PDF / Word import, recorder / ASR, and pronunciation scoring are outside the v2 scope.
 

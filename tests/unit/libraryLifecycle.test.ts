@@ -33,6 +33,209 @@ afterEach(() => {
 })
 
 describe('library lifecycle refresh', () => {
+  it('deduplicates repeated sample actions while the atomic write is pending', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const mounted = await mountLibrary(repositories)
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseWrite!: () => void
+    let reportWriteStarted!: () => void
+    const writeStarted = new Promise<void>((resolve) => {
+      reportWriteStarted = resolve
+    })
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    let sampleTransactionCount = 0
+    repositories.transaction = async (...args) => {
+      if (args[1] === 'readwrite' && args[0].includes('articles') && args[0].includes('attempts')) {
+        sampleTransactionCount += 1
+        reportWriteStarted()
+        await writeGate
+      }
+      return originalTransaction(...args)
+    }
+
+    const action = mounted.host.querySelector<HTMLButtonElement>('.library-empty__secondary')!
+    action.click()
+    action.click()
+    await writeStarted
+    await nextTick()
+
+    expect(sampleTransactionCount).toBe(1)
+    expect(action.disabled).toBe(true)
+    expect(action.getAttribute('aria-busy')).toBe('true')
+    expect(action.textContent).toContain('正在加入')
+
+    releaseWrite()
+    await vi.waitFor(() => expect(mounted.router.currentRoute.value.name).toBe('reader'))
+  })
+
+  it('shares one busy state across recommendation actions in a non-empty library', async () => {
+    const existing = createReviewArticle('library-existing-sample-test', 'Existing article')
+    const repositories = createMemoryLocalRepositories({ articles: [existing] })
+    const mounted = await mountLibrary(repositories)
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseWrite!: () => void
+    let reportWriteStarted!: () => void
+    const writeStarted = new Promise<void>((resolve) => {
+      reportWriteStarted = resolve
+    })
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    let sampleTransactionCount = 0
+    repositories.transaction = async (...args) => {
+      if (args[1] === 'readwrite' && args[0].includes('articles') && args[0].includes('attempts')) {
+        sampleTransactionCount += 1
+        reportWriteStarted()
+        await writeGate
+      }
+      return originalTransaction(...args)
+    }
+
+    const action = mounted.host.querySelector<HTMLButtonElement>('.recommendation-card__action')!
+    action.click()
+    action.click()
+    await writeStarted
+    await nextTick()
+
+    expect(sampleTransactionCount).toBe(1)
+    expect(action.disabled).toBe(true)
+    expect(action.getAttribute('aria-busy')).toBe('true')
+    expect(action.textContent).toContain('正在加入')
+
+    releaseWrite()
+    await vi.waitFor(() => expect(mounted.router.currentRoute.value.name).toBe('reader'))
+  })
+
+  it('keeps an accessible retry action when the sample transaction fails', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const mounted = await mountLibrary(repositories)
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseWrite!: () => void
+    let reportWriteStarted!: () => void
+    const writeStarted = new Promise<void>((resolve) => {
+      reportWriteStarted = resolve
+    })
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    repositories.transaction = async (...args) => {
+      if (args[1] === 'readwrite' && args[0].includes('articles') && args[0].includes('attempts')) {
+        reportWriteStarted()
+        await writeGate
+        throw new Error('sample write failed')
+      }
+      return originalTransaction(...args)
+    }
+
+    const action = mounted.host.querySelector<HTMLButtonElement>('.library-empty__secondary')!
+    action.focus()
+    action.click()
+    await writeStarted
+    await nextTick()
+    expect(action.disabled).toBe(true)
+    moveFocusToDocument()
+    expect(document.activeElement).toBe(document.body)
+    releaseWrite()
+
+    await vi.waitFor(() => expect(
+      mounted.host.querySelector('[data-sample-error][role="alert"]')?.textContent,
+    ).toContain('没有留下不完整的阅读记录'))
+    expect(action.disabled).toBe(false)
+    expect(action.textContent).toContain('加入并阅读')
+    expect(mounted.router.currentRoute.value.name).toBe('library')
+    expect(await repositories.articles.count()).toBe(0)
+    expect(await repositories.attempts.count()).toBe(0)
+    expect(document.activeElement).toBe(action)
+  })
+
+  it('does not steal focus when the reader moves to another control during a slow failure', async () => {
+    const repositories = createMemoryLocalRepositories()
+    const mounted = await mountLibrary(repositories)
+    const originalTransaction = repositories.transaction.bind(repositories)
+    let releaseWrite!: () => void
+    let reportWriteStarted!: () => void
+    const writeStarted = new Promise<void>((resolve) => {
+      reportWriteStarted = resolve
+    })
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+    repositories.transaction = async (...args) => {
+      if (args[1] === 'readwrite' && args[0].includes('articles') && args[0].includes('attempts')) {
+        reportWriteStarted()
+        await writeGate
+        throw new Error('sample write failed')
+      }
+      return originalTransaction(...args)
+    }
+
+    const sampleAction = mounted.host.querySelector<HTMLButtonElement>('.library-empty__secondary')!
+    const importAction = mounted.host.querySelector<HTMLAnchorElement>('.library-empty__primary')!
+    sampleAction.focus()
+    sampleAction.click()
+    await writeStarted
+    await nextTick()
+    expect(sampleAction.disabled).toBe(true)
+
+    importAction.focus()
+    expect(importAction.isConnected).toBe(true)
+    expect(importAction.ownerDocument.activeElement).toBe(importAction)
+    releaseWrite()
+
+    await vi.waitFor(() => expect(
+      mounted.host.querySelector('[data-sample-error][role="alert"]')?.textContent,
+    ).toContain('没有留下不完整的阅读记录'))
+    expect(sampleAction.disabled).toBe(false)
+    expect(importAction.ownerDocument.activeElement).toBe(importAction)
+  })
+
+  it('reports a navigation failure honestly and reuses the saved sample on retry', async () => {
+    const existing = createReviewArticle('library-navigation-failure', 'Existing article')
+    const repositories = createMemoryLocalRepositories({ articles: [existing] })
+    const mounted = await mountLibrary(repositories)
+    let releaseNavigation!: () => void
+    let reportNavigationStarted!: () => void
+    const navigationStarted = new Promise<void>((resolve) => {
+      reportNavigationStarted = resolve
+    })
+    const navigationGate = new Promise<void>((resolve) => {
+      releaseNavigation = resolve
+    })
+    const removeGuard = mounted.router.beforeEach(async (to) => {
+      if (to.name !== 'reader') {
+        return true
+      }
+      reportNavigationStarted()
+      await navigationGate
+      return false
+    })
+    const action = mounted.host.querySelector<HTMLButtonElement>('.recommendation-card__action')!
+    action.focus()
+    action.click()
+    await navigationStarted
+    await nextTick()
+    expect(action.disabled).toBe(true)
+    moveFocusToDocument()
+    expect(document.activeElement).toBe(document.body)
+    releaseNavigation()
+
+    await vi.waitFor(() => expect(
+      mounted.host.querySelector('[data-sample-error][role="alert"]')?.textContent,
+    ).toContain('样例已加入，但暂时无法打开'))
+    expect((await repositories.articles.list())).toHaveLength(2)
+    expect((await repositories.attempts.list())).toHaveLength(1)
+    expect(action.disabled).toBe(false)
+    expect(document.activeElement).toBe(action)
+
+    removeGuard()
+    action.click()
+    await vi.waitFor(() => expect(mounted.router.currentRoute.value.name).toBe('reader'))
+    expect((await repositories.articles.list())).toHaveLength(2)
+    expect((await repositories.attempts.list())).toHaveLength(1)
+  })
+
   it('silently adopts durable articles while preserving the focused article link', async () => {
     const first = createReviewArticle('library-lifecycle-first', 'First article')
     const second = {
@@ -200,7 +403,7 @@ describe('library lifecycle refresh', () => {
     const article = createReviewArticle('library-last-recommended', 'Last article')
     const repositories = createMemoryLocalRepositories({ articles: [article] })
     const mounted = await mountLibrary(repositories)
-    mounted.host.querySelector<HTMLAnchorElement>('.recommendation-card__link')!.focus()
+    mounted.host.querySelector<HTMLButtonElement>('.recommendation-card__action')!.focus()
 
     mounted.platform.lifecycle.emit('background')
     await repositories.articles.delete(article.id)
@@ -269,7 +472,7 @@ async function mountLibrary(
   app.mount(host)
   await vi.waitFor(() => expect(host.textContent).not.toContain('正在读取此设备上的阅读库'))
   await nextTick()
-  return { host, platform }
+  return { host, platform, router }
 }
 
 function gateFirstArticleList(repositories: LocalRepositories): {
@@ -312,6 +515,12 @@ function gateFirstArticleList(repositories: LocalRepositories): {
     listStarted,
     releaseList,
   }
+}
+
+function moveFocusToDocument(): void {
+  document.body.tabIndex = -1
+  document.body.focus()
+  document.body.removeAttribute('tabindex')
 }
 
 function gateFirstManagementRead(repositories: LocalRepositories): {

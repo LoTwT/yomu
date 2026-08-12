@@ -15,6 +15,7 @@ import {
 import {
   dataStoreNames,
   type AttemptRepository,
+  type ArticleRepository,
   DataConstraintError,
   DataValidationError,
   type DataStoreName,
@@ -73,7 +74,7 @@ class MemoryLocalRepositories implements LocalRepositories {
     this.database = createDatabaseState(seed)
   }
 
-  get articles(): EntityRepository<ArticleRecord> {
+  get articles(): ArticleRepository {
     return topLevelArticleRepository(this)
   }
 
@@ -268,10 +269,16 @@ function createScope(
   }
 }
 
-function createArticleRepository(state: MemoryState): EntityRepository<ArticleRecord> {
+function createArticleRepository(state: MemoryState): ArticleRepository {
   const base = createEntityRepository('articles', state.articles, isArticleRecord)
   return {
     ...base,
+    add: async (article) => {
+      if (state.articles.has(article.id)) {
+        throw new DataConstraintError(`Article ${article.id} already exists.`)
+      }
+      await base.put(article)
+    },
     get: async (id) => {
       const article = await base.get(id)
       return article ? reconcileArticleCapabilities(article) : null
@@ -360,8 +367,13 @@ function createVocabularyContextRepository(state: MemoryState): VocabularyContex
   }
 }
 
-function topLevelArticleRepository(owner: MemoryLocalRepositories): EntityRepository<ArticleRecord> {
-  return topLevelEntityRepository(owner, 'articles', scope => scope.articles)
+function topLevelArticleRepository(owner: MemoryLocalRepositories): ArticleRepository {
+  const base = topLevelEntityRepository(owner, 'articles', scope => scope.articles)
+  return {
+    ...base,
+    add: article => owner.transaction(['articles'], 'readwrite', scope =>
+      scope.articles.add(article)),
+  }
 }
 
 function topLevelAttemptRepository(owner: MemoryLocalRepositories): AttemptRepository {

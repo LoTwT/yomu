@@ -1,14 +1,27 @@
 <script setup lang="ts">
 import { PhCaretRight, PhFileText } from '@phosphor-icons/vue'
-import { RouterLink } from 'vue-router'
-import type { RouteLocationRaw } from 'vue-router'
 
 import type { LibraryRecommendation } from './libraryRecommendations'
 
-defineProps<{
+withDefaults(defineProps<{
   article: LibraryRecommendation
-  to: RouteLocationRaw
+  busy?: boolean
+  sessionOnly?: boolean
+}>(), {
+  busy: false,
+  sessionOnly: false,
+})
+
+const emit = defineEmits<{
+  startSample: [focusReturn: HTMLButtonElement]
 }>()
+
+function handleStartSample(event: MouseEvent): void {
+  const focusReturn = event.currentTarget
+  if (focusReturn instanceof HTMLButtonElement) {
+    emit('startSample', focusReturn)
+  }
+}
 </script>
 
 <template>
@@ -23,17 +36,24 @@ defineProps<{
       <p class="recommendation-card__summary" lang="en">
         {{ article.summary }}
       </p>
+      <p v-if="sessionOnly" class="recommendation-card__session-note">
+        样例和相关进度仅在本次使用期间保留，刷新或关闭后可能丢失。
+      </p>
     </div>
     <p class="recommendation-card__meta">
       {{ article.sourceLabel }} · {{ article.levelLabel }} · {{ article.estimatedMinutes }} 分钟
     </p>
-    <RouterLink
-      class="recommendation-card__link"
-      :to="to"
-      :aria-label="`阅读样例 ${article.title}`"
+    <button
+      class="recommendation-card__action"
+      data-sample-start
+      type="button"
+      :disabled="busy"
+      :aria-busy="busy"
+      @click="handleStartSample"
     >
+      {{ busy ? '正在加入…' : '加入并阅读' }}
       <PhCaretRight aria-hidden="true" :size="18" />
-    </RouterLink>
+    </button>
   </article>
 </template>
 
@@ -67,6 +87,7 @@ defineProps<{
 
 .recommendation-card__title,
 .recommendation-card__summary,
+.recommendation-card__session-note,
 .recommendation-card__meta {
   grid-column: 2;
   margin: 0;
@@ -79,6 +100,7 @@ defineProps<{
 }
 
 .recommendation-card__summary,
+.recommendation-card__session-note,
 .recommendation-card__meta {
   color: var(--text-secondary);
   font-size: 0.8rem;
@@ -89,32 +111,46 @@ defineProps<{
   overflow-wrap: anywhere;
 }
 
-.recommendation-card__link {
+.recommendation-card__session-note {
+  margin-block-start: 0.35rem;
+  color: var(--status-warning-fg);
+}
+
+.recommendation-card__action {
   display: inline-flex;
   grid-column: 3;
   grid-row: 1 / 3;
   align-items: center;
   justify-content: center;
+  gap: 0.35rem;
   min-inline-size: 2.75rem;
   min-block-size: 2.75rem;
+  border: 0;
   border-radius: 0.45rem;
   padding-inline: 0.8rem;
+  background: transparent;
   color: var(--text-accent);
+  font: inherit;
   font-weight: 700;
-  text-decoration: none;
+  cursor: pointer;
 }
 
-.recommendation-card__link:focus-visible {
+.recommendation-card__action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.recommendation-card__action:focus-visible {
   outline: 3px solid var(--focus-ring-color);
   outline-offset: 3px;
 }
 
-.recommendation-card:has(.recommendation-card__link:active) {
+.recommendation-card:has(.recommendation-card__action:active) {
   background: var(--accent-soft);
 }
 
 @media (hover: hover) {
-  .recommendation-card:has(.recommendation-card__link:hover) {
+  .recommendation-card:has(.recommendation-card__action:hover:not(:disabled)) {
     background: var(--accent-soft);
   }
 }
@@ -134,7 +170,7 @@ defineProps<{
     grid-row: 1 / 3;
   }
 
-  .recommendation-card__link {
+  .recommendation-card__action {
     grid-column: 4;
   }
 }
