@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
+import { computed, nextTick, shallowRef, useTemplateRef, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 import { usePlatformInitialization } from '@/app/platformInitialization'
 import { usePlatformServices } from '@/app/platformServices'
@@ -18,6 +19,8 @@ const themeOptions = [
   { value: 'light', label: 'Paper' },
   { value: 'dark', label: 'Ink' },
 ] as const
+const route = useRoute()
+const speechHeading = useTemplateRef<HTMLHeadingElement>('speechHeading')
 const { state: themeState, setPreference } = useThemePreference()
 const initialization = usePlatformInitialization()
 const platformServices = usePlatformServices()
@@ -79,6 +82,31 @@ async function clearStoredSecrets() {
 }
 
 usePageHeadingFocus()
+
+watch(
+  [() => route.hash, loadStatus],
+  async ([hash, status]) => {
+    if (hash !== '#settings-speech-title' || status === 'loading') {
+      return
+    }
+
+    await nextTick()
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => resolve())
+        return
+      }
+      resolve()
+    })
+    const target = speechHeading.value
+    if (route.hash !== '#settings-speech-title' || !target?.isConnected) {
+      return
+    }
+    target.focus({ preventScroll: true })
+    target.scrollIntoView({ block: 'center', inline: 'nearest' })
+  },
+  { flush: 'post', immediate: true },
+)
 </script>
 
 <template>
@@ -172,7 +200,12 @@ usePageHeadingFocus()
       </p>
       <template v-else>
         <section class="settings-view__group settings-view__provider" aria-labelledby="settings-speech-title">
-          <h2 id="settings-speech-title" class="settings-view__group-title">
+          <h2
+            id="settings-speech-title"
+            ref="speechHeading"
+            class="settings-view__group-title"
+            tabindex="-1"
+          >
             语音
           </h2>
           <TtsSettingsPanel

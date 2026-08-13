@@ -50,6 +50,24 @@ describe('TTS settings', () => {
     expect(JSON.stringify(exported)).not.toContain('user-secret')
   })
 
+  it('retires Token Plan endpoints and keys in favor of the supported pay-as-you-go endpoint', () => {
+    window.localStorage.clear()
+
+    const migrated = loadTtsSettings(window.localStorage)
+    expect(migrated.mimo.baseUrl).toBe('https://api.xiaomimimo.com/v1')
+
+    const tokenPlanSettings = {
+      ...migrated,
+      provider: 'mimo' as const,
+      mimo: {
+        ...migrated.mimo,
+        apiKey: 'tp-obsolete-key',
+        baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1',
+      },
+    }
+    expect(isMimoConfigured(tokenPlanSettings)).toBe(false)
+  })
+
   it('never reads a key from legacy settings storage and clears the runtime key explicitly', () => {
     window.localStorage.clear()
     const sessionSettings = {

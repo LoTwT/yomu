@@ -134,7 +134,7 @@ Entered when: user chose 「继续纯阅读」, or `content.lowEnglish`, or user
 
 **Tier 1 — MiMo BYOK (your key, neural quality)** — the upgrade:
 - Settings · 朗读 → enter **your** MiMo base URL + API key. Key is **stored browser-local only** (clearable any time), **never** sent to yomu storage. On play, the key goes to the same-origin Worker which **only forwards — no store / no log / not in cache key**.
-- Trust copy (honest, not hidden): "key 只存你本机浏览器,朗读时经 yomu 转发到小米,yomu 不保存" + **risk line**: "浏览器 / 扩展 / XSS 不可信时,本地 key 有暴露风险." + 「如何获取」guidance (小米开放平台 + Token Plan). Voice selection per provider.
+- Trust copy (honest, not hidden): "key 只存你本机浏览器,朗读时经 yomu 转发到小米,yomu 不保存" + **risk line**: "浏览器 / 扩展 / XSS 不可信时,本地 key 有暴露风险." + 「如何获取」guidance (小米/MiMo 按量付费 API Key；Token Plan Key 不用于自定义应用). Voice selection per provider.
 - Connected state: 「已连接 · MiMo(···· last4)」+ one-tap clear. Terms-evidence rule (§5.1) applies.
 
 **Provider switch + disabled logic** (`ttsUnavailable` family, §4.3) — there is **never a dead-end**, because Web Speech is always there:

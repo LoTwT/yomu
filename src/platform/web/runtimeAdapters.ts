@@ -1,4 +1,6 @@
 import { isReadingAttempt } from '@/data/entities'
+import { createMimoTtsProvider } from '@/features/tts/mimoAdapter'
+import { createMemorySentenceAudioCache } from '@/features/tts/sentenceAudioCache'
 
 import {
   PlatformCapabilityError,
@@ -6,6 +8,11 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type AudioPlaybackAdapter,
+  type AudioPlaybackHandle,
+  type AudioPlaybackRequest,
+  type CloudSpeechAdapter,
+  type CloudSpeechSessionAdapter,
   type ArticleDeletedEvent,
   type ArticleEventsAdapter,
   type ArticleContentExtractor,
@@ -40,6 +47,10 @@ const unsupportedTextControlCharacterPattern = /[\u0000-\u0008\u000B\u000C\u000E
 interface WebSpeechRuntime {
   speechSynthesis?: SpeechSynthesis
   SpeechSynthesisUtterance?: typeof SpeechSynthesisUtterance
+}
+
+interface WebAudioRuntime {
+  Audio?: typeof Audio
 }
 
 export class WebSpeechAdapter implements SpeechAdapter {
@@ -103,6 +114,166 @@ export class WebSpeechAdapter implements SpeechAdapter {
 
   stop(): void {
     this.runtime.speechSynthesis?.cancel()
+  }
+}
+
+export class WebAudioPlaybackAdapter implements AudioPlaybackAdapter {
+  private readonly activeCancellations = new Set<() => void>()
+
+  constructor(private readonly runtime: WebAudioRuntime) {}
+
+  isAvailable(): boolean {
+    return Boolean(this.runtime.Audio)
+  }
+
+  play(request: AudioPlaybackRequest): Promise<AudioPlaybackHandle> {
+    const AudioConstructor = this.runtime.Audio
+    if (!AudioConstructor) {
+      return Promise.reject(new Error('Audio playback is unavailable on this platform.'))
+    }
+    if (request.signal?.aborted) {
+      return Promise.reject(readAudioAbortReason(request.signal))
+    }
+
+    const audio = new AudioConstructor(request.sourceUrl)
+    audio.preload = 'auto'
+    audio.playbackRate = request.playbackRate
+
+    return new Promise<AudioPlaybackHandle>((resolve, reject) => {
+      let stopped = false
+      let started = false
+      let startSettled = false
+
+      const cleanup = (): void => {
+        audio.removeEventListener('ended', handleEnded)
+        audio.removeEventListener('error', handleError)
+        request.signal?.removeEventListener('abort', handleAbort)
+        this.activeCancellations.delete(cancel)
+      }
+      const releaseMedia = (): void => {
+        try {
+          audio.pause()
+          audio.removeAttribute('src')
+          audio.load()
+        }
+        catch {}
+      }
+      const rejectStart = (error: Error): void => {
+        if (startSettled) {
+          return
+        }
+        startSettled = true
+        reject(error)
+      }
+      const reportError = (error: Error): void => {
+        if (stopped) {
+          return
+        }
+        stopped = true
+        cleanup()
+        releaseMedia()
+        if (!started) {
+          rejectStart(error)
+        }
+        try {
+          request.onError?.(error)
+        }
+        catch {}
+      }
+      const cancel = (reason = createAudioAbortError()): void => {
+        if (stopped) {
+          return
+        }
+        stopped = true
+        cleanup()
+        releaseMedia()
+        if (!started) {
+          rejectStart(reason)
+        }
+      }
+      const handle: AudioPlaybackHandle = {
+        pause: () => {
+          if (!stopped) {
+            audio.pause()
+          }
+        },
+        resume: () => {
+          if (!stopped) {
+            void audio.play().catch(error => reportError(toAudioError(error)))
+          }
+        },
+        cancel: () => cancel(),
+      }
+      function handleEnded(): void {
+        if (stopped) {
+          return
+        }
+        stopped = true
+        cleanup()
+        releaseMedia()
+        if (!started) {
+          rejectStart(new Error('Audio playback ended before it started.'))
+          return
+        }
+        try {
+          request.onEnd?.()
+        }
+        catch {}
+      }
+      function handleError(): void {
+        reportError(new Error('Audio playback failed.'))
+      }
+      function handleAbort(): void {
+        const reason = request.signal
+          ? readAudioAbortReason(request.signal)
+          : createAudioAbortError()
+        cancel(reason)
+      }
+
+      audio.addEventListener('ended', handleEnded)
+      audio.addEventListener('error', handleError)
+      request.signal?.addEventListener('abort', handleAbort, { once: true })
+      this.activeCancellations.add(cancel)
+
+      void audio.play().then(() => {
+        if (stopped) {
+          return
+        }
+        started = true
+        startSettled = true
+        try {
+          request.onStart?.()
+        }
+        catch {}
+        resolve(handle)
+      }).catch(error => reportError(toAudioError(error)))
+    })
+  }
+
+  stop(): void {
+    const active = [...this.activeCancellations]
+    active.forEach(cancel => cancel())
+  }
+}
+
+export class WebCloudSpeechAdapter implements CloudSpeechAdapter {
+  constructor(private readonly remote: RemoteServicesAdapter) {}
+
+  isAvailable(): boolean {
+    return true
+  }
+
+  createSession(
+    options: Parameters<CloudSpeechAdapter['createSession']>[0],
+  ): CloudSpeechSessionAdapter {
+    if (options.provider !== 'mimo') {
+      throw new Error(`Unsupported cloud speech provider: ${String(options.provider)}`)
+    }
+    return createMimoTtsProvider({
+      cache: createMemorySentenceAudioCache(options.maxCachedSentences),
+      remote: this.remote,
+      getCredentials: options.getCredentials,
+    })
   }
 }
 
@@ -454,6 +625,8 @@ export function createDefaultWebRuntimeAdapters(options: {
   fetchImpl?: typeof fetch
 } = {}): {
   speech: WebSpeechAdapter
+  audio: WebAudioPlaybackAdapter
+  cloudSpeech: WebCloudSpeechAdapter
   files: WebFileImportAdapter
   lifecycle: WebLifecycleAdapter
   network: WebNetworkStatusAdapter
@@ -469,12 +642,17 @@ export function createDefaultWebRuntimeAdapters(options: {
   const documentRef = options.documentRef ?? document
   const navigatorRef = options.navigatorRef ?? navigator
   const fetchImpl = options.fetchImpl ?? windowRef.fetch.bind(windowRef)
+  const remote = new WebRemoteServicesAdapter(options.apiBaseUrl ?? '', fetchImpl)
   return {
     speech: new WebSpeechAdapter(windowRef),
+    audio: new WebAudioPlaybackAdapter({
+      Audio: (windowRef as Window & typeof globalThis).Audio,
+    }),
+    cloudSpeech: new WebCloudSpeechAdapter(remote),
     files: new WebFileImportAdapter(documentRef),
     lifecycle: new WebLifecycleAdapter(documentRef, windowRef),
     network: new WebNetworkStatusAdapter(navigatorRef, windowRef),
-    remote: new WebRemoteServicesAdapter(options.apiBaseUrl ?? '', fetchImpl),
+    remote,
     articleExtractor: new WebArticleContentExtractor(documentRef.defaultView?.DOMParser ?? null),
     externalNavigation: new WebExternalNavigationAdapter(windowRef),
     backNavigation: new WebBackNavigationAdapter(windowRef),
@@ -482,6 +660,20 @@ export function createDefaultWebRuntimeAdapters(options: {
     readingAttemptEvents: new WebReadingAttemptEventsAdapter(windowRef),
     shareInbox: new EmptyShareImportAdapter(),
   }
+}
+
+function createAudioAbortError(): Error {
+  const error = new Error('Audio playback was cancelled.')
+  error.name = 'AbortError'
+  return error
+}
+
+function readAudioAbortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : createAudioAbortError()
+}
+
+function toAudioError(error: unknown): Error {
+  return error instanceof Error ? error : new Error('Audio playback failed.')
 }
 
 function isReadingAttemptCompletedEvent(

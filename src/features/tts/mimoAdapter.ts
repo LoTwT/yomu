@@ -108,6 +108,10 @@ export function createMimoTtsProvider(options: MimoTtsProviderOptions): Sentence
       return pendingRequest.promise
     },
     cancelPending,
+    invalidateSentence(request: TtsSynthesisRequest): Promise<void> {
+      const cacheKey = createTtsCacheKey(request)
+      return enqueueCacheMutation(() => cache.delete(cacheKey))
+    },
     clearCache(): Promise<void> {
       cancelPending()
       latestCacheClear = enqueueCacheMutation(() => cache.clear())

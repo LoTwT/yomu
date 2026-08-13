@@ -19,6 +19,7 @@ const forbiddenShellAdapterModules = [
   '/src/platform/web/storageAdapters.ts',
 ]
 const forbiddenShellRuntimeModules = [
+  '/src/platform/fake/',
   '/src/views/LegacyReaderRouteView.vue',
   '/src/legacy/',
   '/src/features/article/articlePackageLoader.ts',
@@ -27,12 +28,18 @@ const forbiddenShellRuntimeModules = [
   '/src/features/extension/aiAdapter.ts',
 ]
 const forbiddenShellChunkNames = [
+  'createFakePlatformServices',
+  'FakeCloudSpeech',
   'LegacyReaderRouteView',
   'LegacyReaderView',
   'articlePackageLoader',
   'configuredSentencePlayer',
   'mimoAdapter',
   'aiAdapter',
+]
+const forbiddenShellProviderMarkers = [
+  { label: 'mimo-tts', pattern: /mimo-tts/i },
+  { label: 'FakeCloudSpeech', pattern: /fake[\s_-]*cloud[\s_-]*speech/i },
 ]
 const remoteApiPaths = [
   '/api/import/url',
@@ -164,6 +171,12 @@ async function assertShellBuild(mode, outputDirectory, files, moduleIds, javaScr
     `${mode} must not bundle the legacy/Today/provider browser runtime: ${forbiddenRuntimeModules.join(', ')}`,
   )
   assert(
+    moduleIds.some(moduleId =>
+      moduleId.endsWith('/src/platform/shell/createUnavailableShellPlatformServices.ts'),
+    ),
+    `${mode} must include the provider-neutral unavailable shell fallback`,
+  )
+  assert(
     !relativeFiles.some(file => basename(file).startsWith('createWebPlatformServices-')),
     `${mode} must not emit a createWebPlatformServices chunk`,
   )
@@ -177,6 +190,13 @@ async function assertShellBuild(mode, outputDirectory, files, moduleIds, javaScr
   assert(
     !javaScript.includes('/api/'),
     `${mode} must not contain relative provider API paths`,
+  )
+  const providerMarkers = forbiddenShellProviderMarkers
+    .filter(({ pattern }) => pattern.test(javaScript))
+    .map(({ label }) => label)
+  assert(
+    providerMarkers.length === 0,
+    `${mode} must not contain provider-shaped fallback markers: ${providerMarkers.join(', ')}`,
   )
 }
 

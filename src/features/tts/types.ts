@@ -31,6 +31,7 @@ export interface TtsSynthesisResult {
 export interface SentenceTtsProvider {
   synthesizeSentence: (request: TtsSynthesisRequest) => Promise<TtsSynthesisResult>
   cancelPending: () => void
+  invalidateSentence: (request: TtsSynthesisRequest) => Promise<void>
   clearCache: () => Promise<void>
 }
 

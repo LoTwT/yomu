@@ -7,6 +7,14 @@ import {
   type AppLifecycleAdapter,
   type AppLifecycleEvent,
   type AppLifecycleState,
+  type AudioPlaybackAdapter,
+  type AudioPlaybackHandle,
+  type AudioPlaybackRequest,
+  type CloudSpeechAdapter,
+  type CloudSpeechCredentials,
+  type CloudSpeechSessionAdapter,
+  type CloudSpeechSynthesisRequest,
+  type CloudSpeechSynthesisResult,
   type ArticleDeletedEvent,
   type ArticleEventsAdapter,
   type ArticleContentExtractor,
@@ -42,6 +50,8 @@ export interface FakePlatformOptions {
   capabilities?: Partial<CapabilitySnapshot>
   online?: boolean
   speechAvailable?: boolean
+  audioAvailable?: boolean
+  cloudSpeechAvailable?: boolean
   fileImportAvailable?: boolean
   urlImportAvailable?: boolean
   serviceWorkerAvailable?: boolean
@@ -56,6 +66,8 @@ export interface FakePlatformHarness {
   lifecycle: FakeLifecycleAdapter
   network: FakeNetworkAdapter
   speech: FakeSpeechAdapter
+  audio: FakeAudioPlaybackAdapter
+  cloudSpeech: FakeCloudSpeechAdapter
   files: FakeFileImportAdapter
   remote: FakeRemoteServicesAdapter
   articleExtractor: FakeArticleContentExtractor
@@ -76,8 +88,13 @@ export function createFakePlatformServices(
   const lifecycle = new FakeLifecycleAdapter()
   const network = new FakeNetworkAdapter(options.online ?? true)
   const speech = new FakeSpeechAdapter(options.speechAvailable ?? true, options.voices ?? [])
+  const audio = new FakeAudioPlaybackAdapter(options.audioAvailable ?? true)
   const files = new FakeFileImportAdapter(options.fileImportAvailable ?? true, options.files ?? [])
   const remote = new FakeRemoteServicesAdapter(options.remoteHandler)
+  const cloudSpeech = new FakeCloudSpeechAdapter(
+    remote,
+    options.cloudSpeechAvailable ?? options.remoteHandler !== undefined,
+  )
   const urlImportAvailable = options.urlImportAvailable ?? options.remoteHandler !== undefined
   const articleExtractor = new FakeArticleContentExtractor(
     urlImportAvailable,
@@ -121,6 +138,8 @@ export function createFakePlatformServices(
       preferences,
       secrets,
       speech,
+      audio,
+      cloudSpeech,
       files,
       lifecycle,
       network,
@@ -136,6 +155,8 @@ export function createFakePlatformServices(
     lifecycle,
     network,
     speech,
+    audio,
+    cloudSpeech,
     files,
     remote,
     articleExtractor,
@@ -292,6 +313,252 @@ export class FakeSpeechAdapter implements SpeechAdapter {
   setVoices(voices: SpeechVoice[]): void {
     this.voices = voices
   }
+}
+
+export class FakeAudioPlaybackAdapter implements AudioPlaybackAdapter {
+  readonly played: AudioPlaybackRequest[] = []
+  cancelCount = 0
+  stopCount = 0
+
+  private activePlayback: {
+    request: AudioPlaybackRequest
+    cancelled: boolean
+    removeAbortListener: () => void
+  } | null = null
+
+  constructor(private available = true) {}
+
+  isAvailable(): boolean {
+    return this.available
+  }
+
+  async play(request: AudioPlaybackRequest): Promise<AudioPlaybackHandle> {
+    if (!this.available) {
+      throw new PlatformCapabilityError('localSpeech')
+    }
+    if (request.signal?.aborted) {
+      throw request.signal.reason instanceof Error
+        ? request.signal.reason
+        : new Error('Fake audio playback was cancelled before it started.')
+    }
+    const recordedRequest = { ...request }
+    const playback = {
+      request: recordedRequest,
+      cancelled: false,
+      removeAbortListener: () => {},
+    }
+    this.played.push(recordedRequest)
+    this.activePlayback = playback
+    const abortPlayback = (): void => {
+      if (!playback.cancelled) {
+        playback.cancelled = true
+        this.cancelCount += 1
+      }
+      if (this.activePlayback === playback) {
+        this.activePlayback = null
+      }
+    }
+    playback.removeAbortListener = () => {
+      request.signal?.removeEventListener('abort', abortPlayback)
+    }
+    request.signal?.addEventListener('abort', abortPlayback, { once: true })
+    recordedRequest.onStart?.()
+
+    return {
+      pause: () => {},
+      resume: () => {},
+      cancel: () => {
+        playback.removeAbortListener()
+        abortPlayback()
+      },
+    }
+  }
+
+  stop(): void {
+    this.stopCount += 1
+    if (this.activePlayback) {
+      this.activePlayback.removeAbortListener()
+      this.activePlayback.cancelled = true
+      this.activePlayback = null
+    }
+  }
+
+  finishActive(): void {
+    const playback = this.activePlayback
+    if (!playback || playback.cancelled) {
+      return
+    }
+    playback.removeAbortListener()
+    this.activePlayback = null
+    playback.request.onEnd?.()
+  }
+
+  failActive(error = new Error('Fake audio playback failed.')): void {
+    const playback = this.activePlayback
+    if (!playback || playback.cancelled) {
+      return
+    }
+    playback.removeAbortListener()
+    this.activePlayback = null
+    playback.request.onError?.(error)
+  }
+}
+
+interface FakeCloudSpeechResponse {
+  audioBase64: string
+  mimeType: string
+  durationMs?: number
+}
+
+export class FakeCloudSpeechAdapter implements CloudSpeechAdapter {
+  constructor(
+    private readonly remote: RemoteServicesAdapter,
+    private available = true,
+  ) {}
+
+  isAvailable(): boolean {
+    return this.available
+  }
+
+  createSession(
+    options: Parameters<CloudSpeechAdapter['createSession']>[0],
+  ): CloudSpeechSessionAdapter {
+    if (!this.available) {
+      throw new Error('Fake cloud speech is unavailable.')
+    }
+    return new FakeCloudSpeechSessionAdapter(this.remote, options)
+  }
+
+  setAvailable(available: boolean): void {
+    this.available = available
+  }
+}
+
+class FakeCloudSpeechSessionAdapter implements CloudSpeechSessionAdapter {
+  private readonly cache = new Map<string, CloudSpeechSynthesisResult>()
+  private readonly pending = new Map<string, {
+    controller: AbortController
+    generation: number
+    promise: Promise<CloudSpeechSynthesisResult>
+  }>()
+
+  private generation = 0
+
+  constructor(
+    private readonly remote: RemoteServicesAdapter,
+    private readonly options: {
+      provider: 'mimo'
+      getCredentials: () => CloudSpeechCredentials
+      maxCachedSentences: number
+    },
+  ) {}
+
+  synthesizeSentence(
+    request: CloudSpeechSynthesisRequest,
+  ): Promise<CloudSpeechSynthesisResult> {
+    const generation = this.generation
+    const key = this.createCacheKey(request)
+    const cached = this.cache.get(key)
+    if (cached) {
+      this.cache.delete(key)
+      this.cache.set(key, cached)
+      return Promise.resolve({ ...cached })
+    }
+    const existing = this.pending.get(key)
+    if (existing?.generation === generation) {
+      return existing.promise
+    }
+
+    const controller = new AbortController()
+    const credentials = this.options.getCredentials()
+    let pending!: {
+      controller: AbortController
+      generation: number
+      promise: Promise<CloudSpeechSynthesisResult>
+    }
+    const promise = this.remote.request<FakeCloudSpeechResponse>({
+      operation: 'mimo-tts',
+      body: {
+        apiKey: credentials.apiKey,
+        baseUrl: credentials.baseUrl,
+        sentenceId: request.sentenceId,
+        text: request.text,
+        textHash: request.textHash,
+        language: request.language,
+        model: request.model,
+        voice: request.voice,
+        style: request.style,
+        format: request.format,
+      },
+      signal: controller.signal,
+    }).then((response) => {
+      this.assertCurrent(generation, controller.signal)
+      const result: CloudSpeechSynthesisResult = {
+        audioUrl: `data:${response.mimeType};base64,${response.audioBase64}`,
+        durationMs: response.durationMs ?? 0,
+      }
+      this.cache.set(key, result)
+      while (this.cache.size > this.options.maxCachedSentences) {
+        const oldest = this.cache.keys().next().value
+        if (typeof oldest !== 'string') {
+          break
+        }
+        this.cache.delete(oldest)
+      }
+      return { ...result }
+    }).finally(() => {
+      if (this.pending.get(key) === pending) {
+        this.pending.delete(key)
+      }
+    })
+    pending = { controller, generation, promise }
+    this.pending.set(key, pending)
+    return promise
+  }
+
+  cancelPending(): void {
+    this.generation += 1
+    const reason = createFakeCloudSpeechAbortError()
+    const requests = [...this.pending.values()]
+    this.pending.clear()
+    requests.forEach(request => request.controller.abort(reason))
+  }
+
+  async invalidateSentence(request: CloudSpeechSynthesisRequest): Promise<void> {
+    this.cache.delete(this.createCacheKey(request))
+  }
+
+  async clearCache(): Promise<void> {
+    this.cancelPending()
+    this.cache.clear()
+  }
+
+  private assertCurrent(generation: number, signal: AbortSignal): void {
+    if (generation !== this.generation || signal.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : createFakeCloudSpeechAbortError()
+    }
+  }
+
+  private createCacheKey(request: CloudSpeechSynthesisRequest): string {
+    return JSON.stringify([
+      request.provider,
+      request.model,
+      request.voice,
+      request.style ?? '',
+      request.format,
+      request.sentenceId,
+      request.textHash,
+      request.language,
+    ])
+  }
+}
+
+function createFakeCloudSpeechAbortError(): Error {
+  const error = new Error('Fake cloud speech was cancelled.')
+  error.name = 'AbortError'
+  return error
 }
 
 export class FakeFileImportAdapter implements FileImportAdapter {

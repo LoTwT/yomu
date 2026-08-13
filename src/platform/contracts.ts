@@ -84,6 +84,70 @@ export interface SpeechAdapter {
   stop: () => void
 }
 
+export interface AudioPlaybackRequest {
+  sourceUrl: string
+  playbackRate: number
+  signal?: AbortSignal
+  onStart?: () => void
+  onEnd?: () => void
+  onError?: (error: Error) => void
+}
+
+export interface AudioPlaybackHandle {
+  pause: () => void
+  resume: () => void
+  cancel: () => void
+}
+
+export interface AudioPlaybackAdapter {
+  isAvailable: () => boolean
+  play: (request: AudioPlaybackRequest) => Promise<AudioPlaybackHandle>
+  stop: () => void
+}
+
+export type CloudSpeechProviderId = 'mimo'
+export type CloudSpeechAudioFormat = 'mp3' | 'wav'
+
+export interface CloudSpeechCredentials {
+  apiKey: string
+  baseUrl?: string
+}
+
+export interface CloudSpeechSynthesisRequest {
+  provider: CloudSpeechProviderId
+  model: string
+  voice: string
+  style?: string
+  format: CloudSpeechAudioFormat
+  sentenceId: string
+  text: string
+  textHash: string
+  language: 'en'
+}
+
+export interface CloudSpeechSynthesisResult {
+  audioUrl: string
+  durationMs: number
+}
+
+export interface CloudSpeechSessionAdapter {
+  synthesizeSentence: (
+    request: CloudSpeechSynthesisRequest,
+  ) => Promise<CloudSpeechSynthesisResult>
+  cancelPending: () => void
+  invalidateSentence: (request: CloudSpeechSynthesisRequest) => Promise<void>
+  clearCache: () => Promise<void>
+}
+
+export interface CloudSpeechAdapter {
+  isAvailable: () => boolean
+  createSession: (options: {
+    provider: CloudSpeechProviderId
+    getCredentials: () => CloudSpeechCredentials
+    maxCachedSentences: number
+  }) => CloudSpeechSessionAdapter
+}
+
 export interface ImportedTextFile {
   name: string
   size: number
@@ -207,6 +271,8 @@ export interface PlatformServices {
   preferences: PreferencesStore
   secrets: SecretStore
   speech: SpeechAdapter
+  audio: AudioPlaybackAdapter
+  cloudSpeech: CloudSpeechAdapter
   files: FileImportAdapter
   lifecycle: AppLifecycleAdapter
   network: NetworkStatusAdapter

@@ -6,6 +6,7 @@ import { hasCapability } from '@/platform/capabilities'
 import { getYomuBuildTarget } from '@/platform/createPlatformServices'
 import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
 import { platformInitializationPreferenceKeys } from '@/platform/initialization'
+import { createUnavailableShellPlatformServices } from '@/platform/shell/createUnavailableShellPlatformServices'
 import {
   WebArticleEventsAdapter,
   WebLifecycleAdapter,
@@ -15,6 +16,44 @@ import { WebPreferencesStore, WebSecretStore } from '@/platform/web/storageAdapt
 import { createWebPlatformServices } from '@/platform/web/createWebPlatformServices'
 
 describe('platform services', () => {
+  it.each([
+    ['desktop', 'desktop'],
+    ['mobile', 'mobile'],
+  ] as const)('creates a provider-neutral unavailable %s shell fallback', async (_, kind) => {
+    const services = createUnavailableShellPlatformServices(kind)
+
+    expect(services.kind).toBe(kind)
+    expect(services.repositories.persistence).toBe('ephemeral')
+    expect(services.preferences.persistence).toBe('session')
+    expect(services.speech.isAvailable()).toBe(false)
+    expect(services.audio.isAvailable()).toBe(false)
+    expect(services.cloudSpeech.isAvailable()).toBe(false)
+    expect(services.files.isAvailable()).toBe(false)
+    expect(services.articleExtractor.isAvailable()).toBe(false)
+    expect(services.lifecycle.currentState()).toBe('active')
+    expect(services.network.isOnline()).toBe(true)
+    expect(await services.shareInbox.takePending()).toBeNull()
+
+    await expect(services.speech.speak({
+      text: 'Unavailable shell speech',
+      language: 'en',
+      rate: 1,
+    })).rejects.toMatchObject({ name: 'PlatformCapabilityError' })
+    await expect(services.audio.play({
+      sourceUrl: 'blob:unavailable-shell-audio',
+      playbackRate: 1,
+    })).rejects.toMatchObject({ name: 'PlatformCapabilityError' })
+    expect(() => services.cloudSpeech.createSession({
+      provider: 'mimo',
+      getCredentials: () => ({ apiKey: 'not-read' }),
+      maxCachedSentences: 1,
+    })).toThrow('The shell cloud speech adapter has not been injected.')
+    await expect(services.remote.request({
+      operation: 'url-import',
+      body: {},
+    })).rejects.toThrow('The shell remote services adapter has not been injected.')
+  })
+
   it('provides a complete controllable fake adapter suite', async () => {
     const harness = createFakePlatformServices({ online: true })
     const lifecycleEvents: string[] = []

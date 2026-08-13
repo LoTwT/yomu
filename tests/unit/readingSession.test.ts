@@ -1,4 +1,4 @@
-import { createApp, shallowRef, type App as VueApp } from 'vue'
+import { createApp, nextTick, shallowRef, type App as VueApp } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { platformServicesKey } from '@/app/platformServices'
@@ -14,9 +14,26 @@ import {
   writeReadingProgressJournal,
 } from '@/features/reader/progressJournal'
 import { useReadingSession } from '@/features/reader/useReadingSession'
-import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
+import {
+  type ProviderSettingsBindings,
+  useProviderSettings,
+} from '@/features/settings/useProviderSettings'
+import {
+  defaultTtsSettings,
+  type TtsSettings,
+} from '@/features/tts/settings'
+import type { TtsEndpointResponse } from '@/features/tts/types'
+import {
+  createFakePlatformServices,
+  type FakePlatformOptions,
+} from '@/platform/fake/createFakePlatformServices'
 import { MemoryPreferencesStore } from '@/platform/memoryStores'
-import type { SpeechPlaybackHandle, SpeechRequest } from '@/platform/contracts'
+import {
+  RemoteServiceError,
+  type RemoteServiceRequest,
+  type SpeechPlaybackHandle,
+  type SpeechRequest,
+} from '@/platform/contracts'
 
 type ReadingSession = ReturnType<typeof useReadingSession>
 
@@ -27,6 +44,7 @@ afterEach(() => {
   vi.useRealTimers()
   mountedApps.splice(0).forEach(app => app.unmount())
   document.body.replaceChildren()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -310,6 +328,412 @@ describe('useReadingSession', () => {
     await vi.waitFor(() => expect(speakCount).toBe(2))
     expect(session.isPlaying.value).toBe(true)
     expect(session.playingSentenceId.value).toBe('article-a:s1')
+  })
+
+  it('keeps MiMo completely offline until the reader grants session consent', async () => {
+    const article = createArticle('article-a')
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+
+    await session.togglePlayback()
+
+    expect(session.cloudConsentRequired.value).toBe(true)
+    expect(remoteHandler).not.toHaveBeenCalled()
+    expect(harness.remote.requests).toEqual([])
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+
+    session.declineCloudSpeechConsent()
+
+    expect(session.cloudConsentRequired.value).toBe(false)
+    expect(session.isPlaying.value).toBe(false)
+    expect(session.errorMessage.value).toContain('未发送正文')
+    expect(remoteHandler).not.toHaveBeenCalled()
+    expect(harness.remote.requests).toEqual([])
+  })
+
+  it('sends only the current MiMo sentence and two-sentence prefetch window after consent', async () => {
+    const article = createArticle('article-a')
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+
+    await session.togglePlayback()
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(3))
+
+    expect(harness.remote.requests.map(request => request.body.sentenceId)).toEqual([
+      'article-a:s1',
+      'article-a:s2',
+      'article-a:s3',
+    ])
+    expect(harness.audio.played).toHaveLength(1)
+    expect(harness.audio.played[0]).toMatchObject({ playbackRate: 1 })
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.playingSentenceId.value).toBe('article-a:s1')
+    expect(session.isPlaying.value).toBe(true)
+  })
+
+  it('cancels MiMo prefetch on fallback and retries without asking for consent again', async () => {
+    const article = createArticle('article-a')
+    const pending = createDeferredTtsRemote()
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler: pending.handler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+
+    await session.togglePlayback()
+    const firstAttempt = session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(3))
+    const firstWindow = pending.requests.slice(0, 3)
+    const currentRequest = firstWindow.find(entry =>
+      entry.request.body.sentenceId === 'article-a:s1')
+    if (!currentRequest) {
+      throw new Error('The active MiMo request was not captured.')
+    }
+
+    currentRequest.reject(new RemoteServiceError(
+      'mimo-tts',
+      502,
+      'MiMo is temporarily unavailable.',
+    ))
+    await firstAttempt
+    await vi.waitFor(() => expect(harness.speech.spoken).toHaveLength(1))
+
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken[0]).toMatchObject({
+      text: article.sentences[0]!.original,
+      rate: 1,
+    })
+    expect(firstWindow
+      .filter(entry => entry.request.body.sentenceId !== 'article-a:s1')
+      .every(entry => entry.request.signal?.aborted)).toBe(true)
+    expect(session.errorMessage.value).toContain('已改用浏览器朗读当前句')
+    expect(session.playingSentenceId.value).toBe('article-a:s1')
+    expect(session.cloudSpeechFallbackActive.value).toBe(true)
+
+    const retry = session.retryCloudSpeech()
+    expect(session.cloudConsentRequired.value).toBe(false)
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(6))
+    expect(session.cloudSpeechFallbackActive.value).toBe(false)
+    expect(session.activeSpeechProvider.value).toBe('mimo')
+
+    pending.resolveAll(createTtsResponse())
+    await retry
+    await vi.waitFor(() => expect(harness.audio.played).toHaveLength(1))
+
+    expect(harness.audio.played[0]).toMatchObject({ playbackRate: 1 })
+    expect(session.cloudConsentRequired.value).toBe(false)
+    expect(session.playingSentenceId.value).toBe('article-a:s1')
+  })
+
+  it('clears a MiMo fallback when the same Reader instance loads another article', async () => {
+    const firstArticle = createArticle('article-a')
+    const secondArticle = createArticle('article-b')
+    const remoteHandler = vi.fn(async (request: RemoteServiceRequest) => {
+      if (request.body.sentenceId === 'article-a:s1') {
+        throw new RemoteServiceError(
+          'mimo-tts',
+          502,
+          'MiMo is temporarily unavailable.',
+        )
+      }
+      return createTtsResponse()
+    })
+    const { articleId, session, harness, providerSettings } = mountReadingSession({
+      articles: [firstArticle, secondArticle],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(session.cloudSpeechFallbackActive.value).toBe(true))
+
+    expect(session.activeSpeechProvider.value).toBe('webspeech')
+    const firstArticleRequestCount = harness.remote.requests.length
+
+    articleId.value = secondArticle.id
+    await nextTick()
+    await vi.waitFor(() => expect(session.article.value?.id).toBe(secondArticle.id))
+
+    expect(session.cloudSpeechFallbackActive.value).toBe(false)
+    expect(session.activeSpeechProvider.value).toBe('mimo')
+    expect(session.speechProviderLabel.value).toBe('云朗读 · MiMo')
+    expect(session.isPlaying.value).toBe(false)
+
+    await session.togglePlayback()
+    expect(session.cloudConsentRequired.value).toBe(true)
+    expect(harness.remote.requests).toHaveLength(firstArticleRequestCount)
+
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(harness.remote.requests.filter(request =>
+      String(request.body.sentenceId).startsWith('article-b:'))).toHaveLength(3))
+    expect(harness.audio.played).toHaveLength(1)
+    expect(session.playingSentenceId.value).toBe('article-b:s1')
+  })
+
+  it('uses Web Speech as the floor when MiMo is configured but audio playback is unavailable', async () => {
+    const article = createArticle('article-a')
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      audioAvailable: false,
+      remoteHandler,
+    })
+    await expectReady(session)
+    await providerSettings.ready
+    providerSettings.ttsSettings.value = createMimoSettings()
+    await nextTick()
+    await vi.waitFor(() => expect(session.activeSpeechProvider.value).toBe('webspeech'))
+
+    expect(session.speechAvailable.value).toBe(true)
+    expect(session.speechProviderLabel.value).toContain('无法播放云音频')
+
+    await session.togglePlayback()
+
+    expect(session.cloudConsentRequired.value).toBe(false)
+    expect(harness.remote.requests).toEqual([])
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toHaveLength(1)
+    expect(harness.speech.spoken[0]).toMatchObject({
+      text: article.sentences[0]!.original,
+      rate: 1,
+    })
+  })
+
+  it('uses Web Speech without consent when this platform has no cloud speech adapter', async () => {
+    const article = createArticle('article-a')
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      cloudSpeechAvailable: false,
+      remoteHandler,
+    })
+    await expectReady(session)
+    await providerSettings.ready
+    providerSettings.ttsSettings.value = createMimoSettings()
+    await nextTick()
+    await vi.waitFor(() => expect(session.activeSpeechProvider.value).toBe('webspeech'))
+
+    expect(session.speechProviderLabel.value).toContain('未提供云语音')
+    await session.togglePlayback()
+
+    expect(session.cloudConsentRequired.value).toBe(false)
+    expect(harness.remote.requests).toEqual([])
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toHaveLength(1)
+  })
+
+  it('blocks every speech provider when the article rights disallow TTS', async () => {
+    const article = createArticle('article-a')
+    article.rights.ttsAllowed = false
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+
+    expect(session.speechAvailable.value).toBe(false)
+    await session.togglePlayback()
+
+    expect(session.errorMessage.value).toContain('使用许可不允许语音朗读')
+    expect(session.cloudConsentRequired.value).toBe(false)
+    expect(harness.remote.requests).toEqual([])
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+  })
+
+  it('synthesizes only the current sentence and does not retain it when caching is disallowed', async () => {
+    const article = createArticle('article-a')
+    article.rights.cacheAllowed = false
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+
+    await session.togglePlayback()
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(1))
+    expect(harness.remote.requests[0]?.body.sentenceId).toBe('article-a:s1')
+
+    await session.repeatCurrentSentence()
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(2))
+    expect(harness.remote.requests.map(request => request.body.sentenceId)).toEqual([
+      'article-a:s1',
+      'article-a:s1',
+    ])
+  })
+
+  it('does not create audio or advance when a paused MiMo request resolves late', async () => {
+    const pending = createDeferredTtsRemote()
+    const article = createArticle('article-a')
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler: pending.handler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    const playback = session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(3))
+
+    await session.togglePlayback()
+    expect(pending.requests.every(entry => entry.request.signal?.aborted)).toBe(true)
+    pending.resolveAll(createTtsResponse())
+    await playback
+    await settleMicrotasks()
+
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.currentSentenceId.value).toBe('article-a:s1')
+    expect(session.playingSentenceId.value).toBeNull()
+    expect(session.isPlaying.value).toBe(false)
+  })
+
+  it('does not create audio from a late MiMo response after switching articles', async () => {
+    const pending = createDeferredTtsRemote()
+    const firstArticle = createArticle('article-a')
+    const secondArticle = createArticle('article-b')
+    const { articleId, session, harness, providerSettings } = mountReadingSession({
+      articles: [firstArticle, secondArticle],
+      remoteHandler: pending.handler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    const playback = session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(3))
+
+    articleId.value = secondArticle.id
+    await nextTick()
+    expect(pending.requests.every(entry => entry.request.signal?.aborted)).toBe(true)
+    pending.resolveAll(createTtsResponse())
+    await playback
+    await vi.waitFor(() => expect(session.article.value?.id).toBe(secondArticle.id))
+
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.currentSentenceId.value).toBe('article-b:s1')
+    expect(session.isPlaying.value).toBe(false)
+  })
+
+  it('does not create audio from a late MiMo response after entering the background', async () => {
+    const pending = createDeferredTtsRemote()
+    const article = createArticle('article-a')
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler: pending.handler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    const playback = session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(3))
+
+    harness.lifecycle.emit('background')
+    pending.resolveAll(createTtsResponse())
+    await playback
+    await session.suspend()
+
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.currentSentenceId.value).toBe('article-a:s1')
+    expect(session.isPlaying.value).toBe(false)
+  })
+
+  it('does not create audio from a late MiMo response after reading completes', async () => {
+    const pending = createDeferredTtsRemote()
+    const article = createArticle('article-a')
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler: pending.handler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    const playback = session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(pending.requests).toHaveLength(3))
+
+    const completion = session.completeReading()
+    pending.resolveAll(createTtsResponse())
+    await Promise.all([playback, completion])
+
+    expect(harness.audio.played).toEqual([])
+    expect(harness.speech.spoken).toEqual([])
+    expect(session.currentSentenceId.value).toBe('article-a:s1')
+    expect(session.completionState.value).toBe('completed')
+    expect(session.isPlaying.value).toBe(false)
+  })
+
+  it('stops playback, clears cached MiMo audio, and resets consent when provider settings change', async () => {
+    const article = createArticle('article-a')
+    const remoteHandler = vi.fn(async () => createTtsResponse())
+    const { session, harness, providerSettings } = mountReadingSession({
+      articles: [article],
+      remoteHandler,
+    })
+    await expectReady(session)
+    await enableMimoProvider(providerSettings, session)
+    await session.togglePlayback()
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(3))
+
+    providerSettings.ttsSettings.value = {
+      ...providerSettings.ttsSettings.value,
+      mimo: { ...providerSettings.ttsSettings.value.mimo },
+    }
+    await nextTick()
+    await vi.waitFor(() => expect(session.isPlaying.value).toBe(false))
+
+    const requestCountBeforeRetry = harness.remote.requests.length
+    await session.togglePlayback()
+    expect(session.cloudConsentRequired.value).toBe(true)
+    expect(harness.remote.requests).toHaveLength(requestCountBeforeRetry)
+    expect(harness.audio.stopCount).toBeGreaterThan(0)
+
+    await session.acceptCloudSpeechConsent()
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(
+      requestCountBeforeRetry + 3,
+    ))
+  })
+
+  it('restarts the current sentence with the selected rate and supports repeat', async () => {
+    const article = createArticle('article-a')
+    const { session, harness } = mountReadingSession({ articles: [article] })
+    await expectReady(session)
+    await session.togglePlayback()
+
+    session.setPlaybackRate(1.15)
+    await vi.waitFor(() => expect(harness.speech.spoken).toHaveLength(2))
+    expect(harness.speech.spoken[1]).toMatchObject({
+      text: article.sentences[0]!.original,
+      rate: 1.15,
+    })
+
+    await session.repeatCurrentSentence()
+    await vi.waitFor(() => expect(harness.speech.spoken).toHaveLength(3))
+    expect(harness.speech.spoken[2]).toMatchObject({
+      text: article.sentences[0]!.original,
+      rate: 1.15,
+    })
+    expect(session.currentSentenceId.value).toBe('article-a:s1')
   })
 
   it('stops and persists on background, then stays paused when active again', async () => {
@@ -1838,8 +2262,11 @@ describe('useReadingSession', () => {
 function mountReadingSession(seed: {
   articles: ArticleRecord[]
   attempts?: ReadingAttempt[]
+  audioAvailable?: boolean
+  cloudSpeechAvailable?: boolean
   repositories?: LocalRepositories
   preferences?: MemoryPreferencesStore
+  remoteHandler?: FakePlatformOptions['remoteHandler']
   prepareHarness?: (
     harness: ReturnType<typeof createFakePlatformServices>,
   ) => void
@@ -1848,7 +2275,12 @@ function mountReadingSession(seed: {
     articles: seed.articles,
     attempts: seed.attempts,
   })
-  const harness = createFakePlatformServices({ repositories })
+  const harness = createFakePlatformServices({
+    audioAvailable: seed.audioAvailable,
+    cloudSpeechAvailable: seed.cloudSpeechAvailable,
+    repositories,
+    remoteHandler: seed.remoteHandler,
+  })
   if (seed.preferences) {
     harness.preferences = seed.preferences
     harness.services.preferences = seed.preferences
@@ -1856,8 +2288,10 @@ function mountReadingSession(seed: {
   seed.prepareHarness?.(harness)
   const articleId = shallowRef(seed.articles[0]!.id)
   let session: ReadingSession | undefined
+  let providerSettings: ProviderSettingsBindings | undefined
   const app = createApp({
     setup() {
+      providerSettings = useProviderSettings()
       session = useReadingSession(articleId)
       return () => null
     },
@@ -1868,11 +2302,76 @@ function mountReadingSession(seed: {
   if (!session) {
     throw new Error('Reading session did not initialize.')
   }
-  return { app, articleId, session, harness, repositories }
+  if (!providerSettings) {
+    throw new Error('Provider settings did not initialize.')
+  }
+  return { app, articleId, session, harness, providerSettings, repositories }
 }
 
 async function expectReady(session: ReadingSession): Promise<void> {
   await vi.waitFor(() => expect(session.status.value).toBe('ready'))
+}
+
+async function enableMimoProvider(
+  providerSettings: ProviderSettingsBindings,
+  session: ReadingSession,
+): Promise<void> {
+  await providerSettings.ready
+  providerSettings.ttsSettings.value = createMimoSettings()
+  await nextTick()
+  await vi.waitFor(() => expect(session.activeSpeechProvider.value).toBe('mimo'))
+}
+
+function createMimoSettings(): TtsSettings {
+  return {
+    ...defaultTtsSettings,
+    provider: 'mimo',
+    mimo: {
+      ...defaultTtsSettings.mimo,
+      apiKey: 'reader-session-key',
+    },
+  }
+}
+
+function createTtsResponse(): TtsEndpointResponse {
+  return {
+    audioBase64: btoa('mp3-bytes'),
+    mimeType: 'audio/mpeg',
+    durationMs: 1_200,
+  }
+}
+
+function createDeferredTtsRemote() {
+  interface PendingRequest {
+    request: RemoteServiceRequest
+    resolve: (response: TtsEndpointResponse) => void
+    reject: (error: unknown) => void
+  }
+
+  const requests: PendingRequest[] = []
+  const handler: NonNullable<FakePlatformOptions['remoteHandler']> = request =>
+    new Promise((resolve, reject) => {
+      requests.push({
+        request,
+        resolve: response => resolve(response),
+        reject,
+      })
+    })
+
+  return {
+    handler,
+    requests,
+    resolveAll(response: TtsEndpointResponse): void {
+      requests.forEach(request => request.resolve(response))
+    },
+  }
+}
+
+async function settleMicrotasks(): Promise<void> {
+  for (let index = 0; index < 8; index += 1) {
+    await Promise.resolve()
+    await nextTick()
+  }
 }
 
 function createArticle(id: string): ArticleRecord {

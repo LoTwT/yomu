@@ -10,6 +10,12 @@ import {
 
 import { usePlatformServices } from '@/app/platformServices'
 import type { ArticleRecord, ArticleSentenceRecord, ReadingAttempt } from '@/data/entities'
+import { useProviderSettings } from '@/features/settings/useProviderSettings'
+import { createReadingSpeechEngine } from '@/features/tts/readingSpeechEngine'
+import {
+  getActiveTtsProvider,
+  getTtsProviderLabel,
+} from '@/features/tts/settings'
 import type {
   AppLifecycleState,
   ReadingAttemptCompletedEvent,
@@ -41,6 +47,8 @@ import {
 
 export type ReadingSessionStatus = 'loading' | 'ready' | 'missing' | 'error'
 export type ReadingCompletionState = 'idle' | 'saving' | 'completed' | 'error'
+export type ReadingPlaybackRate = 0.85 | 1 | 1.15
+export const readingPlaybackRates = [0.85, 1, 1.15] as const
 
 type ReadingPlaybackState =
   | { phase: 'idle', sentenceId: null }
@@ -111,6 +119,16 @@ interface ReplayedProgress {
 
 export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   const services = usePlatformServices()
+  const {
+    ttsSettings,
+    ready: providerSettingsReady,
+  } = useProviderSettings()
+  const speechEngine = createReadingSpeechEngine({
+    speech: services.speech,
+    audio: services.audio,
+    cloudSpeech: services.cloudSpeech,
+    getSettings: () => ttsSettings.value,
+  })
   const journalWriterId = createReadingProgressJournalWriterId()
   const status = shallowRef<ReadingSessionStatus>('loading')
   const article = shallowRef<ArticleRecord | null>(null)
@@ -121,6 +139,9 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   const errorMessage = shallowRef('')
   const completionState = shallowRef<ReadingCompletionState>('idle')
   const completionErrorMessage = shallowRef('')
+  const playbackRate = shallowRef<ReadingPlaybackRate>(1)
+  const cloudConsentRequired = shallowRef(false)
+  const cloudSpeechFallbackActive = shallowRef(false)
   const orderedSentences = computed(() =>
     [...(article.value?.sentences ?? [])].sort((left, right) => left.order - right.order))
   const currentSentenceIndex = computed(() => Math.max(
@@ -138,7 +159,27 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   }))
   const playingSentenceId = computed(() => playbackState.value.sentenceId)
   const isPlaying = computed(() => playbackState.value.phase !== 'idle')
-  const speechAvailable = services.speech.isAvailable()
+  const configuredSpeechProvider = computed(() => getActiveTtsProvider(ttsSettings.value))
+  const activeSpeechProvider = computed(() => cloudSpeechFallbackActive.value
+    || (configuredSpeechProvider.value === 'mimo'
+      && (!services.audio.isAvailable() || !services.cloudSpeech.isAvailable()))
+    ? 'webspeech'
+    : configuredSpeechProvider.value)
+  const speechProviderLabel = computed(() => {
+    if (configuredSpeechProvider.value === 'mimo' && !services.audio.isAvailable()) {
+      return '浏览器朗读（此平台无法播放云音频）'
+    }
+    if (configuredSpeechProvider.value === 'mimo' && !services.cloudSpeech.isAvailable()) {
+      return '浏览器朗读（此平台未提供云语音）'
+    }
+    return cloudSpeechFallbackActive.value
+      ? '浏览器朗读（MiMo 暂不可用）'
+      : getTtsProviderLabel(ttsSettings.value)
+  })
+  const speechAvailable = computed(() => article.value?.rights.ttsAllowed === true
+    && (activeSpeechProvider.value === 'webspeech'
+      ? services.speech.isAvailable()
+      : speechEngine.isAvailable()))
 
   let loadVersion = 0
   let playbackVersion = 0
@@ -166,8 +207,22 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   let routeTransitionVersion = 0
   let routeTransitionSuspended = false
   let completionOperation: ReadingCompletionOperation | null = null
+  let providerSettingsLoaded = false
+  let cloudConsentAccepted = false
+  let pendingCloudConsentSentenceId: string | null = null
   const observedCompletedAttempts = new Map<string, ReadingAttemptCompletedEvent['attempt']>()
   let disposed = false
+
+  void providerSettingsReady.finally(() => {
+    providerSettingsLoaded = true
+  })
+
+  watch(
+    ttsSettings,
+    () => {
+      clearSpeechRuntime()
+    },
+  )
 
   const unsubscribeLifecycle = services.lifecycle.subscribe((event) => {
     lifecycleState = event.state
@@ -175,6 +230,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
       void revalidateActiveArticle()
       return
     }
+    clearSpeechRuntime()
     articlePresenceValidationVersion += 1
     activeArticleRevalidationPending = false
     if (event.reason === 'pagehide'
@@ -212,6 +268,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     unsubscribeArticleEvents()
     cancelScheduledFlush()
     void suspend().catch(() => {})
+    void speechEngine.dispose().catch(() => {})
   })
 
   async function load(): Promise<void> {
@@ -220,10 +277,13 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     activeArticleRevalidationPending = false
     const targetArticleId = toValue(articleId)
     status.value = 'loading'
+    cloudSpeechFallbackActive.value = false
     await suspend()
+    await speechEngine.clearCache().catch(() => {})
     if (!isCurrentLoad(version, targetArticleId)) {
       return
     }
+    resetCloudConsent()
     article.value = null
     attempt.value = null
     currentSentenceId.value = ''
@@ -330,8 +390,15 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
   }
 
   function startPlayback(sentenceId: string): Promise<void> {
-    if (!speechAvailable) {
-      errorMessage.value = '此设备当前没有可用的本机朗读能力，纯阅读仍可继续。'
+    if (!providerSettingsLoaded) {
+      return providerSettingsReady
+        .then(() => startPlayback(sentenceId))
+        .catch(() => startPlayback(sentenceId))
+    }
+    if (!speechAvailable.value) {
+      errorMessage.value = article.value?.rights.ttsAllowed === false
+        ? '这篇文章的使用许可不允许语音朗读，纯阅读仍可继续。'
+        : '当前没有可用的朗读方式，纯阅读仍可继续。'
       return Promise.resolve()
     }
     if (disposed
@@ -343,6 +410,12 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     }
     const sentence = orderedSentences.value.find(value => value.id === sentenceId)
     if (!sentence || !article.value) {
+      return Promise.resolve()
+    }
+
+    if (activeSpeechProvider.value === 'mimo' && !cloudConsentAccepted) {
+      pendingCloudConsentSentenceId = sentence.id
+      cloudConsentRequired.value = true
       return Promise.resolve()
     }
 
@@ -422,26 +495,71 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     }
     const abortController = new AbortController()
     playbackStartAbortController = abortController
+    const providerAtStart = activeSpeechProvider.value
+    let providerPlaybackStarted = false
     try {
-      const speakPromise = services.speech.speak({
-        text: sentence.original,
+      const speechRequest = {
+        id: sentence.id,
+        original: sentence.original,
+        textHash: sentence.textHash ?? sentence.id,
+        cacheAllowed: article.value?.rights.cacheAllowed === true,
+        cloudConsentGranted: providerAtStart === 'mimo' && cloudConsentAccepted,
         language: 'en-US',
-        rate: 1,
+        playbackRate: playbackRate.value,
         signal: abortController.signal,
         onStart: () => {
+          providerPlaybackStarted = true
           if (isCurrentPlayback(version, sentence.id)) {
             playbackState.value = { phase: 'playing', sentenceId: sentence.id }
           }
         },
         onEnd: () => handlePlaybackEnd(version, sentence.id),
         onError: () => {
+          if (providerAtStart === 'mimo' && !providerPlaybackStarted) {
+            return
+          }
+          if (providerAtStart === 'mimo') {
+            fallbackStartedCloudPlayback(version, sentence)
+            return
+          }
           failPlayback(version, sentence.id)
         },
-      })
-      const handle = await raceSpeechStartWithAbort(
-        speakPromise,
-        abortController.signal,
-      )
+      }
+      const speakPromise = providerAtStart === 'mimo'
+        ? speechEngine.playSentence(speechRequest)
+        : speechEngine.playSystemSentence(speechRequest)
+      if (providerAtStart === 'mimo' && cloudConsentAccepted) {
+        prefetchUpcomingSentences(sentence.id)
+      }
+      let handle: SpeechPlaybackHandle | null
+      try {
+        handle = await raceSpeechStartWithAbort(
+          speakPromise,
+          abortController.signal,
+        )
+      }
+      catch (error) {
+        if (providerAtStart !== 'mimo'
+          || providerPlaybackStarted
+          || !services.speech.isAvailable()
+          || !isCurrentPlayback(version, sentence.id)
+          || abortController.signal.aborted
+          || isAbortError(error)) {
+          throw error
+        }
+        speechEngine.stop()
+        cloudSpeechFallbackActive.value = true
+        cloudConsentRequired.value = false
+        pendingCloudConsentSentenceId = null
+        errorMessage.value = 'MiMo 暂时不可用，已改用浏览器朗读当前句。'
+        handle = await raceSpeechStartWithAbort(
+          speechEngine.playSystemSentence({
+            ...speechRequest,
+            onError: () => failPlayback(version, sentence.id),
+          }),
+          abortController.signal,
+        )
+      }
       if (!handle) {
         return
       }
@@ -460,6 +578,102 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
         playbackStartAbortController = null
       }
     }
+  }
+
+  function prefetchUpcomingSentences(sentenceId: string): void {
+    if (article.value?.rights.cacheAllowed !== true) {
+      return
+    }
+    const sentenceIndex = orderedSentences.value.findIndex(value => value.id === sentenceId)
+    if (sentenceIndex < 0) {
+      return
+    }
+    const upcoming = orderedSentences.value
+      .slice(sentenceIndex + 1, sentenceIndex + 3)
+      .map(sentence => ({
+        id: sentence.id,
+        original: sentence.original,
+        textHash: sentence.textHash ?? sentence.id,
+      }))
+    void speechEngine.prefetchSentences(upcoming, cloudConsentAccepted).catch(() => {})
+  }
+
+  function fallbackStartedCloudPlayback(
+    version: number,
+    sentence: ArticleSentenceRecord,
+  ): void {
+    if (!services.speech.isAvailable() || !isCurrentPlayback(version, sentence.id)) {
+      failPlayback(version, sentence.id)
+      return
+    }
+    try {
+      speechEngine.stop()
+    }
+    catch {}
+    playbackHandle = null
+    cloudSpeechFallbackActive.value = true
+    cloudConsentRequired.value = false
+    pendingCloudConsentSentenceId = null
+    errorMessage.value = 'MiMo 播放中断，已改用浏览器重新朗读当前句。'
+    const fallbackVersion = ++playbackVersion
+    playbackState.value = { phase: 'starting', sentenceId: sentence.id }
+    void queueSpeechStart(fallbackVersion, sentence).catch(() => {})
+  }
+
+  function acceptCloudSpeechConsent(): Promise<void> {
+    if (activeSpeechProvider.value !== 'mimo') {
+      resetCloudConsent()
+      return Promise.resolve()
+    }
+    cloudConsentAccepted = true
+    cloudConsentRequired.value = false
+    const sentenceId = pendingCloudConsentSentenceId ?? currentSentenceId.value
+    pendingCloudConsentSentenceId = null
+    return startPlayback(sentenceId)
+  }
+
+  function declineCloudSpeechConsent(): void {
+    resetCloudConsent()
+    errorMessage.value = '未发送正文；你仍可纯阅读，或在语音设置中改用浏览器朗读。'
+  }
+
+  function retryCloudSpeech(): Promise<void> {
+    if (configuredSpeechProvider.value !== 'mimo') {
+      return Promise.resolve()
+    }
+    cloudSpeechFallbackActive.value = false
+    return startPlayback(currentSentenceId.value)
+  }
+
+  function repeatCurrentSentence(): Promise<void> {
+    if (isPlaying.value || playbackHandle) {
+      stopSpeech()
+    }
+    return startPlayback(currentSentenceId.value)
+  }
+
+  function setPlaybackRate(nextRate: ReadingPlaybackRate): void {
+    if (!readingPlaybackRates.includes(nextRate) || playbackRate.value === nextRate) {
+      return
+    }
+    const shouldRestart = isPlaying.value
+    playbackRate.value = nextRate
+    if (shouldRestart) {
+      void repeatCurrentSentence()
+    }
+  }
+
+  function resetCloudConsent(): void {
+    cloudConsentAccepted = false
+    cloudConsentRequired.value = false
+    pendingCloudConsentSentenceId = null
+  }
+
+  function clearSpeechRuntime(): void {
+    cloudSpeechFallbackActive.value = false
+    resetCloudConsent()
+    stopSpeech()
+    void speechEngine.clearCache().catch(() => {})
   }
 
   function suspend(): Promise<void> {
@@ -1414,7 +1628,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     }
     catch {}
     try {
-      services.speech.stop()
+      speechEngine.stop()
     }
     catch {}
     playbackState.value = idlePlaybackState
@@ -1453,7 +1667,7 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     }
     catch {}
     try {
-      services.speech.stop()
+      speechEngine.stop()
     }
     catch {}
     playbackState.value = idlePlaybackState
@@ -1544,6 +1758,13 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     })
   }
 
+  function isAbortError(error: unknown): boolean {
+    return typeof error === 'object'
+      && error !== null
+      && 'name' in error
+      && error.name === 'AbortError'
+  }
+
   return {
     status: shallowReadonly(status),
     article: shallowReadonly(article),
@@ -1557,12 +1778,22 @@ export function useReadingSession(articleId: MaybeRefOrGetter<string>) {
     errorMessage: shallowReadonly(errorMessage),
     completionState: shallowReadonly(completionState),
     completionErrorMessage: shallowReadonly(completionErrorMessage),
+    playbackRate: shallowReadonly(playbackRate),
+    activeSpeechProvider,
+    cloudSpeechFallbackActive: shallowReadonly(cloudSpeechFallbackActive),
+    speechProviderLabel,
+    cloudConsentRequired: shallowReadonly(cloudConsentRequired),
     speechAvailable,
     load,
     selectSentence,
     previousSentence,
     nextSentence,
     togglePlayback,
+    repeatCurrentSentence,
+    setPlaybackRate,
+    acceptCloudSpeechConsent,
+    declineCloudSpeechConsent,
+    retryCloudSpeech,
     completeReading,
     suspend,
     beginRouteTransition,

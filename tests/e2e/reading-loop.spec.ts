@@ -947,9 +947,8 @@ test('reader display assistance adapts by viewport and only persists durable pre
   await expect(settingsDialog).toBeVisible()
   await expect(settingsDialog.getByRole('heading', { name: '调整当前阅读' })).toBeFocused()
   await expect.poll(readBackgroundBounds).toEqual(backgroundBoundsBeforeSettings)
-  const ipaToggle = settingsDialog.getByRole('checkbox', { name: /本次阅读显示 IPA/ })
   await page.keyboard.press('Shift+Tab')
-  await expect(ipaToggle).toBeFocused()
+  await expect(settingsDialog.getByRole('button', { name: '管理语音服务' })).toBeFocused()
   await page.keyboard.press('Tab')
   await expect(settingsDialog.getByRole('button', { name: '关闭阅读设置' })).toBeFocused()
   await expect.poll(() => settingsDialog.evaluate((element) => {

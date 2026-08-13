@@ -12,15 +12,17 @@ import type { TtsAudioFormat, TtsEndpointResponse } from './features/tts/types'
 const mimoTtsPath = '/api/tts/mimo'
 const urlImportPath = '/api/import/url'
 const aiExpansionPath = '/api/extensions/ai'
-const defaultTokenPlanBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
+const defaultMimoBaseUrl = 'https://api.xiaomimimo.com/v1'
 const defaultOpenAiBaseUrl = 'https://api.openai.com/v1'
-const allowedMimoHosts = new Set(['token-plan-cn.xiaomimimo.com'])
+const allowedMimoHosts = new Set(['api.xiaomimimo.com'])
 const allowedAiHosts = new Set(['api.openai.com'])
 const maxTtsSentenceChars = 1_200
 const maxAiContextChars = 360
 const maxAiTermChars = 80
 const maxUrlImportRedirects = 3
 const maxWorkerJsonBodyBytes = 16_384
+const mimoTtsProviderTimeoutMs = 30_000
+export const maxMimoTtsProviderResponseBytes = 8 * 1024 * 1024
 const ttsNoStoreHeaders = {
   'cache-control': 'no-store',
   pragma: 'no-cache',
@@ -30,6 +32,18 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === mimoTtsPath) {
+      if (request.method === 'POST') {
+        const { success } = await env.MIMO_TTS_RATE_LIMITER.limit({
+          key: getMimoTtsRateLimitKey(request),
+        })
+        if (!success) {
+          return ttsJsonError(
+            'Speech synthesis is busy. Please wait before trying again.',
+            429,
+            { 'retry-after': '60' },
+          )
+        }
+      }
       return handleMimoTtsRequest(request, env)
     }
     if (url.pathname === aiExpansionPath) {
@@ -57,6 +71,11 @@ export default {
 
 export interface UrlImportDependencies {
   fetchImpl?: typeof fetch
+}
+
+export interface MimoTtsDependencies {
+  fetchImpl?: typeof fetch
+  timeoutMs?: number
 }
 
 interface UrlImportFetchSuccess {
@@ -264,6 +283,7 @@ async function resolveDnsAnswers(
 export async function handleMimoTtsRequest(
   request: Request,
   env: Pick<Env, 'ASSETS'> & Partial<Pick<Env, 'MIMO_TTS_MODEL'>>,
+  dependencies: MimoTtsDependencies = {},
 ): Promise<Response> {
   if (request.method !== 'POST') {
     return ttsJsonError('Only POST is supported for sentence synthesis.', 405)
@@ -277,8 +297,11 @@ export async function handleMimoTtsRequest(
   if (!apiKey) {
     return ttsJsonError('Add your MiMo API key before cloud read-aloud.', 401)
   }
+  if (apiKey.toLowerCase().startsWith('tp-')) {
+    return ttsJsonError('Create a pay-as-you-go MiMo API key before cloud read-aloud.', 400)
+  }
 
-  const baseUrl = normalizeMimoBaseUrl(typeof body.value.baseUrl === 'string' ? body.value.baseUrl : defaultTokenPlanBaseUrl)
+  const baseUrl = normalizeMimoBaseUrl(typeof body.value.baseUrl === 'string' ? body.value.baseUrl : defaultMimoBaseUrl)
   if (!baseUrl) {
     return ttsJsonError('This MiMo endpoint is not supported.', 400)
   }
@@ -300,26 +323,57 @@ export async function handleMimoTtsRequest(
     format,
   })
 
-  const providerResponse = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'application/json, audio/mpeg, audio/wav',
-    },
-    body: JSON.stringify(payload),
-  })
-
-  if (!providerResponse.ok) {
-    return mapProviderError(providerResponse.status)
+  const providerController = new AbortController()
+  let didTimeout = false
+  const abortForRequest = () => providerController.abort()
+  if (request.signal.aborted) {
+    abortForRequest()
   }
-
-  const normalized = await normalizeProviderAudioResponse(providerResponse, format)
-  if (!normalized) {
-    return ttsJsonError('The speech provider did not return audio for this sentence.', 502)
+  else {
+    request.signal.addEventListener('abort', abortForRequest, { once: true })
   }
+  const timeout = setTimeout(() => {
+    didTimeout = true
+    providerController.abort()
+  }, dependencies.timeoutMs ?? mimoTtsProviderTimeoutMs)
 
-  return ttsJson(normalized)
+  try {
+    const fetchImpl = dependencies.fetchImpl ?? fetch
+    const providerResponse = await fetchImpl(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      redirect: 'error',
+      cache: 'no-store',
+      signal: providerController.signal,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        accept: 'application/json, audio/mpeg, audio/wav',
+      },
+      body: JSON.stringify(payload),
+    })
+
+    if (!providerResponse.ok) {
+      await cancelResponseBody(providerResponse)
+      return mapProviderError(providerResponse.status)
+    }
+
+    const normalized = await normalizeProviderAudioResponse(providerResponse, format)
+    if (!normalized) {
+      return ttsJsonError('The speech provider did not return audio for this sentence.', 502)
+    }
+
+    return ttsJson(normalized)
+  }
+  catch {
+    if (didTimeout) {
+      return ttsJsonError('The speech provider took too long to respond.', 504)
+    }
+    return ttsJsonError('The speech provider is temporarily unavailable.', 502)
+  }
+  finally {
+    clearTimeout(timeout)
+    request.signal.removeEventListener('abort', abortForRequest)
+  }
 }
 
 export async function handleAiExpansionRequest(request: Request): Promise<Response> {
@@ -444,14 +498,23 @@ async function readJsonBody(request: Request): Promise<
 
 async function normalizeProviderAudioResponse(response: Response, format: TtsAudioFormat): Promise<TtsEndpointResponse | null> {
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+  const body = await readLimitedResponseBytes(response, maxMimoTtsProviderResponseBytes)
+  if (!body) {
+    return null
+  }
+
   if (contentType.startsWith('audio/')) {
     return {
-      audioBase64: encodeBase64(await response.arrayBuffer()),
+      audioBase64: encodeBase64(body),
       mimeType: contentType.split(';')[0] ?? mimeTypeForFormat(format),
     }
   }
 
-  const payload = await response.json() as Record<string, unknown>
+  const decoded: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body))
+  if (!isRecord(decoded)) {
+    return null
+  }
+  const payload = decoded
   const audioBase64 = findAudioBase64(payload)
   if (!audioBase64) {
     return null
@@ -509,8 +572,17 @@ function findDurationMs(payload: Record<string, unknown>): number | undefined {
 }
 
 function mapProviderError(status: number): Response {
+  if (status === 400) {
+    return ttsJsonError('The speech provider could not synthesize this sentence.', 400)
+  }
   if (status === 401 || status === 403) {
     return ttsJsonError('The speech provider rejected this sentence.', status)
+  }
+  if (status === 402) {
+    return ttsJsonError('The speech provider account has no available balance.', 402)
+  }
+  if (status === 421) {
+    return ttsJsonError('The speech provider declined this sentence.', 421)
   }
   if (status === 429) {
     return ttsJsonError('The speech provider is rate-limited right now.', 429)
@@ -547,12 +619,12 @@ function jsonError(message: string, status: number): Response {
   return json({ error: message }, status)
 }
 
-function ttsJson(payload: unknown, status = 200): Response {
-  return json(payload, status, ttsNoStoreHeaders)
+function ttsJson(payload: unknown, status = 200, headers: Record<string, string> = {}): Response {
+  return json(payload, status, { ...ttsNoStoreHeaders, ...headers })
 }
 
-function ttsJsonError(message: string, status: number): Response {
-  return ttsJson({ error: message }, status)
+function ttsJsonError(message: string, status: number, headers: Record<string, string> = {}): Response {
+  return ttsJson({ error: message }, status, headers)
 }
 
 function privateJson(payload: unknown, status = 200): Response {
@@ -609,6 +681,53 @@ async function cancelResponseBody(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => {})
 }
 
+async function readLimitedResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array | null> {
+  const contentLength = response.headers.get('content-length')
+  if (
+    contentLength
+    && /^\d+$/.test(contentLength)
+    && Number(contentLength) > maxBytes
+  ) {
+    await cancelResponseBody(response)
+    return null
+  }
+
+  if (!response.body) {
+    return new Uint8Array()
+  }
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let bytesRead = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+
+      bytesRead += value.byteLength
+      if (bytesRead > maxBytes) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(value)
+    }
+
+    const bytes = new Uint8Array(bytesRead)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return bytes
+  }
+  finally {
+    reader.releaseLock()
+  }
+}
+
 function getUrlImportTimeoutMs(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 10_000
@@ -620,6 +739,11 @@ function getUrlImportTimeoutMs(value: unknown): number {
 function getUrlImportRateLimitKey(request: Request): string {
   const clientAddress = request.headers.get('cf-connecting-ip')?.trim()
   return `yomu:url-import:${clientAddress || 'anonymous'}`
+}
+
+function getMimoTtsRateLimitKey(request: Request): string {
+  const clientAddress = request.headers.get('cf-connecting-ip')?.trim()
+  return `yomu:mimo-tts:${clientAddress || 'anonymous'}`
 }
 
 function isIpLiteral(hostname: string): boolean {
@@ -656,8 +780,7 @@ function isAbortError(error: unknown): boolean {
     && error.name === 'AbortError'
 }
 
-function encodeBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer)
+function encodeBase64(bytes: Uint8Array): string {
   let binary = ''
   for (const byte of bytes) {
     binary += String.fromCharCode(byte)
@@ -673,11 +796,17 @@ function normalizeBaseUrl(baseUrl: string): string {
 function normalizeMimoBaseUrl(baseUrl: string): string | null {
   try {
     const url = new URL(normalizeBaseUrl(baseUrl))
-    if (url.protocol !== 'https:' || !allowedMimoHosts.has(url.hostname)) {
+    if (url.protocol !== 'https:'
+      || !allowedMimoHosts.has(url.hostname)
+      || url.port
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || url.pathname !== '/v1') {
       return null
     }
-
-    return url.toString().replace(/\/+$/, '')
+    return defaultMimoBaseUrl
   }
   catch {
     return null
