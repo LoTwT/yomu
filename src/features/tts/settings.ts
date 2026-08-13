@@ -19,7 +19,8 @@ export interface ExportedTtsSettings {
   mimo: Omit<MimoByokSettings, 'apiKey'>
 }
 
-export const defaultMimoBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
+export const defaultMimoBaseUrl = 'https://api.xiaomimimo.com/v1'
+const legacyMimoTokenPlanBaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1'
 export const defaultTtsSettings: TtsSettings = {
   provider: 'webspeech',
   mimo: {
@@ -91,7 +92,12 @@ export function clearMimoApiKey(settings: TtsSettings): TtsSettings {
 }
 
 export function isMimoConfigured(settings: TtsSettings): boolean {
-  return settings.mimo.apiKey.trim().length > 0
+  return isSupportedMimoApiKey(settings.mimo.apiKey)
+}
+
+export function isSupportedMimoApiKey(value: string): boolean {
+  const normalized = value.trim()
+  return normalized.length > 0 && !normalized.toLowerCase().startsWith('tp-')
 }
 
 export function getActiveTtsProvider(settings: TtsSettings): TtsProviderId {
@@ -111,7 +117,9 @@ export function normalizeTtsSettings(value: unknown): TtsSettings {
   return {
     provider,
     mimo: {
-      apiKey: typeof mimo.apiKey === 'string' ? mimo.apiKey : '',
+      apiKey: typeof mimo.apiKey === 'string' && isSupportedMimoApiKey(mimo.apiKey)
+        ? mimo.apiKey.trim()
+        : '',
       baseUrl: normalizeBaseUrl(typeof mimo.baseUrl === 'string' ? mimo.baseUrl : defaultMimoBaseUrl),
       model: normalizeNonEmptyString(mimo.model, defaultTtsSettings.mimo.model),
       voice: normalizeNonEmptyString(mimo.voice, defaultTtsSettings.mimo.voice),
@@ -147,7 +155,11 @@ function loadPersistedTtsSettings(storage: Storage): TtsSettings | null {
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim()
-  return trimmed ? trimmed.replace(/\/+$/, '') : defaultMimoBaseUrl
+  const normalized = trimmed ? trimmed.replace(/\/+$/, '') : defaultMimoBaseUrl
+  if (normalized === legacyMimoTokenPlanBaseUrl) {
+    return defaultMimoBaseUrl
+  }
+  return defaultMimoBaseUrl
 }
 
 function normalizeNonEmptyString(value: unknown, fallback: string): string {

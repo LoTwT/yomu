@@ -21,6 +21,7 @@ import {
 import {
   clearMimoApiKey,
   defaultTtsSettings,
+  isSupportedMimoApiKey,
   normalizeTtsSettings,
   sanitizeTtsSettingsForExport,
   type TtsSettings,
@@ -388,7 +389,7 @@ function createProviderSettingsController(services: PlatformServices): ProviderS
     const mimoKey = storedMimoKey?.trim() ?? ''
     const shouldRestoreMimo = storedRememberMimo === true
       && ttsSettings.value.provider === 'mimo'
-      && Boolean(mimoKey)
+      && isSupportedMimoApiKey(mimoKey)
     rememberMimoKey.value = shouldRestoreMimo
     ttsSettings.value = shouldRestoreMimo
       ? {
@@ -474,7 +475,7 @@ function createProviderSettingsController(services: PlatformServices): ProviderS
       const mimoActive = normalizedTts.provider === 'mimo'
         && canRememberOnDevice
         && storedRememberMimo === true
-        && Boolean(mimoKey)
+        && isSupportedMimoApiKey(mimoKey)
       const hydratedTtsSettings = mimoActive
         ? {
             ...normalizedTts,

@@ -15,6 +15,14 @@
         "limit": 30,
         "period": 60
       }
+    },
+    {
+      "name": "MIMO_TTS_RATE_LIMITER",
+      "namespace_id": "938472",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
     }
   ],
   "observability": {

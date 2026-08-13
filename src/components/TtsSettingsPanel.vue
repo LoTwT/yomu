@@ -121,7 +121,7 @@ function clearKey() {
             type="url"
             :value="model.mimo.baseUrl"
             :placeholder="defaultMimoBaseUrl"
-            @input="updateMimoField('baseUrl', ($event.target as HTMLInputElement).value)"
+            readonly
           >
         </label>
         <label class="tts-settings__field">
@@ -159,7 +159,7 @@ function clearKey() {
         默认只在当前会话内存中保留。仅在按下播放时发送给 Yomu；Yomu 只转发到 MiMo，不在本站保存这个 Key。
       </p>
       <p class="tts-settings__privacy">
-        浏览器、扩展或页面脚本不可信时，本地 Key 仍有暴露风险。获取方式：在小米/MiMo 控制台创建 Token Plan Key 后粘贴到这里。
+        浏览器、扩展或页面脚本不可信时，本地 Key 仍有暴露风险。请在小米/MiMo 控制台创建按量付费 API Key；MiMo 语音当前可能限时免费，费用与额度以服务商页面为准。
       </p>
       <label class="tts-settings__remember">
         <input

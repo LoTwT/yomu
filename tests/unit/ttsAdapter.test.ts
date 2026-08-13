@@ -15,7 +15,12 @@ import type {
   TtsSynthesisResult,
 } from '@/features/tts/types'
 import type { RemoteServiceRequest, RemoteServicesAdapter } from '@/platform/contracts'
-import { handleAiExpansionRequest, handleMimoTtsRequest, handleUrlImportRequest } from '@/worker'
+import worker, {
+  handleAiExpansionRequest,
+  handleMimoTtsRequest,
+  handleUrlImportRequest,
+  maxMimoTtsProviderResponseBytes,
+} from '@/worker'
 
 const request: TtsSynthesisRequest = {
   provider: 'mimo',
@@ -40,6 +45,7 @@ describe('MiMo TTS adapter', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -419,7 +425,103 @@ describe('MiMo TTS adapter', () => {
     expect(rejected.headers.get('cache-control')).toBe('no-store')
     expect(rejected.headers.get('pragma')).toBe('no-cache')
     expect(await rejected.text()).not.toContain('secret-key')
-    expect(providerFetch.mock.calls[0]?.[0]).toBe('https://token-plan-cn.xiaomimimo.com/v1/chat/completions')
+    expect(providerFetch.mock.calls[0]?.[0]).toBe('https://api.xiaomimimo.com/v1/chat/completions')
+    expect(providerFetch.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      redirect: 'error',
+    })
+  })
+
+  it('rate-limits MiMo independently by client address before forwarding BYOK credentials', async () => {
+    const providerFetch = vi.fn()
+    vi.stubGlobal('fetch', providerFetch)
+    const mimoRateLimit = vi.fn(async () => ({ success: false }))
+
+    const response = await worker.fetch(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      headers: { 'cf-connecting-ip': '203.0.113.42' },
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn(async () => new Response()) },
+      MIMO_TTS_MODEL: 'mimo-v2.5-tts',
+      MIMO_TTS_RATE_LIMITER: { limit: mimoRateLimit },
+      URL_IMPORT_RATE_LIMITER: { limit: vi.fn(async () => ({ success: true })) },
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('retry-after')).toBe('60')
+    expect(await response.text()).not.toContain('secret-key')
+    expect(mimoRateLimit).toHaveBeenCalledWith({ key: 'yomu:mimo-tts:203.0.113.42' })
+    expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it('aborts a stalled MiMo provider request at the server-owned deadline', async () => {
+    vi.useFakeTimers()
+    let markFetchStarted!: () => void
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve
+    })
+    let providerSignal: AbortSignal | null | undefined
+    const providerFetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      providerSignal = init?.signal
+      markFetchStarted()
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+    })
+
+    const responsePromise = handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    }, {
+      fetchImpl: providerFetch as typeof fetch,
+      timeoutMs: 500,
+    })
+
+    await fetchStarted
+    await vi.advanceTimersByTimeAsync(500)
+    const response = await responsePromise
+
+    expect(providerSignal?.aborted).toBe(true)
+    expect(response.status).toBe(504)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).not.toContain('secret-key')
+  })
+
+  it.each([
+    ['binary audio', 'audio/mpeg'],
+    ['JSON audio', 'application/json'],
+  ])('cancels oversized MiMo %s responses while streaming', async (_label, contentType) => {
+    let canceled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(maxMimoTtsProviderResponseBytes))
+        controller.enqueue(new Uint8Array(1))
+      },
+      cancel() {
+        canceled = true
+      },
+    })
+    const providerFetch = vi.fn(async () => new Response(body, {
+      headers: { 'content-type': contentType },
+    }))
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    }, {
+      fetchImpl: providerFetch as typeof fetch,
+    })
+
+    expect(response.status).toBe(502)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).not.toContain('secret-key')
+    expect(canceled).toBe(true)
   })
 
   it('marks successful MiMo BYOK endpoint responses as no-store', async () => {
@@ -448,6 +550,62 @@ describe('MiMo TTS adapter', () => {
     expect(providerFetch).toHaveBeenCalledTimes(1)
   })
 
+  it('accepts the official MiMo chat response shape and normalizes its audio', async () => {
+    const providerFetch = vi.fn(async () =>
+      new Response(JSON.stringify({
+        id: 'mimo-request-id',
+        choices: [{
+          message: {
+            audio: {
+              data: btoa('official-mp3-bytes'),
+              mime_type: 'audio/mpeg',
+            },
+          },
+        }],
+      }), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...request,
+        apiKey: 'secret-key',
+        baseUrl: 'https://api.xiaomimimo.com/v1/',
+      }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      audioBase64: btoa('official-mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      providerRequestId: 'mimo-request-id',
+    })
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('maps malformed provider JSON to a private unavailable response', async () => {
+    const providerFetch = vi.fn(async () => new Response('{not-json', {
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(502)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).not.toContain('secret-key')
+  })
+
   it('rejects unsupported MiMo base URLs instead of proxying arbitrary hosts', async () => {
     const providerFetch = vi.fn()
     vi.stubGlobal('fetch', providerFetch)
@@ -466,6 +624,101 @@ describe('MiMo TTS adapter', () => {
     expect(rejected.status).toBe(400)
     expect(await rejected.text()).not.toContain('secret-key')
     expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'http://api.xiaomimimo.com/v1',
+    'https://api.xiaomimimo.com.evil.example/v1',
+    'https://api.xiaomimimo.com:444/v1',
+    'https://user:password@api.xiaomimimo.com/v1',
+    'https://api.xiaomimimo.com/v1/other',
+    'https://api.xiaomimimo.com/v1?redirect=1',
+    'https://api.xiaomimimo.com/v1#fragment',
+    'https://token-plan-cn.xiaomimimo.com/v1',
+  ])('rejects non-canonical MiMo endpoint %s before sending credentials', async (baseUrl) => {
+    const providerFetch = vi.fn()
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key', baseUrl }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(400)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.text()).not.toContain('secret-key')
+    expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects retired Token Plan keys without contacting MiMo', async () => {
+    const providerFetch = vi.fn()
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'tp-retired-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain('pay-as-you-go')
+    expect(providerFetch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['provider redirect', new TypeError('redirect mode is error')],
+    ['network rejection', new Error('secret-key must not leak')],
+  ])('maps %s to one private provider-unavailable response', async (_label, failure) => {
+    const providerFetch = vi.fn(async () => {
+      throw failure
+    })
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(502)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('pragma')).toBe('no-cache')
+    expect(await response.text()).not.toContain('secret-key')
+    expect(providerFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [400, 400],
+    [401, 401],
+    [402, 402],
+    [403, 403],
+    [404, 502],
+    [421, 421],
+    [429, 429],
+    [500, 502],
+    [503, 502],
+  ])('maps MiMo HTTP %i to a private HTTP %i response', async (providerStatus, expectedStatus) => {
+    const providerFetch = vi.fn(async () => new Response(
+      JSON.stringify({ error: 'upstream secret detail' }),
+      { status: providerStatus },
+    ))
+    vi.stubGlobal('fetch', providerFetch)
+
+    const response = await handleMimoTtsRequest(new Request('https://yomu.test/api/tts/mimo', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, apiKey: 'secret-key' }),
+    }), {
+      ASSETS: { fetch: vi.fn() },
+    })
+
+    expect(response.status).toBe(expectedStatus)
+    const responseText = await response.text()
+    expect(responseText).not.toContain('secret-key')
+    expect(responseText).not.toContain('upstream secret detail')
   })
 
   it('keeps AI expansion BYOK responses no-store and sends only minimal context', async () => {

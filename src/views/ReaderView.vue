@@ -107,12 +107,22 @@ const {
   errorMessage,
   completionState,
   completionErrorMessage,
+  playbackRate,
+  activeSpeechProvider,
+  cloudSpeechFallbackActive,
+  speechProviderLabel,
+  cloudConsentRequired,
   speechAvailable,
   load,
   selectSentence,
   previousSentence,
   nextSentence,
   togglePlayback,
+  repeatCurrentSentence,
+  setPlaybackRate,
+  acceptCloudSpeechConsent,
+  declineCloudSpeechConsent,
+  retryCloudSpeech,
   completeReading,
   beginRouteTransition,
   resumeAfterFailedRouteTransition,
@@ -176,6 +186,12 @@ watch(status, (nextStatus) => {
 watch(settingsOpen, (isOpen) => {
   if (isOpen && (status.value === 'missing' || status.value === 'error')) {
     void settingsHistoryLayer.retire()
+  }
+})
+
+watch(cloudConsentRequired, (isRequired) => {
+  if (isRequired && status.value === 'ready') {
+    settingsHistoryLayer.activate()
   }
 })
 
@@ -515,7 +531,45 @@ function openSettings(): void {
 }
 
 function closeSettings(): void {
+  if (cloudConsentRequired.value) {
+    declineCloudSpeechConsent()
+  }
   void settingsHistoryLayer.deactivate()
+}
+
+async function handleAcceptCloudSpeechConsent(): Promise<void> {
+  await settingsHistoryLayer.deactivate()
+  await acceptCloudSpeechConsent()
+}
+
+function handleDeclineCloudSpeechConsent(): void {
+  declineCloudSpeechConsent()
+  void settingsHistoryLayer.deactivate()
+}
+
+async function handleRepeatCurrentSentence(): Promise<void> {
+  if (cloudConsentRequired.value) {
+    await repeatCurrentSentence()
+    return
+  }
+  await settingsHistoryLayer.deactivate()
+  await repeatCurrentSentence()
+}
+
+async function handleRetryCloudSpeech(): Promise<void> {
+  await settingsHistoryLayer.deactivate()
+  await retryCloudSpeech()
+}
+
+async function handleManageSpeechServices(): Promise<void> {
+  if (cloudConsentRequired.value) {
+    declineCloudSpeechConsent()
+  }
+  await settingsHistoryLayer.deactivate()
+  if (viewUnmounted) {
+    return
+  }
+  await router.push({ name: 'settings', hash: '#settings-speech-title' })
 }
 </script>
 
@@ -615,15 +669,26 @@ function closeSettings(): void {
     <ReaderSettingsOverlay
       v-if="settingsOpen && articleCapabilities"
       :article-capabilities="articleCapabilities"
+      :active-speech-provider="activeSpeechProvider"
+      :cloud-fallback-active="cloudSpeechFallbackActive"
+      :cloud-consent-required="cloudConsentRequired"
       :default-expand-translation="defaultExpandTranslation"
       :focus-return="settingsButton"
       :font-scale="fontScale"
       :persistence="readerPreferencePersistence"
       :persistence-status="readerPreferencePersistenceStatus"
+      :playback-rate="playbackRate"
       :show-ipa="showIpa"
+      :speech-provider-label="speechProviderLabel"
+      @accept-cloud-consent="void handleAcceptCloudSpeechConsent()"
       @close="closeSettings"
+      @decline-cloud-consent="handleDeclineCloudSpeechConsent"
+      @manage-speech-services="void handleManageSpeechServices()"
+      @repeat-sentence="void handleRepeatCurrentSentence()"
+      @retry-cloud-speech="void handleRetryCloudSpeech()"
       @update:default-expand-translation="setDefaultExpandTranslation"
       @update:font-scale="setFontScale"
+      @update:playback-rate="setPlaybackRate"
       @update:show-ipa="showIpa = $event"
     />
 

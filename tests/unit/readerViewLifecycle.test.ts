@@ -29,7 +29,19 @@ import {
 import type { ArticleRecord } from '@/data/entities'
 import { createMemoryLocalRepositories } from '@/data/memoryLocalRepositories'
 import { takeLibraryArticleFocus } from '@/features/library/libraryFocusReturn'
-import { createFakePlatformServices } from '@/platform/fake/createFakePlatformServices'
+import {
+  providerPreferenceKeys,
+  providerSecretKeys,
+} from '@/features/settings/providerSettingsStorage'
+import {
+  defaultTtsSettings,
+  sanitizeTtsSettingsForExport,
+} from '@/features/tts/settings'
+import type { TtsEndpointResponse } from '@/features/tts/types'
+import {
+  createFakePlatformServices,
+  type FakePlatformOptions,
+} from '@/platform/fake/createFakePlatformServices'
 import ReaderView from '@/views/ReaderView.vue'
 
 const mountedApps: VueApp[] = []
@@ -95,6 +107,50 @@ describe('ReaderView lifecycle navigation', () => {
     )).not.toBeNull())
     host.querySelector<HTMLButtonElement>('[aria-label="阅读设置"]')?.click()
     await vi.waitFor(() => expect(host.querySelector('#reader-settings[open]')).not.toBeNull())
+  })
+
+  it('shows MiMo disclosure before any request, then starts current plus two after consent', async () => {
+    const article = createArticle()
+    const response: TtsEndpointResponse = {
+      audioBase64: btoa('mp3-bytes'),
+      mimeType: 'audio/mpeg',
+      durationMs: 1_200,
+    }
+    const remoteHandler = vi.fn(async () => response)
+    const { harness, host } = await mountReaderHistory(article, {
+      mimo: true,
+      remoteHandler,
+    })
+
+    host.querySelector<HTMLButtonElement>('[aria-label="朗读当前句"]')?.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('是否发送当前句到 MiMo？'))
+
+    expect(host.textContent).toContain('当前句与后两句')
+    expect(remoteHandler).not.toHaveBeenCalled()
+    expect(harness.remote.requests).toEqual([])
+    expect(harness.audio.played).toEqual([])
+
+    findButton(host, '暂不发送')?.click()
+    await nextTick()
+    expect(host.textContent).toContain('未发送正文')
+    expect(remoteHandler).not.toHaveBeenCalled()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="朗读当前句"]')?.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('是否发送当前句到 MiMo？'))
+    findButton(host, '重读当前句')?.click()
+    await nextTick()
+    expect(host.textContent).toContain('是否发送当前句到 MiMo？')
+    expect(remoteHandler).not.toHaveBeenCalled()
+    findButton(host, '同意并朗读')?.click()
+
+    await vi.waitFor(() => expect(harness.remote.requests).toHaveLength(3))
+    await vi.waitFor(() => expect(harness.audio.played).toHaveLength(1))
+    expect(harness.remote.requests.map(request => request.body.sentenceId)).toEqual([
+      `${article.id}:s1`,
+      `${article.id}:s2`,
+      `${article.id}:s3`,
+    ])
+    expect(host.querySelector('#reader-settings')).toBeNull()
   })
 
   it('closes cached word UI when active article revalidation fails', async () => {
@@ -1084,9 +1140,29 @@ function createReaderTestRouter(routes: RouteRecordRaw[]) {
   return router
 }
 
-async function mountReaderHistory(article = createArticle()) {
+async function mountReaderHistory(
+  article = createArticle(),
+  options: {
+    mimo?: boolean
+    remoteHandler?: FakePlatformOptions['remoteHandler']
+  } = {},
+) {
   const repositories = createMemoryLocalRepositories({ articles: [article] })
-  const harness = createFakePlatformServices({ repositories })
+  const harness = createFakePlatformServices({
+    repositories,
+    remoteHandler: options.remoteHandler,
+  })
+  if (options.mimo) {
+    await harness.preferences.set(
+      providerPreferenceKeys.tts,
+      sanitizeTtsSettingsForExport({
+        ...defaultTtsSettings,
+        provider: 'mimo',
+      }),
+    )
+    await harness.preferences.set(providerPreferenceKeys.rememberMimo, true)
+    await harness.secrets.set(providerSecretKeys.mimo, 'reader-view-key', 'device')
+  }
   const interactionLayer = createInteractionLayerController()
   const router = createReaderTestRouter([
     {
@@ -1130,6 +1206,11 @@ async function mountReaderHistory(article = createArticle()) {
   ).not.toBeNull())
 
   return { app, article, harness, host, interactionLayer, repositories, router }
+}
+
+function findButton(host: HTMLElement, label: string): HTMLButtonElement | undefined {
+  return [...host.querySelectorAll<HTMLButtonElement>('button')]
+    .find(button => button.textContent?.includes(label))
 }
 
 async function settleMicrotasks(): Promise<void> {

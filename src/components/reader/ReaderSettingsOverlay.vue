@@ -17,7 +17,10 @@ import type {
   ReaderFontScale,
 } from '@/features/preferences/useReaderDisplayPreferences'
 import type { PreferencePersistence } from '@/platform/contracts'
+import type { ReadingPlaybackRate } from '@/features/reader/useReadingSession'
+import type { TtsProviderId } from '@/features/tts/types'
 import ReaderDisplaySettings from './ReaderDisplaySettings.vue'
+import ReaderSpeechSettings from './ReaderSpeechSettings.vue'
 
 export type ReaderSettingsCloseReason =
   | InteractionLayerCloseReason
@@ -26,11 +29,16 @@ export type ReaderSettingsCloseReason =
 
 const props = withDefaults(defineProps<{
   articleCapabilities?: ArticleRecord['capabilities']
+  activeSpeechProvider: TtsProviderId
+  cloudFallbackActive: boolean
+  cloudConsentRequired: boolean
   defaultExpandTranslation: boolean
   focusReturn?: HTMLElement | null
   fontScale: ReaderFontScale
   persistence: PreferencePersistence
   persistenceStatus?: ReaderDisplayPreferencesPersistenceStatus
+  playbackRate: ReadingPlaybackRate
+  speechProviderLabel: string
   showIpa: boolean
 }>(), {
   articleCapabilities: undefined,
@@ -40,17 +48,24 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   close: [reason: ReaderSettingsCloseReason]
+  acceptCloudConsent: []
+  declineCloudConsent: []
+  manageSpeechServices: []
+  repeatSentence: []
+  retryCloudSpeech: []
   'update:defaultExpandTranslation': [value: boolean]
   'update:fontScale': [value: ReaderFontScale]
   'update:showIpa': [value: boolean]
+  'update:playbackRate': [value: ReadingPlaybackRate]
 }>()
 
 const interactionLayer = useInteractionLayer()
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
 const heading = useTemplateRef<HTMLHeadingElement>('heading')
+const speechSettings = useTemplateRef<InstanceType<typeof ReaderSpeechSettings>>('speechSettings')
 const persistenceDescription = computed(() => props.persistence === 'device'
-  ? '字号与译文偏好会保存在此设备；IPA 只对本次阅读生效。'
-  : '字号与译文偏好仅在本次会话中保留；IPA 也只对本次阅读生效。')
+  ? '调整显示与朗读。字号和译文偏好保存在此设备；IPA、语速与云朗读同意只对本次阅读生效。'
+  : '调整显示与朗读。这些偏好、语速与云朗读同意只在本次会话中保留。')
 let releaseLayer: ReleaseInteractionLayer | null = null
 let modalSession: ModalDialogSession | null = null
 let closeRequested = false
@@ -81,6 +96,10 @@ onMounted(() => {
     const dialogElement = dialog.value
     const headingElement = heading.value
     if (closeRequested || !dialogElement?.open || !headingElement?.isConnected) {
+      return
+    }
+    if (props.cloudConsentRequired) {
+      speechSettings.value?.focusConsentAction()
       return
     }
     headingElement.focus({ preventScroll: true })
@@ -154,7 +173,7 @@ function readFocusReturn(): HTMLElement | null {
     <header class="reader-settings-overlay__header">
       <div class="reader-settings-overlay__heading-copy">
         <p class="reader-settings-overlay__eyebrow">
-          阅读显示
+          阅读设置
         </p>
         <h2
           id="reader-settings-heading"
@@ -189,6 +208,20 @@ function readFocusReturn(): HTMLElement | null {
         @update:default-expand-translation="emit('update:defaultExpandTranslation', $event)"
         @update:font-scale="emit('update:fontScale', $event)"
         @update:show-ipa="emit('update:showIpa', $event)"
+      />
+      <ReaderSpeechSettings
+        ref="speechSettings"
+        :active-provider="props.activeSpeechProvider"
+        :cloud-fallback-active="props.cloudFallbackActive"
+        :cloud-consent-required="props.cloudConsentRequired"
+        :playback-rate="props.playbackRate"
+        :provider-label="props.speechProviderLabel"
+        @accept-cloud-consent="emit('acceptCloudConsent')"
+        @decline-cloud-consent="emit('declineCloudConsent')"
+        @manage-services="emit('manageSpeechServices')"
+        @repeat="emit('repeatSentence')"
+        @retry-cloud="emit('retryCloudSpeech')"
+        @update:playback-rate="emit('update:playbackRate', $event)"
       />
     </div>
   </dialog>
